@@ -1,0 +1,51 @@
+{
+  "$comment": "Stasi Design-Token-Vorlage – Felder ausfüllen und zurückgeben. Farben als HEX (#RRGGBB) mit optionaler Transparenz (#RRGGBBAA).",
+  "meta": {
+    "designName": "",
+    "author": "",
+    "notes": ""
+  },
+  "color": {
+    "background": "",
+    "surface": "",
+    "surfaceSecondary": "",
+    "ink": "",
+    "inkSecondary": "",
+    "accent": "",
+    "accentPressed": "",
+    "success": "",
+    "warning": "",
+    "border": "#00000000",
+    "shadowCardOpacity": 0.05,
+    "shadowFloatingOpacity": 0.15
+  },
+  "typography": {
+    "$comment": "fontName leer lassen = macOS Systemfont (SF Pro). fontName muss auf dem Mac installiert sein.",
+    "fontName": "",
+    "labelSize": 12,
+    "bodySize": 14,
+    "titleSize": 18,
+    "counterSize": 15,
+    "lineHeightBody": 1.45
+  },
+  "space": [4, 8, 12, 16, 24, 32],
+  "shape": {
+    "radiusControl": 6,
+    "radiusCard": 10,
+    "radiusPanel": 14,
+    "borderWidth": 1
+  },
+  "motion": {
+    "$comment": "Dauern in Millisekunden. levelCharacter: kurze Beschreibung des gewünschten Pegel-Verhaltens.",
+    "fastMs": 150,
+    "panelMs": 250,
+    "levelCharacter": ""
+  },
+  "levelMeter": {
+    "$comment": "Anzeigeform wählen: bars oder needle. zoneColors werden grün->amber->rot gemappt.",
+    "style": "bars",
+    "zoneOk": "#30A46C",
+    "zoneLoud": "#DA8B27",
+    "zonePeak": "#E5484D"
+  }
+}

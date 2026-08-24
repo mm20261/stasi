@@ -1,0 +1,661 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<script src="./image-slot.js"></script>
+<style>
+html,body{margin:0;padding:0}
+a{color:#D64500;text-decoration:none}a:hover{text-decoration:underline}
+@keyframes stasiPulse{0%,100%{opacity:1}50%{opacity:.3}}
+@keyframes stasiBar{0%,100%{transform:scaleY(.25)}50%{transform:scaleY(1)}}
+@keyframes stasiUp{from{opacity:0;transform:translate(-50%,10px)}to{opacity:1;transform:translate(-50%,0)}}
+@media (prefers-reduced-motion: reduce){*{animation-duration:0.01ms !important;animation-iteration-count:1 !important;transition-duration:0.01ms !important}}
+</style>
+</helmet>
+<div ref="{{ deskRef }}" style="--bg:#F4F4F2;--sf:#FFFFFF;--ink:#1A1917;--sub:#716E67;--line:#E4E2DC;--hov:#ECEAE5;--desk:#E3E1DA;--pill:#1A1917;--pillInk:#F4F2ED;--ac:#D64500;--acS:color-mix(in oklab,var(--ac) 11%, var(--sf));--acPill:color-mix(in oklab,var(--ac) 45%, var(--pillInk));min-height:100vh;background:var(--desk);display:flex;align-items:center;justify-content:center;padding:40px;font-family:'Geist',sans-serif;box-sizing:border-box">
+  <div style="width:1080px;height:700px;background:var(--bg);border-radius:14px;box-shadow:0 0 0 1px rgba(0,0,0,0.18),0 24px 60px rgba(0,0,0,0.3);display:flex;overflow:hidden;position:relative;color:var(--ink)">
+
+    <div style="width:212px;flex-shrink:0;border-right:1px solid var(--line);display:flex;flex-direction:column;padding:16px 0 14px">
+      <div style="padding:0 16px 18px">
+        <x-import component-from-global-scope="MacTrafficLights" from="./macos-window.jsx" hint-size="60px,16px"></x-import>
+      </div>
+      <div style="padding:0 20px 22px">
+        <div style="font-family:'Geist Mono',monospace;font-weight:600;font-size:17px;letter-spacing:0.12em">STASI</div>
+        <div style="font-size:12px;color:var(--sub);margin-top:3px">{{ tagline }}</div>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:2px;padding:0 10px">
+        <sc-for list="{{ navItems }}" as="n" hint-placeholder-count="4">
+          <button onClick="{{ n.go }}" style="display:flex;align-items:center;gap:10px;padding:8px 10px;border:none;border-radius:8px;cursor:pointer;text-align:left;font-family:'Geist',sans-serif;font-size:13.5px;font-weight:{{ n.w }};background:{{ n.bg }};color:{{ n.c }};transition:background .15s" style-hover="background:var(--hov)" style-focus="outline:2px solid var(--ac);outline-offset:-2px">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="{{ n.icon }}"></path></svg>
+            <span>{{ n.label }}</span>
+          </button>
+        </sc-for>
+      </div>
+      <div style="flex:1"></div>
+      <div style="padding:0 10px;display:flex;flex-direction:column;gap:10px">
+        <button onClick="{{ toggleTheme }}" title="{{ themeTitle }}" style="display:flex;align-items:center;justify-content:space-between;padding:8px 10px;border:1px solid var(--line);border-radius:8px;cursor:pointer;background:transparent;color:var(--ink);font-family:'Geist',sans-serif;font-size:12.5px" style-hover="background:var(--hov)">
+          <span style="color:var(--sub)">Erscheinungsbild</span>
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="{{ themeIcon }}"></path></svg>
+        </button>
+        <div style="padding:0 10px;font-family:'Geist Mono',monospace;font-size:9.5px;letter-spacing:0.03em;color:var(--sub);line-height:1.7;opacity:0.85">v 0.9 · Akte 001<br>© meder.dev</div>
+      </div>
+    </div>
+
+    <div style="flex:1;display:flex;flex-direction:column;min-width:0">
+      <div style="position:absolute;top:16px;right:20px;z-index:20;width:34px;height:34px">
+        <div style="position:relative;width:34px;height:34px;border-radius:999px;border:1px solid var(--line);overflow:hidden;background:var(--hov)">
+          <sc-if value="{{ avatarSet }}" hint-placeholder-val="{{ false }}">
+            <div style="pointer-events:none;width:100%;height:100%"><image-slot id="stasi-avatar" shape="circle" placeholder=""></image-slot></div>
+          </sc-if>
+          <sc-if value="{{ noAvatar }}" hint-placeholder-val="{{ true }}">
+            <div style="width:100%;height:100%;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:600;color:var(--sub)">{{ userInitial }}</div>
+          </sc-if>
+          <button onClick="{{ goKonto }}" title="Konto öffnen" style="position:absolute;inset:0;border:none;background:transparent;cursor:pointer;border-radius:999px"></button>
+        </div>
+      </div>
+      <div style="flex:1;overflow-y:auto;padding:36px 44px 90px">
+
+        <sc-if value="{{ isBericht }}" hint-placeholder-val="{{ true }}">
+          <div data-screen-label="Bericht">
+            <div style="font-family:'Geist Mono',monospace;font-size:11px;letter-spacing:0.14em;color:var(--ac);text-transform:uppercase">{{ kicker }}</div>
+            <h1 style="margin:8px 0 0;font-size:28px;font-weight:600;letter-spacing:-0.01em">{{ greet }}</h1>
+            <div style="display:flex;align-items:center;gap:16px;margin-top:20px;padding:16px 20px;background:var(--sf);border:1px solid var(--line);border-radius:12px">
+              <div style="display:flex;align-items:center;gap:6px">
+                <span style="font-family:'Geist Mono',monospace;font-size:13px;background:var(--hov);border:1px solid var(--line);border-radius:6px;padding:4px 8px">⌥</span>
+                <span style="font-family:'Geist Mono',monospace;font-size:13px;background:var(--hov);border:1px solid var(--line);border-radius:6px;padding:4px 8px">Leertaste</span>
+              </div>
+              <div style="font-size:13.5px;color:var(--sub);flex:1">{{ hotkeyHint }}</div>
+              <button onClick="{{ simulate }}" style="display:flex;align-items:center;gap:8px;background:var(--ac);color:#fff;border:none;border-radius:999px;padding:9px 18px;font-family:'Geist',sans-serif;font-size:13.5px;font-weight:600;cursor:pointer;transition:filter .15s" style-hover="filter:brightness(1.08)" style-focus="outline:2px solid var(--ink);outline-offset:2px">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 3a3 3 0 0 1 3 3v6a3 3 0 0 1-6 0V6a3 3 0 0 1 3-3z M5 11a7 7 0 0 0 14 0 M12 18v3"></path></svg>
+                Diktat simulieren
+              </button>
+            </div>
+            <div style="margin:32px 0 12px;font-family:'Geist Mono',monospace;font-size:11px;letter-spacing:0.14em;color:var(--sub);text-transform:uppercase">{{ statsKicker }}</div>
+            <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px">
+              <sc-for list="{{ stats }}" as="s" hint-placeholder-count="4">
+                <div style="background:var(--sf);border:1px solid var(--line);border-radius:12px;padding:18px 16px 16px;min-width:0;overflow:hidden">
+                  <div style="font-size:24px;font-weight:600;letter-spacing:-0.01em;font-variant-numeric:tabular-nums;white-space:nowrap">{{ s.v }}</div>
+                  <div style="font-family:'Geist Mono',monospace;font-size:10px;letter-spacing:0.08em;color:var(--sub);margin-top:8px;white-space:nowrap">{{ s.l }}</div>
+                  <div style="font-size:11.5px;color:var(--ac);margin-top:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ s.d }}</div>
+                </div>
+              </sc-for>
+            </div>
+            <div style="display:grid;grid-template-columns:1.2fr 1fr;gap:12px;margin-top:12px">
+              <div style="background:var(--sf);border:1px solid var(--line);border-radius:12px;padding:18px 20px">
+                <div style="font-family:'Geist Mono',monospace;font-size:10.5px;letter-spacing:0.1em;color:var(--sub)">WÖRTER PRO TAG</div>
+                <div style="display:flex;align-items:flex-end;gap:14px;height:120px;margin-top:18px">
+                  <sc-for list="{{ days }}" as="d" hint-placeholder-count="7">
+                    <div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:8px;height:100%;justify-content:flex-end">
+                      <div style="width:100%;border-radius:5px 5px 2px 2px;background:{{ d.bg }};height:{{ d.h }}%;min-height:5px"></div>
+                      <div style="font-family:'Geist Mono',monospace;font-size:10px;color:var(--sub)">{{ d.d }}</div>
+                    </div>
+                  </sc-for>
+                </div>
+              </div>
+              <div style="background:var(--sf);border:1px solid var(--line);border-radius:12px;padding:18px 20px;display:flex;flex-direction:column">
+                <div style="display:flex;justify-content:space-between;align-items:baseline">
+                  <div style="font-family:'Geist Mono',monospace;font-size:10.5px;letter-spacing:0.1em;color:var(--sub)">LETZTE PROTOKOLLE</div>
+                  <button onClick="{{ goProtokolle }}" style="border:none;background:none;color:var(--ac);font-family:'Geist',sans-serif;font-size:12px;font-weight:600;cursor:pointer;padding:0" style-hover="text-decoration:underline">Alle ansehen</button>
+                </div>
+                <div style="display:flex;flex-direction:column;margin-top:10px">
+                  <sc-for list="{{ recent }}" as="r" hint-placeholder-count="3">
+                    <div style="display:flex;gap:10px;align-items:baseline;padding:9px 0;border-bottom:1px solid var(--line)">
+                      <span style="font-family:'Geist Mono',monospace;font-size:11px;color:var(--sub);flex-shrink:0">{{ r.time }}</span>
+                      <span style="font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1">{{ r.title }}</span>
+                      <span style="font-family:'Geist Mono',monospace;font-size:10.5px;color:var(--ac);flex-shrink:0">→ {{ r.app }}</span>
+                    </div>
+                  </sc-for>
+                </div>
+              </div>
+            </div>
+          </div>
+        </sc-if>
+
+        <sc-if value="{{ isProtokolle }}" hint-placeholder-val="{{ false }}">
+          <div data-screen-label="Protokolle">
+            <h1 style="margin:0;font-size:28px;font-weight:600;letter-spacing:-0.01em">Protokolle</h1>
+            <div style="font-size:13.5px;color:var(--sub);margin-top:6px">{{ libSub }}</div>
+            <div style="background:var(--sf);border:1px solid var(--line);border-radius:12px;margin-top:22px;overflow:hidden">
+              <sc-if value="{{ noTranscripts }}" hint-placeholder-val="{{ false }}">
+                <div style="padding:48px 24px;text-align:center">
+                  <div style="font-size:14px;font-weight:500">Keine Protokolle</div>
+                  <div style="font-size:12.5px;color:var(--sub);margin-top:6px">{{ emptyLibNote }}</div>
+                </div>
+              </sc-if>
+              <sc-for list="{{ transcripts }}" as="t" hint-placeholder-count="5">
+                <div style="display:flex;gap:16px;padding:16px 18px;border-bottom:{{ t.bb }};align-items:flex-start">
+                  <span style="font-family:'Geist Mono',monospace;font-size:11px;color:var(--sub);width:88px;flex-shrink:0;padding-top:3px">{{ t.when }}</span>
+                  <div style="flex:1;min-width:0">
+                    <div onClick="{{ t.open }}" title="Klicken zum Auf-/Zuklappen" style="font-size:13.5px;line-height:1.6;cursor:pointer;display:-webkit-box;-webkit-box-orient:vertical;overflow:hidden;-webkit-line-clamp:{{ t.cl }};text-wrap:pretty">{{ t.text }}</div>
+                    <div style="font-family:'Geist Mono',monospace;font-size:10.5px;color:var(--sub);margin-top:8px">→ {{ t.app }} · {{ t.meta }}</div>
+                  </div>
+                  <div style="display:flex;gap:2px;flex-shrink:0;position:relative">
+                    <button onClick="{{ t.play }}" title="Audio abspielen" style="border:none;background:none;color:{{ t.playC }};cursor:pointer;width:30px;height:30px;border-radius:8px;display:flex;align-items:center;justify-content:center" style-hover="background:var(--hov)">
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="{{ t.playIcon }}"></path></svg>
+                    </button>
+                    <button onClick="{{ t.copy }}" title="Kopieren" style="border:none;background:none;color:{{ t.copyC }};cursor:pointer;width:30px;height:30px;border-radius:8px;display:flex;align-items:center;justify-content:center" style-hover="background:var(--hov)">
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="{{ t.copyIcon }}"></path></svg>
+                    </button>
+                    <button onClick="{{ t.menu }}" title="Mehr" style="border:none;background:none;color:var(--sub);cursor:pointer;width:30px;height:30px;border-radius:8px;font-size:16px;line-height:1;padding:0" style-hover="background:var(--hov)">⋯</button>
+                    <sc-if value="{{ t.menuOpen }}" hint-placeholder-val="{{ false }}">
+                      <div style="position:absolute;top:34px;right:0;background:var(--sf);border:1px solid var(--line);border-radius:10px;box-shadow:0 10px 30px rgba(0,0,0,0.18);padding:5px;z-index:30;min-width:196px">
+                        <button onClick="{{ t.extract }}" style="display:block;width:100%;text-align:left;border:none;background:none;padding:8px 10px;border-radius:7px;font-family:'Geist',sans-serif;font-size:12.5px;color:var(--ink);cursor:pointer" style-hover="background:var(--hov)">Audio extrahieren (.wav)</button>
+                        <button onClick="{{ t.exportTxt }}" style="display:block;width:100%;text-align:left;border:none;background:none;padding:8px 10px;border-radius:7px;font-family:'Geist',sans-serif;font-size:12.5px;color:var(--ink);cursor:pointer" style-hover="background:var(--hov)">Export als .txt</button>
+                        <button onClick="{{ t.exportMd }}" style="display:block;width:100%;text-align:left;border:none;background:none;padding:8px 10px;border-radius:7px;font-family:'Geist',sans-serif;font-size:12.5px;color:var(--ink);cursor:pointer" style-hover="background:var(--hov)">Export als .md</button>
+                        <div style="height:1px;background:var(--line);margin:4px 6px"></div>
+                        <button onClick="{{ t.del }}" style="display:block;width:100%;text-align:left;border:none;background:none;padding:8px 10px;border-radius:7px;font-family:'Geist',sans-serif;font-size:12.5px;color:#C8102E;cursor:pointer" style-hover="background:var(--hov)">Löschen</button>
+                      </div>
+                    </sc-if>
+                  </div>
+                </div>
+              </sc-for>
+            </div>
+          </div>
+        </sc-if>
+
+        <sc-if value="{{ isWb }}" hint-placeholder-val="{{ false }}">
+          <div data-screen-label="Wörterbuch">
+            <h1 style="margin:0;font-size:28px;font-weight:600;letter-spacing:-0.01em">Wörterbuch</h1>
+            <div style="font-size:13.5px;color:var(--sub);margin-top:6px">Namen, Fachbegriffe und Kürzel, die Stasi kennen muss.</div>
+            <div style="display:inline-flex;gap:2px;margin-top:22px;background:var(--sf);border:1px solid var(--line);border-radius:10px;padding:3px">
+              <sc-for list="{{ dictTabs }}" as="dt" hint-placeholder-count="3">
+                <button onClick="{{ dt.go }}" style="border:none;border-radius:8px;padding:7px 16px;font-family:'Geist',sans-serif;font-size:13px;font-weight:{{ dt.w }};cursor:pointer;white-space:nowrap;background:{{ dt.bg }};color:{{ dt.c }}">{{ dt.label }}</button>
+              </sc-for>
+            </div>
+
+            <sc-if value="{{ tabBegriffe }}" hint-placeholder-val="{{ true }}">
+              <div style="margin-top:20px;max-width:640px">
+                <div style="display:flex;gap:8px">
+                  <input value="{{ newTerm }}" onChange="{{ setNewTerm }}" onKeyDown="{{ termKey }}" placeholder="Neuen Begriff eintragen …" style="flex:1;border:1px solid var(--line);background:var(--sf);color:var(--ink);border-radius:9px;padding:9px 14px;font-family:'Geist',sans-serif;font-size:13.5px;outline:none" style-focus="border-color:var(--ac)">
+                  <button onClick="{{ addTerm }}" style="border:none;background:var(--ac);color:#fff;border-radius:9px;padding:9px 18px;font-family:'Geist',sans-serif;font-size:13.5px;font-weight:600;cursor:pointer" style-hover="filter:brightness(1.08)">Hinzufügen</button>
+                </div>
+                <div style="background:var(--sf);border:1px solid var(--line);border-radius:12px;margin-top:18px;overflow:hidden">
+                  <sc-for list="{{ termChips }}" as="c" hint-placeholder-count="6">
+                    <div style="display:flex;align-items:center;gap:8px;padding:10px 18px;border-bottom:{{ c.bb }}">
+                      <sc-if value="{{ c.editing }}" hint-placeholder-val="{{ false }}">
+                        <input value="{{ editTermVal }}" onChange="{{ setEditTermVal }}" onKeyDown="{{ editTermKey }}" autoFocus="{{ true }}" style="flex:1;border:1px solid var(--ac);background:var(--bg);color:var(--ink);border-radius:7px;padding:6px 10px;font-family:'Geist',sans-serif;font-size:13px;outline:none">
+                        <button onClick="{{ saveEditTerm }}" style="border:none;background:var(--ac);color:#fff;border-radius:7px;padding:7px 13px;font-size:12px;font-weight:600;font-family:'Geist',sans-serif;cursor:pointer">Speichern</button>
+                      </sc-if>
+                      <sc-if value="{{ c.notEditing }}" hint-placeholder-val="{{ true }}">
+                        <span style="flex:1;font-size:13.5px">{{ c.term }}</span>
+                        <button onClick="{{ c.edit }}" title="Bearbeiten" style="border:none;background:none;color:var(--sub);cursor:pointer;width:28px;height:28px;border-radius:7px;display:flex;align-items:center;justify-content:center" style-hover="background:var(--hov);color:var(--ink)">
+                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3l4 4L8 20l-5 1 1-5z"></path></svg>
+                        </button>
+                        <button onClick="{{ c.del }}" title="Löschen" style="border:none;background:none;color:var(--sub);cursor:pointer;width:28px;height:28px;border-radius:7px;display:flex;align-items:center;justify-content:center" style-hover="background:var(--hov);color:#C8102E">
+                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16 M9 7V5h6v2 M6 7l1 14h10l1-14 M10 11v6 M14 11v6"></path></svg>
+                        </button>
+                      </sc-if>
+                    </div>
+                  </sc-for>
+                </div>
+              </div>
+            </sc-if>
+
+            <sc-if value="{{ tabRepl }}" hint-placeholder-val="{{ false }}">
+              <div style="margin-top:20px;max-width:640px">
+                <div style="display:flex;gap:8px">
+                  <input value="{{ newShort }}" onChange="{{ setNewShort }}" placeholder="Kürzel, z. B. lg" style="width:140px;border:1px solid var(--line);background:var(--sf);color:var(--ink);border-radius:9px;padding:9px 14px;font-family:'Geist Mono',monospace;font-size:13px;outline:none" style-focus="border-color:var(--ac)">
+                  <span style="align-self:center;color:var(--sub)">→</span>
+                  <input value="{{ newLong }}" onChange="{{ setNewLong }}" placeholder="wird zu …" style="flex:1;border:1px solid var(--line);background:var(--sf);color:var(--ink);border-radius:9px;padding:9px 14px;font-family:'Geist',sans-serif;font-size:13.5px;outline:none" style-focus="border-color:var(--ac)">
+                  <button onClick="{{ addRepl }}" style="border:none;background:var(--ac);color:#fff;border-radius:9px;padding:9px 18px;font-family:'Geist',sans-serif;font-size:13.5px;font-weight:600;cursor:pointer" style-hover="filter:brightness(1.08)">Hinzufügen</button>
+                </div>
+                <div style="background:var(--sf);border:1px solid var(--line);border-radius:12px;margin-top:18px;overflow:hidden">
+                  <sc-for list="{{ replRows }}" as="r" hint-placeholder-count="3">
+                    <div style="display:flex;align-items:center;gap:14px;padding:12px 18px;border-bottom:{{ r.bb }}">
+                      <sc-if value="{{ r.editing }}" hint-placeholder-val="{{ false }}">
+                        <input value="{{ editReplFrom }}" onChange="{{ setEditReplFrom }}" style="width:90px;border:1px solid var(--line);background:var(--bg);color:var(--ink);border-radius:7px;padding:5px 9px;font-family:'Geist Mono',monospace;font-size:12.5px;outline:none" style-focus="border-color:var(--ac)">
+                        <span style="color:var(--sub)">→</span>
+                        <input value="{{ editReplTo }}" onChange="{{ setEditReplTo }}" style="flex:1;border:1px solid var(--line);background:var(--bg);color:var(--ink);border-radius:7px;padding:5px 9px;font-family:'Geist',sans-serif;font-size:13px;outline:none" style-focus="border-color:var(--ac)">
+                        <button onClick="{{ saveEditRepl }}" style="border:none;background:var(--ac);color:#fff;border-radius:7px;padding:6px 13px;font-size:12px;font-weight:600;font-family:'Geist',sans-serif;cursor:pointer">Speichern</button>
+                      </sc-if>
+                      <sc-if value="{{ r.notEditing }}" hint-placeholder-val="{{ true }}">
+                        <span style="font-family:'Geist Mono',monospace;font-size:13px;background:var(--hov);border-radius:6px;padding:3px 9px">{{ r.from }}</span>
+                        <span style="color:var(--sub)">→</span>
+                        <span style="font-size:13.5px;flex:1">{{ r.to }}</span>
+                        <button onClick="{{ r.edit }}" style="border:none;background:none;color:var(--sub);font-size:12.5px;font-family:'Geist',sans-serif;cursor:pointer" style-hover="color:var(--ink)">Bearbeiten</button>
+                        <button onClick="{{ r.del }}" style="border:none;background:none;color:var(--sub);font-size:12.5px;font-family:'Geist',sans-serif;cursor:pointer" style-hover="color:#C8102E">Löschen</button>
+                      </sc-if>
+                    </div>
+                  </sc-for>
+                </div>
+              </div>
+            </sc-if>
+
+            <sc-if value="{{ tabAuto }}" hint-placeholder-val="{{ false }}">
+              <div style="margin-top:20px;max-width:640px">
+                <div style="font-size:13px;color:var(--sub);margin-bottom:14px">{{ autoNote }}</div>
+                <div style="background:var(--sf);border:1px solid var(--line);border-radius:12px;overflow:hidden">
+                  <sc-if value="{{ noLearned }}" hint-placeholder-val="{{ false }}">
+                    <div style="padding:36px 24px;text-align:center">
+                      <div style="font-size:13.5px;font-weight:500">Alles gesichtet</div>
+                      <div style="font-size:12.5px;color:var(--sub);margin-top:5px">{{ emptyLearnedNote }}</div>
+                    </div>
+                  </sc-if>
+                  <sc-for list="{{ learnedRows }}" as="l" hint-placeholder-count="3">
+                    <div style="display:flex;align-items:center;gap:14px;padding:13px 18px;border-bottom:{{ l.bb }}">
+                      <div style="flex:1">
+                        <div style="font-size:13.5px;font-weight:500">{{ l.term }}</div>
+                        <div style="font-family:'Geist Mono',monospace;font-size:10.5px;color:var(--sub);margin-top:3px">{{ l.note }}</div>
+                      </div>
+                      <button onClick="{{ l.keep }}" style="border:1px solid var(--line);background:var(--bg);color:var(--ink);border-radius:8px;padding:6px 14px;font-size:12.5px;font-family:'Geist',sans-serif;font-weight:500;cursor:pointer" style-hover="border-color:var(--ac);color:var(--ac)">Übernehmen</button>
+                      <button onClick="{{ l.drop }}" style="border:none;background:none;color:var(--sub);font-size:12.5px;font-family:'Geist',sans-serif;cursor:pointer" style-hover="color:var(--ink)">Ignorieren</button>
+                    </div>
+                  </sc-for>
+                </div>
+              </div>
+            </sc-if>
+          </div>
+        </sc-if>
+
+        <sc-if value="{{ isSettings }}" hint-placeholder-val="{{ false }}">
+          <div data-screen-label="Einstellungen" style="max-width:600px">
+            <h1 style="margin:0;font-size:28px;font-weight:600;letter-spacing:-0.01em">Einstellungen</h1>
+            <div style="margin:28px 0 10px;font-family:'Geist Mono',monospace;font-size:10.5px;letter-spacing:0.12em;color:var(--sub)">AUFNAHME</div>
+            <div style="background:var(--sf);border:1px solid var(--line);border-radius:12px;overflow:hidden">
+              <sc-for list="{{ shortcuts }}" as="sc" hint-placeholder-count="4">
+                <div style="display:flex;align-items:center;gap:14px;padding:14px 18px;border-bottom:1px solid var(--line)">
+                  <div style="flex:1"><div style="font-size:13.5px;font-weight:500">{{ sc.label }}</div><div style="font-size:12px;color:var(--sub);margin-top:2px">{{ sc.desc }}</div></div>
+                  <div style="display:flex;align-items:center;gap:5px;flex-shrink:0">
+                    <sc-for list="{{ sc.keys }}" as="k" hint-placeholder-count="2">
+                      <span style="font-family:'Geist Mono',monospace;font-size:12px;background:var(--hov);border:1px solid var(--line);border-radius:6px;padding:4px 9px;white-space:nowrap">{{ k.k }}</span>
+                    </sc-for>
+                  </div>
+                  <button style="border:none;background:none;color:var(--ac);font-size:12.5px;font-weight:600;font-family:'Geist',sans-serif;cursor:pointer;flex-shrink:0" style-hover="text-decoration:underline">Ändern</button>
+                </div>
+              </sc-for>
+              <div style="display:flex;align-items:center;gap:14px;padding:14px 18px">
+                <div style="flex:1"><div style="font-size:13.5px;font-weight:500">Modus</div><div style="font-size:12px;color:var(--sub);margin-top:2px">{{ modeDesc }}</div></div>
+                <div style="display:inline-flex;gap:2px;background:var(--bg);border:1px solid var(--line);border-radius:9px;padding:3px">
+                  <sc-for list="{{ modes }}" as="m" hint-placeholder-count="2">
+                    <button onClick="{{ m.go }}" style="border:none;border-radius:7px;padding:6px 13px;font-size:12.5px;font-family:'Geist',sans-serif;font-weight:{{ m.w }};cursor:pointer;white-space:nowrap;background:{{ m.bg }};color:{{ m.c }}">{{ m.label }}</button>
+                  </sc-for>
+                </div>
+              </div>
+            </div>
+            <div style="margin:26px 0 10px;font-family:'Geist Mono',monospace;font-size:10.5px;letter-spacing:0.12em;color:var(--sub)">EINGABE</div>
+            <div style="background:var(--sf);border:1px solid var(--line);border-radius:12px;overflow:hidden">
+              <div style="display:flex;align-items:center;gap:14px;padding:14px 18px;border-bottom:1px solid var(--line)">
+                <div style="flex:1;font-size:13.5px;font-weight:500">Mikrofon</div>
+                <select value="{{ mic }}" onChange="{{ setMic }}" style="border:1px solid var(--line);background:var(--bg);color:var(--ink);border-radius:8px;padding:7px 10px;font-family:'Geist',sans-serif;font-size:12.5px;outline:none" style-focus="border-color:var(--ac)">
+                  <option>MacBook Pro Mikrofon</option><option>AirPods Pro</option><option>Shure MV7</option>
+                </select>
+              </div>
+              <div style="display:flex;align-items:center;gap:14px;padding:14px 18px">
+                <div style="flex:1;font-size:13.5px;font-weight:500">Sprache</div>
+                <select value="{{ lang }}" onChange="{{ setLang }}" style="border:1px solid var(--line);background:var(--bg);color:var(--ink);border-radius:8px;padding:7px 10px;font-family:'Geist',sans-serif;font-size:12.5px;outline:none" style-focus="border-color:var(--ac)">
+                  <option>Automatisch erkennen</option><option>Deutsch</option><option>Englisch</option>
+                </select>
+              </div>
+            </div>
+            <div style="margin:26px 0 10px;font-family:'Geist Mono',monospace;font-size:10.5px;letter-spacing:0.12em;color:var(--sub)">VERHALTEN</div>
+            <div style="background:var(--sf);border:1px solid var(--line);border-radius:12px;overflow:hidden">
+              <sc-for list="{{ toggles }}" as="tg" hint-placeholder-count="3">
+                <div style="display:flex;align-items:center;gap:14px;padding:14px 18px;border-bottom:{{ tg.bb }}">
+                  <div style="flex:1"><div style="font-size:13.5px;font-weight:500">{{ tg.label }}</div><div style="font-size:12px;color:var(--sub);margin-top:2px">{{ tg.desc }}</div></div>
+                  <button onClick="{{ tg.flip }}" style="width:40px;height:24px;border-radius:999px;border:none;cursor:pointer;position:relative;background:{{ tg.track }};transition:background .15s" style-focus="outline:2px solid var(--ac);outline-offset:2px">
+                    <span style="position:absolute;top:3px;width:18px;height:18px;border-radius:999px;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,0.25);transition:left .15s;left:{{ tg.knob }}"></span>
+                  </button>
+                </div>
+              </sc-for>
+            </div>
+            <div style="margin:26px 0 10px;font-family:'Geist Mono',monospace;font-size:10.5px;letter-spacing:0.12em;color:var(--sub)">DARSTELLUNG</div>
+            <div style="background:var(--sf);border:1px solid var(--line);border-radius:12px;overflow:hidden">
+              <div style="display:flex;align-items:center;gap:14px;padding:14px 18px">
+                <div style="flex:1"><div style="font-size:13.5px;font-weight:500">Erscheinungsbild</div><div style="font-size:12px;color:var(--sub);margin-top:2px">Auch über den Mond unten in der Seitenleiste umschaltbar</div></div>
+                <div style="display:inline-flex;gap:2px;background:var(--bg);border:1px solid var(--line);border-radius:9px;padding:3px">
+                  <sc-for list="{{ themeModes }}" as="tm" hint-placeholder-count="2">
+                    <button onClick="{{ tm.go }}" style="border:none;border-radius:7px;padding:6px 13px;font-size:12.5px;font-family:'Geist',sans-serif;font-weight:{{ tm.w }};cursor:pointer;white-space:nowrap;background:{{ tm.bg }};color:{{ tm.c }}">{{ tm.label }}</button>
+                  </sc-for>
+                </div>
+              </div>
+            </div>
+            <div style="margin:26px 0 10px;font-family:'Geist Mono',monospace;font-size:10.5px;letter-spacing:0.12em;color:var(--sub)">ÜBER</div>
+            <div style="background:var(--sf);border:1px solid var(--line);border-radius:12px;overflow:hidden">
+              <div style="display:flex;align-items:center;gap:14px;padding:14px 18px;border-bottom:1px solid var(--line)">
+                <div style="flex:1"><div style="font-size:13.5px;font-weight:500">Version</div><div style="font-size:12px;color:var(--sub);margin-top:2px">{{ verNote }}</div></div>
+                <span style="font-family:'Geist Mono',monospace;font-size:12px;background:var(--hov);border:1px solid var(--line);border-radius:6px;padding:4px 10px;white-space:nowrap;flex-shrink:0">V 0.9 · AKTE 001</span>
+              </div>
+              <div style="display:flex;align-items:center;gap:14px;padding:14px 18px">
+                <div style="flex:1"><div style="font-size:13.5px;font-weight:500">Updates</div><div style="font-size:12px;color:var(--sub);margin-top:2px">Die neueste Version liegt immer im GitHub-Repo</div></div>
+                <a href="https://github.com/leomcguire/stasi" target="_blank" rel="noopener" style="display:inline-flex;align-items:center;gap:7px;border:1px solid var(--line);background:var(--bg);color:var(--ink);border-radius:8px;padding:7px 14px;font-size:12.5px;font-weight:500;text-decoration:none;white-space:nowrap" style-hover="background:var(--hov);text-decoration:none">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12 M7 10l5 5 5-5 M4 21h16"></path></svg>
+                  Auf GitHub prüfen
+                </a>
+              </div>
+            </div>
+            <div style="margin-top:18px;font-size:12px;color:var(--sub);line-height:1.6;text-wrap:pretty">{{ privacyNote }}</div>
+          </div>
+        </sc-if>
+
+        <sc-if value="{{ isKonto }}" hint-placeholder-val="{{ false }}">
+          <div data-screen-label="Konto" style="max-width:600px">
+            <h1 style="margin:0;font-size:28px;font-weight:600;letter-spacing:-0.01em">Konto</h1>
+            <div style="font-size:13.5px;color:var(--sub);margin-top:6px">{{ kontoSub }}</div>
+            <div style="background:var(--sf);border:1px solid var(--line);border-radius:12px;padding:20px;display:flex;gap:20px;align-items:center;margin-top:22px">
+              <image-slot id="stasi-avatar" shape="circle" placeholder="Bild" style="width:76px;height:76px;flex-shrink:0"></image-slot>
+              <div style="flex:1;min-width:0">
+                <div style="font-family:'Geist Mono',monospace;font-size:10.5px;letter-spacing:0.1em;color:var(--sub)">NAME</div>
+                <input value="{{ userName }}" onChange="{{ setUserName }}" placeholder="Wie sollen wir dich nennen?" style="margin-top:6px;width:100%;box-sizing:border-box;border:1px solid var(--line);background:var(--bg);color:var(--ink);border-radius:9px;padding:9px 14px;font-family:'Geist',sans-serif;font-size:14px;outline:none" style-focus="border-color:var(--ac)">
+                <div style="font-size:12px;color:var(--sub);margin-top:8px">Kein Login, keine E-Mail — alles bleibt auf diesem Mac.</div>
+              </div>
+            </div>
+            <div style="margin:26px 0 10px;font-family:'Geist Mono',monospace;font-size:10.5px;letter-spacing:0.12em;color:var(--sub)">SIGNATUR</div>
+            <div style="background:var(--sf);border:1px solid var(--line);border-radius:12px;padding:18px 20px">
+              <div style="font-family:'Geist Mono',monospace;font-size:11.5px;letter-spacing:0.03em">Stasi · v 0.9 · Akte 001</div>
+              <div style="font-size:12.5px;color:var(--sub);margin-top:6px;line-height:1.6;text-wrap:pretty">{{ signatureNote }}</div>
+              <a href="https://meder.dev" target="_blank" rel="noopener" style="display:inline-block;margin-top:10px;font-size:12.5px;font-weight:600;color:var(--ac)">meder.dev ↗</a>
+            </div>
+          </div>
+        </sc-if>
+      </div>
+
+      <sc-if value="{{ recording }}" hint-placeholder-val="{{ false }}">
+        <div style="position:absolute;bottom:22px;left:50%;transform:translateX(-50%);background:var(--pill);color:var(--pillInk);border-radius:999px;display:flex;align-items:center;gap:14px;padding:12px 20px;box-shadow:0 12px 36px rgba(0,0,0,0.35);animation:stasiUp .25s ease;z-index:40;max-width:560px">
+          <button onClick="{{ cancelRec }}" title="Verwerfen" style="width:28px;height:28px;border-radius:999px;border:none;background:rgba(255,255,255,0.14);color:var(--pillInk);cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0" style-hover="background:rgba(255,255,255,0.24)">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M6 6l12 12 M18 6 6 18"></path></svg>
+          </button>
+          <span style="width:9px;height:9px;border-radius:999px;background:#FF4D2E;animation:stasiPulse 1.1s ease-in-out infinite;flex-shrink:0"></span>
+          <div style="display:flex;align-items:center;gap:3px;height:20px;flex-shrink:0">
+            <sc-for list="{{ waveBars }}" as="b" hint-placeholder-count="12">
+              <span style="width:3px;height:{{ b.h }}px;border-radius:2px;background:var(--acPill);transform-origin:center;animation:stasiBar {{ b.s }}s ease-in-out {{ b.d }}s infinite"></span>
+            </sc-for>
+          </div>
+          <div style="font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;direction:rtl;text-align:left;max-width:280px;opacity:0.9"><bdi>{{ liveText }}</bdi></div>
+          <span style="font-family:'Geist Mono',monospace;font-size:11.5px;opacity:0.6;flex-shrink:0;font-variant-numeric:tabular-nums">{{ recTime }}</span>
+          <span style="font-family:'Geist Mono',monospace;font-size:10.5px;color:var(--acPill);flex-shrink:0">→ Notizen</span>
+          <button onClick="{{ finishRec }}" title="Beenden und einfügen" style="width:28px;height:28px;border-radius:999px;border:none;background:var(--pillInk);color:var(--pill);cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0" style-hover="filter:brightness(0.92)">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M5 13l4 4 10-10"></path></svg>
+          </button>
+        </div>
+      </sc-if>
+      <sc-if value="{{ toastOn }}" hint-placeholder-val="{{ false }}">
+        <div style="position:absolute;bottom:22px;left:50%;transform:translateX(-50%);background:var(--pill);color:var(--pillInk);border-radius:999px;padding:10px 20px;font-size:13px;box-shadow:0 12px 36px rgba(0,0,0,0.35);animation:stasiUp .25s ease;z-index:40">{{ toast }}</div>
+      </sc-if>
+    </div>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;theme&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;default&quot;:&quot;Hell&quot;,&quot;options&quot;:[&quot;Hell&quot;,&quot;Dunkel&quot;],&quot;tsType&quot;:&quot;string&quot;,&quot;section&quot;:&quot;Darstellung&quot;},&quot;accent&quot;:{&quot;editor&quot;:&quot;color&quot;,&quot;default&quot;:&quot;#1D4E89&quot;,&quot;options&quot;:[&quot;#1A1917&quot;,&quot;#D64500&quot;,&quot;#C8102E&quot;,&quot;#8A1E1E&quot;,&quot;#B5892E&quot;,&quot;#2D6A4F&quot;,&quot;#1D4E89&quot;,&quot;#5B4A8A&quot;],&quot;tsType&quot;:&quot;string&quot;,&quot;section&quot;:&quot;Darstellung&quot;},&quot;irony&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true,&quot;tsType&quot;:&quot;boolean&quot;,&quot;section&quot;:&quot;Copy — Augenzwinkern an/aus&quot;}}">
+const THEMES = {
+  hell:   { bg:'#F4F4F2', sf:'#FFFFFF', ink:'#1A1917', sub:'#716E67', line:'#E4E2DC', hov:'#ECEAE5', desk:'#E3E1DA', pill:'#1A1917', pillInk:'#F4F2ED' },
+  dunkel: { bg:'#252420', sf:'#2F2E2A', ink:'#F0EEE9', sub:'#A3A099', line:'#3D3B36', hov:'#383631', desk:'#1B1A18', pill:'#403E38', pillInk:'#F2F0EB' },
+};
+const DEMO = 'Kurze Notiz an Philipp: die neue Kundendomain ist live, der Funnel ist dupliziert und die Nameserver zeigen bereits auf OnePage. Morgen früh checke ich das Tracking.';
+let UID = 100;
+
+class Component extends DCLogic {
+  state = {
+    theme: null, nav: 'bericht', expandedId: 1, copiedId: null,
+    userName: 'Leo', playingId: null, menuId: null,
+    editTermOrig: null, editTermVal: '', editReplId: null, editReplFrom: '', editReplTo: '', avatarSet: false,
+    recording: false, liveWords: [], recSecs: 0, toast: '',
+    dictTab: 'begriffe', newTerm: '', newShort: '', newLong: '',
+    terms: ['McGuire', 'OnePage', 'Leadgen', 'Retargeting', 'Lookalike', 'Creator-Ads', 'GoDaddy'],
+    repl: [
+      { id: 1, from: 'lg', to: 'Liebe Grüße' },
+      { id: 2, from: 'mfg', to: 'Mit freundlichen Grüßen' },
+      { id: 3, from: 'zb', to: 'zum Beispiel' },
+    ],
+    learned: [
+      { id: 1, term: 'Philipp', note: '7× DIKTIERT · QUELLE: SLACK' },
+      { id: 2, term: 'Skalierungsphase', note: '4× DIKTIERT · QUELLE: MAIL' },
+      { id: 3, term: 'CTR', note: '3× DIKTIERT · QUELLE: NOTIZEN' },
+    ],
+    transcripts: [
+      { id: 1, when: 'Heute 09:41', app: 'Mail', dur: '0:38', words: 61, text: 'Hallo Marie, danke für die Unterlagen von gestern. Ich habe alles durchgesehen und wir können den Funnel so freigeben. Zwei Kleinigkeiten noch: das Logo im Header ist zu klein und im zweiten Abschnitt fehlt der Hinweis auf das Erstgespräch. Wenn das drin ist, geht die Kampagne Montag live. Liebe Grüße, Leo' },
+      { id: 2, when: 'Heute 08:15', app: 'Slack', dur: '0:12', words: 19, text: 'Kurzes Update: der Funnel für den Neukunden ist live, Tracking läuft, erste Leads sollten heute Nachmittag reinkommen.' },
+      { id: 3, when: 'Gestern 17:03', app: 'Notizen', dur: '0:51', words: 82, text: 'Idee für die neue Kampagne: statt klassischer Testimonials nehmen wir kurze Voice-Memos der Kunden und legen den Text als Untertitel darüber. Wirkt ehrlicher als gestellte Videos und lässt sich in zwei Tagen produzieren. Budgetrahmen bleibt gleich, wir tauschen nur die Creatives. Mit Philipp besprechen, ob wir das zuerst beim Zahnarzt-Kunden testen oder direkt breit ausrollen.' },
+      { id: 4, when: 'Gestern 11:26', app: 'Claude', dur: '0:24', words: 38, text: 'Schreib mir einen Entwurf für eine Follow-up-Mail an Leads, die das Erstgespräch nicht gebucht haben. Ton: locker, direkt, kein Vertriebssprech. Maximal fünf Sätze und eine klare Handlungsaufforderung am Ende.' },
+      { id: 5, when: 'Fr 14:52', app: 'Mail', dur: '0:31', words: 47, text: 'Hi Jonas, die Domain für euren Funnel ist eingerichtet und mit Meta verknüpft. Die Verifizierung ist durch, ihr könnt ab sofort Kampagnen darüber schalten. Bei Fragen einfach kurz anrufen. Beste Grüße aus Hamburg.' },
+    ],
+    hotkeyMode: 'push', mic: 'MacBook Pro Mikrofon', lang: 'Automatisch erkennen',
+    sound: true, autostart: true, ai: true,
+  };
+
+  effTheme() { return this.state.theme ?? (this.props.theme === 'Dunkel' ? 'dunkel' : 'hell'); }
+  applyVars() {
+    const el = this.deskEl; if (!el) return;
+    const t = THEMES[this.effTheme()];
+    Object.entries(t).forEach(([k, v]) => el.style.setProperty('--' + k, v));
+    const acc = this.props.accent ?? '#D64500';
+    el.style.setProperty('--ac', this.effTheme() === 'dunkel' ? 'color-mix(in oklab, ' + acc + ' 62%, #E8ECF2 38%)' : acc);
+  }
+  componentDidMount() { this.applyVars(); this.checkAvatar(); }
+  checkAvatar() {
+    fetch('.image-slots.state.json').then(r => r.ok ? r.json() : null).then(j => {
+      const v = j && j['stasi-avatar'];
+      const has = !!(v && (typeof v === 'string' ? v : v.u));
+      if (has !== this.state.avatarSet) this.setState({ avatarSet: has });
+    }).catch(() => {});
+  }
+  componentDidUpdate() { this.applyVars(); }
+  componentWillUnmount() { clearInterval(this.recInt); clearInterval(this.timeInt); clearTimeout(this.toastTo); }
+
+  simulate = () => {
+    if (this.state.recording) return;
+    const words = DEMO.split(' ');
+    let i = 0;
+    this.setState({ recording: true, liveWords: [], recSecs: 0 });
+    this.timeInt = setInterval(() => this.setState(s => ({ recSecs: s.recSecs + 1 })), 1000);
+    this.recInt = setInterval(() => {
+      i++;
+      this.setState({ liveWords: words.slice(0, i) });
+      if (i >= words.length) {
+        clearInterval(this.recInt); clearInterval(this.timeInt);
+        this.finishTo = setTimeout(() => this.finishRec(), 650);
+      }
+    }, 150);
+  };
+  finishRec = () => {
+    if (!this.state.recording) return;
+    clearInterval(this.recInt); clearInterval(this.timeInt); clearTimeout(this.finishTo);
+    const txt = this.state.liveWords.join(' ');
+    if (!txt) { this.cancelRec(); return; }
+    const secs = this.state.recSecs;
+    const nt = { id: ++UID, when: 'Heute · jetzt', app: 'Notizen', dur: '0:' + String(secs).padStart(2, '0'), words: this.state.liveWords.length, text: txt };
+    this.setState(s => ({ recording: false, transcripts: [nt, ...s.transcripts] }));
+    this.showToast('Protokolliert. In Notizen eingefügt ✓');
+  };
+  cancelRec = () => {
+    clearInterval(this.recInt); clearInterval(this.timeInt); clearTimeout(this.finishTo);
+    this.setState({ recording: false, liveWords: [] });
+    this.showToast('Aufnahme verworfen');
+  };
+  showToast(msg) {
+    clearTimeout(this.toastTo);
+    this.setState({ toast: msg });
+    this.toastTo = setTimeout(() => this.setState({ toast: '' }), 2600);
+  }
+  download(t, ext) {
+    const body = ext === 'md' ? '# Protokoll · ' + t.when + '\n\n' + t.text + '\n' : t.text + '\n';
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([body], { type: 'text/plain' }));
+    a.download = 'stasi-protokoll.' + ext; a.click(); URL.revokeObjectURL(a.href);
+  }
+
+  renderVals() {
+    const s = this.state, p = this.props;
+    const irony = p.irony ?? true;
+    const theme = this.effTheme();
+    const nav = (id) => () => { this.setState({ nav: id }); this.checkAvatar(); };
+    const icons = {
+      bericht: 'M5 20v-6 M11 20V6 M17 20v-9 M3 21h18',
+      protokolle: 'M6 3h9l4 4v14H6z M9 11h7 M9 15h7',
+      wb: 'M4 5a2 2 0 0 1 2-2h14v16H6a2 2 0 0 0-2 2V5z M8 7h8',
+      settings: 'M4 7h16 M4 17h16 M15 5v4 M9 15v4',
+      konto: 'M12 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8z M4 21c0-4 3.6-6 8-6s8 2 8 6',
+    };
+    const navItems = [
+      { id: 'bericht', label: irony ? 'Der Bericht' : 'Übersicht', icon: icons.bericht },
+      { id: 'protokolle', label: 'Protokolle', icon: icons.protokolle },
+      { id: 'wb', label: 'Wörterbuch', icon: icons.wb },
+      { id: 'settings', label: 'Einstellungen', icon: icons.settings },
+      { id: 'konto', label: 'Konto', icon: icons.konto },
+    ].map(n => ({ ...n, go: nav(n.id), bg: s.nav === n.id ? 'var(--acS)' : 'transparent', c: s.nav === n.id ? 'var(--ac)' : 'var(--ink)', w: s.nav === n.id ? 600 : 450 }));
+
+    const lastBB = (arr, i) => i === arr.length - 1 ? 'none' : '1px solid var(--line)';
+    const transcripts = s.transcripts.map((t, i, arr) => ({
+      bb: lastBB(arr, i),
+      ...t,
+      title: t.text.split(' ').slice(0, 9).join(' ') + ' …',
+      meta: t.dur + ' · ' + t.words + ' Wörter',
+      cl: s.expandedId === t.id ? 99 : 3,
+      playIcon: s.playingId === t.id ? 'M7 7h10v10H7z' : 'M8 5.5v13l11-6.5z',
+      playC: s.playingId === t.id ? 'var(--ac)' : 'var(--sub)',
+      copyIcon: s.copiedId === t.id ? 'M5 13l4 4 10-10' : 'M9 9h11v11H9z M5 15H4V4h11v1',
+      copyC: s.copiedId === t.id ? 'var(--ac)' : 'var(--sub)',
+      menuOpen: s.menuId === t.id,
+      open: () => this.setState({ expandedId: s.expandedId === t.id ? null : t.id }),
+      play: () => this.setState({ playingId: s.playingId === t.id ? null : t.id }),
+      menu: () => this.setState({ menuId: s.menuId === t.id ? null : t.id }),
+      copy: () => { navigator.clipboard && navigator.clipboard.writeText(t.text); this.setState({ copiedId: t.id }); setTimeout(() => this.setState({ copiedId: null }), 1600); },
+      extract: () => { this.setState({ menuId: null }); this.showToast('Audio extrahiert — stasi-audio.wav (Demo)'); },
+      exportTxt: () => { this.setState({ menuId: null }); this.download(t, 'txt'); },
+      exportMd: () => { this.setState({ menuId: null }); this.download(t, 'md'); },
+      del: () => this.setState(st => ({ menuId: null, transcripts: st.transcripts.filter(x => x.id !== t.id) })),
+    }));
+
+    const dictTabs = [
+      { id: 'begriffe', label: 'Begriffe' }, { id: 'repl', label: 'Ersetzungen' }, { id: 'auto', label: 'Auto-gelernt' },
+    ].map(d => ({ ...d, go: () => this.setState({ dictTab: d.id }), bg: s.dictTab === d.id ? 'var(--acS)' : 'transparent', c: s.dictTab === d.id ? 'var(--ac)' : 'var(--sub)', w: s.dictTab === d.id ? 600 : 450 }));
+
+    const modes = [
+      { id: 'push', label: 'Push-to-talk' }, { id: 'toggle', label: 'Umschalten' },
+    ].map(m => ({ ...m, go: () => this.setState({ hotkeyMode: m.id }), bg: s.hotkeyMode === m.id ? 'var(--acS)' : 'transparent', c: s.hotkeyMode === m.id ? 'var(--ac)' : 'var(--sub)', w: s.hotkeyMode === m.id ? 600 : 450 }));
+
+    const mkToggle = (key, label, desc) => ({
+      label, desc, flip: () => this.setState(st => ({ [key]: !st[key] })),
+      track: s[key] ? 'var(--ac)' : 'var(--line)', knob: s[key] ? '19px' : '3px',
+    });
+
+    const barsSeed = [10, 16, 8, 19, 13, 7, 17, 11, 15, 9, 18, 12];
+    const mm = Math.floor(s.recSecs / 60), ss = String(s.recSecs % 60).padStart(2, '0');
+
+    return {
+      deskRef: (el) => { this.deskEl = el; this.applyVars(); },
+      navItems,
+      tagline: irony ? 'Wir hören zu.' : 'Sprich. Es wird Text.',
+      themeIcon: theme === 'hell' ? 'M21 12.8A9 9 0 1 1 11.2 3 7 7 0 0 0 21 12.8z' : 'M12 4V2 M12 22v-2 M4 12H2 M22 12h-2 M5.6 5.6 4.2 4.2 M19.8 19.8l-1.4-1.4 M18.4 5.6l1.4-1.4 M4.2 19.8l1.4-1.4 M12 17a5 5 0 1 0 0-10 5 5 0 0 0 0 10z',
+      themeTitle: theme === 'hell' ? 'Zu Dunkel wechseln' : 'Zu Hell wechseln',
+      toggleTheme: () => this.setState({ theme: theme === 'hell' ? 'dunkel' : 'hell' }),
+      themeModes: [
+        { id: 'hell', label: 'Hell' }, { id: 'dunkel', label: 'Dunkel' },
+      ].map(m => ({ ...m, go: () => this.setState({ theme: m.id }), bg: theme === m.id ? 'var(--acS)' : 'transparent', c: theme === m.id ? 'var(--ac)' : 'var(--sub)', w: theme === m.id ? 600 : 450 })),
+      greet: 'Guten Morgen, ' + (s.userName.trim() || 'du') + '.',
+      userName: s.userName, setUserName: (e) => this.setState({ userName: e.target.value }),
+      isKonto: s.nav === 'konto',
+      kontoSub: irony ? 'Deine Akte. Ausnahmsweise führst du sie selbst.' : 'Dein Profil — lokal gespeichert.',
+      signatureNote: irony ? 'Gebaut von meder.dev. Weitergeben erlaubt. Zuhören sowieso.' : 'Gebaut von meder.dev. Die neueste Version gibt es im GitHub-Repo.',
+      verNote: irony ? 'Aktenzeichen wird bei jedem Release fortgeschrieben' : 'Installierte Version',
+      isBericht: s.nav === 'bericht', isProtokolle: s.nav === 'protokolle', isWb: s.nav === 'wb', isSettings: s.nav === 'settings',
+      kicker: irony ? 'Tagesbericht · Montag, 24. August' : 'Montag, 24. August',
+      statsKicker: irony ? 'Überwachungsbericht KW 35 — lückenlos erfasst' : 'Wochenbericht KW 35',
+      stats: [
+        { v: '12.480', l: 'WÖRTER / WOCHE', d: '+18 % ggü. KW 34' },
+        { v: '162', l: 'WÖRTER / MINUTE', d: '3,4× schneller als Tippen' },
+        { v: '2:14 Std', l: 'ZEIT GESPART', d: 'diese Woche' },
+        { v: '11 Tage', l: 'SERIE', d: irony ? 'ohne eine Lücke' : 'in Folge' },
+      ],
+      days: [
+        { d: 'Mo', h: 58 }, { d: 'Di', h: 82 }, { d: 'Mi', h: 44 }, { d: 'Do', h: 95 }, { d: 'Fr', h: 70 }, { d: 'Sa', h: 16 }, { d: 'So', h: 8 },
+      ].map((x, i) => ({ ...x, bg: i === 3 ? 'var(--ac)' : 'var(--acS)' })),
+      hotkeyHint: s.hotkeyMode === 'push' ? 'gedrückt halten und sprechen — loslassen fügt den Text ein.' : 'drücken, sprechen, nochmal drücken — der Text wird eingefügt.',
+      simulate: this.simulate,
+      goProtokolle: nav('protokolle'),
+      recent: transcripts.slice(0, 3).map(t => ({ time: t.when.replace('Heute ', '').replace('Gestern ', 'Gest. '), title: t.title, app: t.app })),
+      libSub: irony ? s.transcripts.length + ' Protokolle · alles dokumentiert, nichts vergessen.' : s.transcripts.length + ' Protokolle',
+      transcripts,
+      dictTabs,
+      tabBegriffe: s.dictTab === 'begriffe', tabRepl: s.dictTab === 'repl', tabAuto: s.dictTab === 'auto',
+      newTerm: s.newTerm, setNewTerm: (e) => this.setState({ newTerm: e.target.value }),
+      termKey: (e) => { if (e.key === 'Enter') this.addTerm(); },
+      addTerm: () => this.addTerm(),
+      goKonto: nav('konto'),
+      avatarSet: s.avatarSet, noAvatar: !s.avatarSet,
+      userInitial: (s.userName.trim() || 'S').charAt(0).toUpperCase(),
+      termChips: s.terms.map((term, i, arr) => ({
+        term, bb: lastBB(arr, i),
+        editing: s.editTermOrig === term,
+        notEditing: s.editTermOrig !== term,
+        edit: () => this.setState({ editTermOrig: term, editTermVal: term }),
+        del: () => this.setState(st => ({ terms: st.terms.filter(x => x !== term) })),
+      })),
+      editTermVal: s.editTermVal,
+      setEditTermVal: (e) => this.setState({ editTermVal: e.target.value }),
+      editTermKey: (e) => { if (e.key === 'Enter') this.saveTermEdit(); if (e.key === 'Escape') this.setState({ editTermOrig: null }); },
+      saveEditTerm: () => this.saveTermEdit(),
+      newShort: s.newShort, newLong: s.newLong,
+      setNewShort: (e) => this.setState({ newShort: e.target.value }),
+      setNewLong: (e) => this.setState({ newLong: e.target.value }),
+      addRepl: () => { if (!s.newShort.trim() || !s.newLong.trim()) return; this.setState(st => ({ repl: [...st.repl, { id: ++UID, from: st.newShort.trim(), to: st.newLong.trim() }], newShort: '', newLong: '' })); },
+      replRows: s.repl.map((r, i, arr) => ({
+        ...r, bb: lastBB(arr, i),
+        editing: s.editReplId === r.id, notEditing: s.editReplId !== r.id,
+        edit: () => this.setState({ editReplId: r.id, editReplFrom: r.from, editReplTo: r.to }),
+        del: () => this.setState(st => ({ repl: st.repl.filter(x => x.id !== r.id) })),
+      })),
+      editReplFrom: s.editReplFrom, editReplTo: s.editReplTo,
+      setEditReplFrom: (e) => this.setState({ editReplFrom: e.target.value }),
+      setEditReplTo: (e) => this.setState({ editReplTo: e.target.value }),
+      saveEditRepl: () => this.setState(st => ({
+        repl: st.repl.map(x => x.id === st.editReplId ? { ...x, from: st.editReplFrom.trim() || x.from, to: st.editReplTo.trim() || x.to } : x),
+        editReplId: null,
+      })),
+      autoNote: irony ? 'Begriffe, die Stasi beim Zuhören aufgeschnappt hat. Es hört ja ohnehin alles.' : 'Begriffe, die beim Diktieren häufig vorkamen.',
+      noTranscripts: s.transcripts.length === 0,
+      emptyLibNote: irony ? 'Die Akte ist leer. Das kommt selten vor.' : 'Diktiere etwas — es landet hier.',
+      noLearned: s.learned.length === 0,
+      emptyLearnedNote: irony ? 'Nichts Neues. Stasi hört weiter zu.' : 'Neue Begriffe erscheinen hier automatisch.',
+      learnedRows: s.learned.map((l, i, arr) => ({
+        ...l, bb: lastBB(arr, i),
+        keep: () => this.setState(st => ({ terms: [...st.terms, l.term], learned: st.learned.filter(x => x.id !== l.id) })),
+        drop: () => this.setState(st => ({ learned: st.learned.filter(x => x.id !== l.id) })),
+      })),
+      shortcuts: [
+        { label: 'Push-to-talk', desc: 'Halten für kurze Diktate', keys: ['⌥', 'Leertaste'] },
+        { label: 'Hands-free-Modus', desc: 'Startet und stoppt freihändig — für lange Diktate', keys: ['Doppeltipp', 'fn'] },
+        { label: 'Letztes Protokoll einfügen', desc: 'Fügt das zuletzt Diktierte erneut ein', keys: ['⌃', '⌘', 'V'] },
+        { label: 'Letztes Protokoll kopieren', desc: 'Kopiert das zuletzt Diktierte', keys: ['⌃', '⌘', 'C'] },
+      ].map(x => ({ ...x, keys: x.keys.map(k => ({ k })) })),
+      modeDesc: s.hotkeyMode === 'push' ? 'Halten zum Sprechen, Loslassen zum Einfügen' : 'Einmal drücken startet, nochmal drücken stoppt',
+      modes,
+      mic: s.mic, setMic: (e) => this.setState({ mic: e.target.value }),
+      lang: s.lang, setLang: (e) => this.setState({ lang: e.target.value }),
+      toggles: [
+        mkToggle('sound', 'Ton-Feedback', 'Dezenter Klick bei Start und Stopp'),
+        mkToggle('ai', 'KI-Nachbearbeitung', 'Entfernt Füllwörter — ähm, äh, quasi'),
+        mkToggle('autostart', 'Autostart', 'Stasi startet beim Anmelden mit'),
+      ].map((t, i, arr) => ({ ...t, bb: lastBB(arr, i) })),
+      privacyNote: irony ? 'Alle Aufnahmen werden lokal auf deinem Mac verarbeitet. Niemand hört mit. Ehrlich. Das wäre ja auch ironisch.' : 'Alle Aufnahmen werden lokal auf deinem Mac verarbeitet.',
+      recording: s.recording,
+      finishRec: this.finishRec, cancelRec: this.cancelRec,
+      waveBars: barsSeed.map((h, i) => ({ h, s: (0.7 + (i % 4) * 0.12).toFixed(2), d: (i * 0.07).toFixed(2) })),
+      liveText: s.liveWords.join(' ') || 'Ich höre …',
+      recTime: mm + ':' + ss,
+      toastOn: !!s.toast, toast: s.toast,
+    };
+  }
+  addTerm() {
+    const v = this.state.newTerm.trim(); if (!v) return;
+    this.setState(st => ({ terms: st.terms.includes(v) ? st.terms : [...st.terms, v], newTerm: '' }));
+  }
+  saveTermEdit() {
+    this.setState(st => {
+      const v = st.editTermVal.trim();
+      return { terms: v ? st.terms.map(t => t === st.editTermOrig ? v : t) : st.terms, editTermOrig: null };
+    });
+  }
+}
+</script>
+</body>
+</html>

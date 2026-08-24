@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+html,body{margin:0;padding:0;background:#F4F4F2}
+a{color:#1D4E89;text-decoration:none}a:hover{text-decoration:underline}
+</style>
+</helmet>
+<div style="min-height:100vh;background:#F4F4F2;font-family:'Geist',sans-serif;color:#1A1917;padding:56px 64px;box-sizing:border-box">
+  <div style="max-width:960px;margin:0 auto">
+    <div style="font-family:'Geist Mono',monospace;font-size:11px;letter-spacing:0.14em;color:#1D4E89;text-transform:uppercase">Stasi · Icon-Set</div>
+    <h1 style="margin:8px 0 0;font-size:28px;font-weight:600;letter-spacing:-0.01em">App-Icon, Menüleiste, Favicon</h1>
+    <div style="font-size:13.5px;color:#716E67;margin-top:6px">Asymmetrische Waveform, Blau mit dezentem Verlauf. Alle Dateien liegen als SVG in <span style="font-family:'Geist Mono',monospace;font-size:12px">assets/</span>.</div>
+
+    <div style="margin:36px 0 12px;font-family:'Geist Mono',monospace;font-size:10.5px;letter-spacing:0.12em;color:#716E67">DOCK-ICON</div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+      <div style="background:#FFFFFF;border:1px solid #E4E2DC;border-radius:12px;padding:28px;display:flex;align-items:flex-end;gap:28px;justify-content:center">
+        <img src="assets/stasi-icon.svg" width="128" height="128" alt="Dock-Icon 128">
+        <img src="assets/stasi-icon.svg" width="64" height="64" alt="Dock-Icon 64">
+        <img src="assets/stasi-icon.svg" width="32" height="32" alt="Dock-Icon 32">
+      </div>
+      <div style="background:#26251F;background:linear-gradient(180deg,#3A3833,#1B1A18);border-radius:12px;padding:28px;display:flex;align-items:flex-end;gap:28px;justify-content:center">
+        <img src="assets/stasi-icon.svg" width="128" height="128" alt="Dock-Icon dunkel 128">
+        <img src="assets/stasi-icon.svg" width="64" height="64" alt="Dock-Icon dunkel 64">
+        <img src="assets/stasi-icon.svg" width="32" height="32" alt="Dock-Icon dunkel 32">
+      </div>
+    </div>
+    <div style="font-size:12px;color:#716E67;margin-top:10px"><a href="assets/stasi-icon.svg" download>stasi-icon.svg</a> · 512 px Master, macOS-Squircle mit Grid-Rand</div>
+
+    <div style="margin:36px 0 12px;font-family:'Geist Mono',monospace;font-size:10.5px;letter-spacing:0.12em;color:#716E67">MENÜLEISTE</div>
+    <div style="display:flex;flex-direction:column;gap:10px">
+      <div style="background:rgba(255,255,255,0.9);border:1px solid #E4E2DC;border-radius:10px;padding:0 16px;height:36px;display:flex;align-items:center;gap:18px;justify-content:flex-end">
+        <span style="font-size:12.5px;color:#716E67">Ruhezustand</span>
+        <div style="flex:1"></div>
+        <img src="assets/stasi-menubar.svg" width="18" height="18" alt="Menüleiste Ruhe">
+        <span style="font-size:12.5px">Mo. 24. Aug. 14:52</span>
+      </div>
+      <div style="background:rgba(255,255,255,0.9);border:1px solid #E4E2DC;border-radius:10px;padding:0 16px;height:36px;display:flex;align-items:center;gap:18px;justify-content:flex-end">
+        <span style="font-size:12.5px;color:#716E67">Aufnahme läuft — roter Punkt</span>
+        <div style="flex:1"></div>
+        <img src="assets/stasi-menubar-recording.svg" width="18" height="18" alt="Menüleiste Aufnahme">
+        <span style="font-size:12.5px">Mo. 24. Aug. 14:52</span>
+      </div>
+      <div style="background:linear-gradient(180deg,#3A3833,#2A2926);border-radius:10px;padding:0 16px;height:36px;display:flex;align-items:center;gap:18px;justify-content:flex-end;color:#F0EEE9">
+        <span style="font-size:12.5px;opacity:0.7">Dunkle Menüleiste (Template-Icon invertiert automatisch)</span>
+        <div style="flex:1"></div>
+        <img src="assets/stasi-menubar.svg" width="18" height="18" alt="Menüleiste dunkel" style="filter:invert(1)">
+        <span style="font-size:12.5px">Mo. 24. Aug. 14:52</span>
+      </div>
+    </div>
+    <div style="font-size:12px;color:#716E67;margin-top:10px"><a href="assets/stasi-menubar.svg" download>stasi-menubar.svg</a> · <a href="assets/stasi-menubar-recording.svg" download>stasi-menubar-recording.svg</a> · 22 px Template (monochrom, macOS färbt selbst)</div>
+
+    <div style="margin:36px 0 12px;font-family:'Geist Mono',monospace;font-size:10.5px;letter-spacing:0.12em;color:#716E67">FAVICON / BROWSER-TAB</div>
+    <div style="background:#FFFFFF;border:1px solid #E4E2DC;border-radius:12px;padding:20px;display:flex;gap:24px;align-items:center">
+      <div style="display:flex;align-items:center;gap:8px;background:#ECEAE5;border-radius:10px 10px 0 0;padding:9px 16px;border:1px solid #E4E2DC;border-bottom:none">
+        <img src="assets/stasi-favicon.svg" width="16" height="16" alt="Favicon 16">
+        <span style="font-size:12.5px">Stasi — Protokolle</span>
+        <span style="color:#716E67;font-size:12px;margin-left:8px">×</span>
+      </div>
+      <img src="assets/stasi-favicon.svg" width="32" height="32" alt="Favicon 32">
+      <img src="assets/stasi-favicon.svg" width="16" height="16" alt="Favicon 16 solo">
+      <div style="flex:1"></div>
+      <div style="font-size:12px;color:#716E67">Reduziert auf 3 Balken — bleibt bei 16 px lesbar</div>
+    </div>
+    <div style="font-size:12px;color:#716E67;margin-top:10px"><a href="assets/stasi-favicon.svg" download>stasi-favicon.svg</a></div>
+
+    <div style="margin-top:36px;font-size:12.5px;color:#716E67;line-height:1.6;text-wrap:pretty">Zurück zur App: <a href="Stasi.dc.html">Stasi.dc.html</a>. Wenn du willst, setze ich die Waveform auch als kleines Logo neben den STASI-Schriftzug in die Sidebar.</div>
+  </div>
+</div>
+</x-dc>
+</body>
+</html>
