@@ -21,6 +21,11 @@ final class PillChromeTests: XCTestCase {
         XCTAssertEqual(PillChrome.pillWidth(for: .pushToTalk), 160)
         XCTAssertEqual(PillChrome.pillWidth(for: .handsFree), 160)
     }
+
+    func testPillGrowsForLiveTranscript() {
+        XCTAssertEqual(PillChrome.pillWidth(for: .pushToTalk, hasPartialText: true), 360)
+        XCTAssertEqual(PillChrome.pillHeight(hasPartialText: true), 58)
+    }
 }
 
 // MARK: - Echter Live-Pegel (Mic-Popover)

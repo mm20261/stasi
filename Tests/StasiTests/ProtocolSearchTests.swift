@@ -8,6 +8,17 @@ import XCTest
 
 final class ProtocolSearchTests: XCTestCase {
 
+    @MainActor
+    func testGlobalSearchRequestSurvivesSectionChange() {
+        let selection = AppSelection()
+
+        selection.beginSearchFromBericht()
+
+        XCTAssertEqual(selection.section, .protokolle)
+        XCTAssertTrue(selection.consumeSearchFocusRequest())
+        XCTAssertFalse(selection.consumeSearchFocusRequest())
+    }
+
     private var calendar: Calendar {
         var c = Calendar(identifier: .gregorian)
         c.timeZone = TimeZone(identifier: "Europe/Berlin")!

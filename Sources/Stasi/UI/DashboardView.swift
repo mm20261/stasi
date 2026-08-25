@@ -590,7 +590,7 @@ struct FirstStartEmptyState: View {
                 .multilineTextAlignment(.center)
 
             HStack(spacing: 10) {
-                Button {} label: {
+                Button { onTry() } label: {
                     Text(Copy.firstStartTryButton)
                         .font(.custom("Geist", size: 13).weight(.semibold))
                         .foregroundColor(.white)

@@ -1,8 +1,8 @@
 import AppKit
-import SwiftUI
 
-// MARK: - Aufnahme-Pill (v2 Mini-Pill, unten mittig, 26px hoch)
-// ✕ · roter Pulsdot · 14 Pegelbalken · Timer · ✓
+// MARK: - Aufnahme-Pill (AppKit, unten mittig)
+// ✕ · roter Pulsdot · 14 Pegelbalken · Timer/Modellstatus · ✓
+// Bei Live-Text wächst sie auf 360 px und zeigt die letzten zwei Zeilen.
 // Bewusst KOMPLETT in AppKit: SwiftUI-Interaktion in manuell verwalteten
 // NSPanels crasht unter macOS 26.6 (Button-Gesture/Executor-Bug).
 
@@ -55,30 +55,52 @@ final class PillController {
     private var pillView: RecordingPillView?
     private var toastPanel: PillPanel?
     private var toastTimer: Timer?
+    private var statusPanel: PillPanel?
 
     private var lastPhase: AppState.Phase = .idle
     private var lastSource: RecordingSource = .pushToTalk
+    private var lastHadPartialText = false
+    private var lastModelReady = true
 
     func sync(phase: AppState.Phase, partialText: String, elapsed: TimeInterval,
-              level: Double, source: RecordingSource) {
+              level: Double, source: RecordingSource, modelReady: Bool) {
         guard let app else { return }
+        let phaseChanged = phase != lastPhase
         let entered = phase == .recording && lastPhase != .recording
         let exited = phase != .recording && lastPhase == .recording
         let sourceChanged = phase == .recording && lastSource != source
+        let hasPartialText = !partialText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let layoutChanged = hasPartialText != lastHadPartialText || modelReady != lastModelReady
         lastPhase = phase
         lastSource = source
+        lastHadPartialText = hasPartialText
+        lastModelReady = modelReady
+
+        if phaseChanged {
+            switch phase {
+            case .transcribing: showStatus(Copy.pillTranscribing)
+            case .injecting: showStatus(Copy.pillInjecting)
+            case .idle, .recording: hideStatus()
+            }
+        }
+
         switch phase {
         case .recording:
             let view = ensurePill(app: app)
             view.applyChrome(for: source)
-            view.update(level: level, secs: elapsed)
-            if entered || sourceChanged {
+            view.update(level: level, secs: elapsed,
+                        partialText: partialText, modelReady: modelReady)
+            if entered || sourceChanged || layoutChanged {
                 if entered {
                     pillPanel?.positionBottomCenter()
                     startAnimation()
                 }
-                pillPanel?.resize(to: NSSize(width: PillChrome.pillWidth(for: source),
-                                             height: 26))
+                pillPanel?.resize(to: NSSize(
+                    width: PillChrome.pillWidth(for: source,
+                                                hasPartialText: hasPartialText,
+                                                modelReady: modelReady),
+                    height: PillChrome.pillHeight(hasPartialText: hasPartialText)
+                ))
                 pillPanel?.orderFront(nil)
             }
         default:
@@ -87,6 +109,23 @@ final class PillController {
                 stopAnimation()
             }
         }
+    }
+
+    /// Generischer Phasenstatus. Block 3A ergänzt im Phase-Switch nur „Poliere…".
+    func showStatus(_ text: String) {
+        let view = StatusViewNS(text: text)
+        if statusPanel == nil {
+            statusPanel = PillPanel(content: view, size: NSSize(width: 190, height: 36))
+        } else {
+            statusPanel?.contentView = view
+        }
+        statusPanel?.resize(to: NSSize(width: 190, height: 36))
+        statusPanel?.positionBottomCenter()
+        statusPanel?.orderFront(nil)
+    }
+
+    func hideStatus() {
+        statusPanel?.orderOut(nil)
     }
 
     /// Toast-Pill nach Abschluss/Verwerfen (v3: 36 px hoch)
@@ -103,7 +142,9 @@ final class PillController {
 
         toastTimer?.invalidate()
         toastTimer = Timer.scheduledTimer(withTimeInterval: 2.6, repeats: false) { [weak self] _ in
-            self?.toastPanel?.orderOut(nil)
+            MainActor.assumeIsolated {
+                self?.toastPanel?.orderOut(nil)
+            }
         }
     }
 
@@ -126,7 +167,9 @@ final class PillController {
     private func startAnimation() {
         guard animationTimer == nil else { return }
         animationTimer = Timer.scheduledTimer(withTimeInterval: 1 / 30, repeats: true) { [weak self] _ in
-            self?.pillView?.tick()
+            MainActor.assumeIsolated {
+                self?.pillView?.tick()
+            }
         }
     }
 
@@ -147,7 +190,11 @@ final class RecordingPillView: NSView {
     private let commitButton = PillCircleButton(symbol: "checkmark", dark: true)
     private let dotView = NSView()
     private let timerLabel = NSTextField(labelWithString: "0:00")
+    private let transcriptLabel = NSTextField(labelWithString: "")
     private var bars: [BarView] = []
+    private var widthConstraint: NSLayoutConstraint!
+    private var heightConstraint: NSLayoutConstraint!
+    private let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
 
     private var t: Double = 0
     private var currentLevel: Double = 0
@@ -174,13 +221,15 @@ final class RecordingPillView: NSView {
             dotView.widthAnchor.constraint(equalToConstant: 5),
             dotView.heightAnchor.constraint(equalToConstant: 5),
         ])
-        let pulse = CABasicAnimation(keyPath: "opacity")
-        pulse.fromValue = 1.0
-        pulse.toValue = 0.35
-        pulse.duration = 1.1
-        pulse.autoreverses = true
-        pulse.repeatCount = .infinity
-        dotView.layer?.add(pulse, forKey: "pulse")
+        if !reduceMotion {
+            let pulse = CABasicAnimation(keyPath: "opacity")
+            pulse.fromValue = 1.0
+            pulse.toValue = 0.35
+            pulse.duration = 1.1
+            pulse.autoreverses = true
+            pulse.repeatCount = .infinity
+            dotView.layer?.add(pulse, forKey: "pulse")
+        }
 
         // Timer
         timerLabel.font = NSFont(name: "Geist Mono", size: 9) ?? .monospacedDigitSystemFont(ofSize: 9, weight: .regular)
@@ -188,6 +237,18 @@ final class RecordingPillView: NSView {
         timerLabel.isBezeled = false
         timerLabel.drawsBackground = false
         timerLabel.alignment = .right
+
+        transcriptLabel.font = NSFont(name: "Geist", size: 11)
+            ?? .systemFont(ofSize: 11, weight: .regular)
+        transcriptLabel.textColor = NSColor.white.withAlphaComponent(0.78)
+        transcriptLabel.isBezeled = false
+        transcriptLabel.drawsBackground = false
+        transcriptLabel.maximumNumberOfLines = 2
+        transcriptLabel.lineBreakMode = .byTruncatingHead
+        transcriptLabel.cell?.truncatesLastVisibleLine = true
+        transcriptLabel.alignment = .left
+        transcriptLabel.isHidden = true
+        transcriptLabel.translatesAutoresizingMaskIntoConstraints = false
 
         // Mini-Waveform: 14 Pegelbalken (2px breit)
         let barsStack = NSStackView(views: [])
@@ -206,23 +267,33 @@ final class RecordingPillView: NSView {
         main.alignment = .centerY
         main.translatesAutoresizingMaskIntoConstraints = false
         addSubview(main)
+        addSubview(transcriptLabel)
+
+        widthConstraint = widthAnchor.constraint(equalToConstant: 160)
+        heightConstraint = heightAnchor.constraint(equalToConstant: 26)
 
         NSLayoutConstraint.activate([
-            widthAnchor.constraint(equalToConstant: 160),
-            heightAnchor.constraint(equalToConstant: 26),
+            widthConstraint,
+            heightConstraint,
             main.centerXAnchor.constraint(equalTo: centerXAnchor),
-            main.centerYAnchor.constraint(equalTo: centerYAnchor),
+            main.topAnchor.constraint(equalTo: topAnchor, constant: 5),
             timerLabel.widthAnchor.constraint(greaterThanOrEqualToConstant: 22),
+            transcriptLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 18),
+            transcriptLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -18),
+            transcriptLabel.topAnchor.constraint(equalTo: main.bottomAnchor, constant: 4),
+            transcriptLabel.bottomAnchor.constraint(lessThanOrEqualTo: bottomAnchor, constant: -5),
         ])
         // Leichtes Schweben (translateY −3px, 3 s) – reine Core Animation,
         // kein Timer, kein Executor-Kontakt.
-        let float = CABasicAnimation(keyPath: "transform.translation.y")
-        float.fromValue = 0
-        float.toValue = -3
-        float.duration = 3
-        float.autoreverses = true
-        float.repeatCount = .infinity
-        layer?.add(float, forKey: "float")
+        if !reduceMotion {
+            let float = CABasicAnimation(keyPath: "transform.translation.y")
+            float.fromValue = 0
+            float.toValue = -3
+            float.duration = 3
+            float.autoreverses = true
+            float.repeatCount = .infinity
+            layer?.add(float, forKey: "float")
+        }
     }
 
     /// v4: ✕ und ✓ nur bei gehaltener Push-to-talk-Taste (Hands-free ohne).
@@ -257,10 +328,24 @@ final class RecordingPillView: NSView {
         onCommit?()
     }
 
-    func update(level: Double, secs: TimeInterval) {
+    func update(level: Double, secs: TimeInterval, partialText: String, modelReady: Bool) {
         currentLevel = level
         let total = Int(secs)
-        timerLabel.stringValue = String(format: "%d:%02d", total / 60, total % 60)
+        timerLabel.stringValue = modelReady
+            ? String(format: "%d:%02d", total / 60, total % 60)
+            : Copy.pillModelLoading
+        let trimmed = partialText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let hasPartialText = !trimmed.isEmpty
+        if transcriptLabel.stringValue != trimmed {
+            transcriptLabel.stringValue = trimmed
+        }
+        transcriptLabel.isHidden = !hasPartialText
+        widthConstraint.constant = PillChrome.pillWidth(
+            for: .pushToTalk,
+            hasPartialText: hasPartialText,
+            modelReady: modelReady
+        )
+        heightConstraint.constant = PillChrome.pillHeight(hasPartialText: hasPartialText)
     }
 
     /// 30 Hz: Waveform-Ballistik. Silenz = komplett flach (2 px, statisch),
@@ -269,6 +354,10 @@ final class RecordingPillView: NSView {
     func tick() {
         t += 1.0 / 30.0
         let l = currentLevel
+        if reduceMotion {
+            bars.forEach { $0.setLevel(l) }
+            return
+        }
         for (i, bar) in bars.enumerated() {
             let p = t * (2.4 + Double(i % 4) * 0.55) + Double(i) * 0.9
             // Mehrkomponenten-Sinus → unregelmäßigere, „echtere" Waveform.
@@ -276,6 +365,39 @@ final class RecordingPillView: NSView {
             bar.setLevel(l * (0.15 + 0.85 * jagged))
         }
     }
+}
+
+// MARK: - Generischer Phasenstatus (AppKit)
+
+@MainActor
+final class StatusViewNS: NSView {
+    init(text: String) {
+        super.init(frame: NSRect(x: 0, y: 0, width: 190, height: 36))
+        wantsLayer = true
+        layer?.backgroundColor = NSColor(
+            red: 0x1A / 255, green: 0x19 / 255, blue: 0x17 / 255, alpha: 1
+        ).cgColor
+        layer?.cornerRadius = 18
+
+        let label = NSTextField(labelWithString: text)
+        label.font = NSFont(name: "Geist", size: 12.5)
+            ?? .systemFont(ofSize: 12.5, weight: .medium)
+        label.textColor = NSColor(
+            red: 0xF4 / 255, green: 0xF2 / 255, blue: 0xED / 255, alpha: 1
+        )
+        label.alignment = .center
+        label.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(label)
+
+        NSLayoutConstraint.activate([
+            widthAnchor.constraint(equalToConstant: 190),
+            heightAnchor.constraint(equalToConstant: 36),
+            label.centerXAnchor.constraint(equalTo: centerXAnchor),
+            label.centerYAnchor.constraint(equalTo: centerYAnchor),
+        ])
+    }
+
+    required init?(coder: NSCoder) { fatalError("nicht unterstützt") }
 }
 
 // MARK: - Bauteile

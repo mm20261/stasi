@@ -73,11 +73,10 @@ struct SettingsWindowView: View {
             rowDivider()
             handsFreeRow
             rowDivider()
+            shortcutActionsRow
+            rowDivider()
             modeRow
             rowDivider()
-            permissionBadgeRow(title: "Eingabe-Überwachung",
-                               granted: app.listenEventGranted)
-            if !app.listenEventGranted { rowDivider() }
             permissionActionRow(title: "Bedienungshilfen",
                                 granted: app.accessibilityGranted)
         }
@@ -238,10 +237,36 @@ struct SettingsWindowView: View {
             }
             Spacer()
             KeyBadge("fn ×2")
-            Text("AKTIV ✓")
-                .font(Theme.Typo.kicker(size: 10))
-                .tracking(0.8)
-                .foregroundColor(Theme.Palette.archivgruen)
+            toggleControl(isOn: Binding(
+                get: { settings.handsFreeOn },
+                set: { app.setHandsFreeEnabled($0) }
+            ))
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 13)
+    }
+
+    private var shortcutActionsRow: some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Letztes Protokoll")
+                    .font(Theme.Typo.zeilenTitel())
+                    .foregroundColor(Theme.Palette.ink)
+                Text("Erneut kopieren oder direkt in das aktive Textfeld einfügen.")
+                    .font(Theme.Typo.secondary(size: 11.5))
+                    .foregroundColor(Theme.Palette.text2)
+            }
+            Spacer()
+            HStack(spacing: 6) {
+                KeyBadge("⌃⌘C")
+                Text("KOPIEREN")
+                    .font(Theme.Typo.kicker(size: 9.5))
+                    .foregroundColor(Theme.Palette.text3)
+                KeyBadge("⌃⌘V")
+                Text("EINFÜGEN")
+                    .font(Theme.Typo.kicker(size: 9.5))
+                    .foregroundColor(Theme.Palette.text3)
+            }
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 13)
@@ -413,7 +438,14 @@ struct SettingsWindowView: View {
             }
             Spacer()
             Picker("", selection: Binding(get: { settings.language },
-                                          set: { settings.language = $0 })) {
+                                          set: {
+                                              settings.language = $0
+                                              Task {
+                                                  await app.prepareModel(
+                                                      for: settings.transcriptionLocale
+                                                  )
+                                              }
+                                          })) {
                 Text("AUTO").tag("auto")
                 Text("DE").tag("de_DE")
                 Text("EN").tag("en_US")
@@ -463,27 +495,31 @@ struct SettingsWindowView: View {
                     .foregroundColor(Theme.Palette.text2)
             }
             Spacer()
-            Button {
-                guard !disabled else { return }
-                isOn.wrappedValue.toggle()
-            } label: {
-                ZStack(alignment: .leading) {
-                    Capsule().fill(isOn.wrappedValue ? Theme.Palette.stempelrot : Theme.Palette.linieInnen)
-                        .frame(width: 40, height: 24)
-                    Circle()
-                        .fill(Theme.Palette.papier)
-                        .frame(width: 18, height: 18)
-                        .shadow(color: .black.opacity(0.15), radius: 1, x: 0, y: 1)
-                        .offset(x: isOn.wrappedValue ? 19 : 3, y: 0)
-                }
-                .contentShape(Capsule())
-            }
-            .buttonStyle(.plain)
-            .opacity(disabled ? 0.45 : 1)
-            .animation(reduceMotion ? nil : Theme.Motion.fast, value: isOn.wrappedValue)
+            toggleControl(isOn: isOn, disabled: disabled)
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 13)
+    }
+
+    private func toggleControl(isOn: Binding<Bool>, disabled: Bool = false) -> some View {
+        Button {
+            guard !disabled else { return }
+            isOn.wrappedValue.toggle()
+        } label: {
+            ZStack(alignment: .leading) {
+                Capsule().fill(isOn.wrappedValue ? Theme.Palette.stempelrot : Theme.Palette.linieInnen)
+                    .frame(width: 40, height: 24)
+                Circle()
+                    .fill(Theme.Palette.papier)
+                    .frame(width: 18, height: 18)
+                    .shadow(color: .black.opacity(0.15), radius: 1, x: 0, y: 1)
+                    .offset(x: isOn.wrappedValue ? 19 : 3, y: 0)
+            }
+            .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .opacity(disabled ? 0.45 : 1)
+        .animation(reduceMotion ? nil : Theme.Motion.fast, value: isOn.wrappedValue)
     }
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion

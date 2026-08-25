@@ -138,6 +138,19 @@ struct OnboardingView: View {
             }
             .padding(.top, 18)
 
+            HStack(spacing: 7) {
+                Circle()
+                    .fill(app.modelReady(for: settings.transcriptionLocale)
+                          ? Theme.Palette.archivgruen : Theme.Palette.text3)
+                    .frame(width: 7, height: 7)
+                Text(app.modelReady(for: settings.transcriptionLocale)
+                     ? "Sprachmodell bereit ✓"
+                     : "Sprachmodell wird vorbereitet…")
+                    .font(Theme.Typo.secondary(size: 11.5))
+                    .foregroundColor(Theme.Palette.text2)
+            }
+            .padding(.top, 12)
+
             navButtons(backTitle: "Zurück", backAction: { model.back() },
                        primaryTitle: "Weiter", primaryAction: { model.next() },
                        primaryDisabled: false)

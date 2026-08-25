@@ -53,9 +53,9 @@ struct ProtocolsView: View {
             .frame(maxWidth: 1080 + 2 * Theme.Metrics.contentPaddingH, alignment: .leading)
         }
         .frame(maxWidth: .infinity, alignment: .center)
-        .overlay(alignment: .topTrailing) { searchShortcutButton.hidden() }
+        .onAppear { focusSearchIfRequested() }
         .onChange(of: selection.searchFocusRequest) { _, _ in
-            searchFocused = true
+            focusSearchIfRequested()
         }
         .onAppear { app.refreshPermissionState() }
     }
@@ -108,10 +108,9 @@ struct ProtocolsView: View {
         )
     }
 
-    /// Unsichtbarer Button, der nur den ⌘F-Shortcut trägt.
-    private var searchShortcutButton: some View {
-        Button { searchFocused = true } label: { EmptyView() }
-            .keyboardShortcut("f", modifiers: .command)
+    private func focusSearchIfRequested() {
+        guard selection.consumeSearchFocusRequest() else { return }
+        searchFocused = true
     }
 
     private var filterChips: some View {

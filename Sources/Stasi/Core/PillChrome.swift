@@ -17,8 +17,14 @@ enum PillChrome {
     }
 
     /// Panel-Breite: Buttons sind immer da.
-    static func pillWidth(for source: RecordingSource) -> CGFloat {
-        160
+    static func pillWidth(for source: RecordingSource, hasPartialText: Bool = false,
+                          modelReady: Bool = true) -> CGFloat {
+        if hasPartialText { return 360 }
+        return modelReady ? 160 : 210
+    }
+
+    static func pillHeight(hasPartialText: Bool) -> CGFloat {
+        hasPartialText ? 58 : 26
     }
 }
 
