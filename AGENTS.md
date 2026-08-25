@@ -44,7 +44,8 @@ App getippt. Komplett **on-device** via macOS-26-`SpeechTranscriber` (EN/DE).
 ## Aktueller Stand (Stand: 25.08.2026 – v3-Look mit V4-Features)
 
 **Funktioniert end-to-end:** Hotkey (rechte ⌘ halten) → Aufnahme → on-device-Transkription
-(EN/DE) → Dictionary-Biasing + Korrektur-Pass → Injection in fokussierte App → Protokoll-
+(EN/DE) → deterministische Nachbearbeitung STANDARD (Zögerlaute, Stotterer, konservative
+Selbstkorrekturen, Diskurs-Füller, Text-Hygiene) → Dictionary-Korrektur → Injection in fokussierte App → Protokoll-
 Historie (persistiert, Play/Export .txt/.md/Audio .wav/Löschen). UI im
 v3-Look (Geist, Verlauf-Hintergrund, 5 Akzent-Presets, weiße Karten r16 + Akzent-Schatten):
 Sidebar mit Icons/Akzent-Aktivzeile + Tooltips eingeklappt, „Der Bericht" (Suchfeld-Topbar,
@@ -52,7 +53,7 @@ Datumszeile, Anleitungsleiste mit Status-Chip „Bereit"/„Hotkey inaktiv", Her
 „Zuletzt diktiert" mit Kopieren/Anhören, „Früher heute"-Einzeiler, Rail mit Leitzahl +
 Deine-Akte), eigener **Insights**-Screen (KW-Leitzahl-Karte, App-Balken in Akzent-Stufen,
 Streak-Heatmap mit Stempel-Badge), **Protokolle** gruppiert nach Tag mit
-Aktenzeichen/WPM/Korrekturen-Badges, Aufnahme-Pill auf **Akzent-Basis** (✕/✓ nur bei PTT,
+Aktenzeichen/WPM/Korrektur-/Poliert-Badges und einsehbarem Rohtext, Aufnahme-Pill auf **Akzent-Basis** (✕/✓ nur bei PTT,
 weg bei Hands-free), zweizeiligem Live-Transkript und sichtbarer Modell-Vorbereitung;
 separate AppKit-Status-Pills zeigen Transkription und Einfügen. **Toasts 36 px**
 („Protokolliert ✓" Stil), **Onboarding 4 Schritte** bei erstem Start + Leerzustand erster Start
@@ -73,13 +74,13 @@ gesetzt – Systemstandard bleibt unangetastet).
 Das Mikrofon-Popover zeigt den echten Systemstandard-Gerätenamen und den Auswahlstatus;
 der frühere kosmetische Fake-Pegel ist entfernt.
 
-**Test-Suite: 204 Tests, 0 Fehler** (`Tests/StasiTests/`; davon 4 Pipeline-E2E gated).
+**Test-Suite: 290 Tests, 0 Fehler** (`Tests/StasiTests/`; davon 4 Pipeline-E2E gated).
 TDD etabliert – bei Änderungen an Logik: erst Test, dann Fix.
 
 ### Bekannte Platzhalter („Bald" im UI)
 - „Auto-gelernt": UI + Store-Mechanik da (`EntryType.learned`, `promote`), aber automatische
   Begriffs-Erkennung beim Diktieren noch NICHT aktiv
-- KI-Nachbearbeitung (Toggle stored, inaktiv)
+- Nachbearbeitung STANDARD ist regelbasiert aktiv; KI-Feinschliff/REFINE folgt erst in Block 3C
 - Sprache „Automatisch" = Systemsprache (SpeechTranscriber kann nicht pro Äußerung erkennen)
 
 ## Architektur
@@ -92,14 +93,16 @@ Sources/Stasi/
 │                             bewusst KEIN MenuBarExtra!)
 ├── Core/
 │   ├── AppState.swift         @MainActor @Observable State-Machine idle→recording→transcribing
-│   │                          →injecting; Modellbereitschaft pro Locale, Hotkey-Modi
+│   │                          →polishing→injecting; Session-Snapshots vor Nachbearbeitung,
+│   │                          Modellbereitschaft pro Locale, Hotkey-Modi
 │   │                          (PTT/Umschalten), Sounds, WAV-Mitschrieb, aktive Zusatz-Shortcuts
 │   │                          (copyLast/insertLast/handsFree), applyRetention
 │   ├── DictationSession.swift @MainActor Besitzer einer Diktat-Session: unveränderliche Snapshots,
 │   │                          Setup/Feed/Consume-Tasks und idempotentes Teardown
 │   ├── SettingsStore.swift    @Observable mit GESPEICHERTEN Properties + didSet-UserDefaults;
 │   │                          Retention-Enum (Nie/1Tag/1Woche/2Wochen/1Monat),
-│   │                          Akzent-Presets (accentHex, Theme.sharedSettings), handsFreeOn;
+│   │                          Akzent-Presets (accentHex, Theme.sharedSettings), handsFreeOn,
+│   │                          postProcessing (AUS/STANDARD, Default STANDARD);
 │   │                          kein Appearance-Setting (App bleibt bewusst Light-only)
 │   ├── AudioCapture.swift     AVAudioEngine-Tap; Render-Thread NUR: lock-geschützter RMS +
 │   │                          thread-safe yield; WAV auf serialer writeQueue
@@ -109,9 +112,15 @@ Sources/Stasi/
 │   │                          aus" in retiredAnalyzers; Session-Guard gegen Cross-Write;
 │   │                          statische Fassade zur Sprachmodell-Vorbereitung
 │   ├── CorrectionEngine.swift Garantierter Korrektur-Pass (siehe Regeln!)
+│   ├── PolishLocale.swift     Reine, strikt getrennte DE-/EN-Regellisten
+│   ├── TextTidy.swift         Reine Whitespace-/Satzzeichen-/Großschreibungs-Hygiene
+│   ├── FillerFilter.swift     Reine Zögerlaut-, Stotter- und Diskursfüller-Pässe
+│   ├── SelfCorrectionResolver.swift  Konservative Rahmenregel + starker Klassen-Fallback
+│   ├── TranscriptPolisher.swift  Orchestriert STANDARD-Pässe und Summary; AUS = alter Korrekturpfad
 │   ├── DictionaryModel.swift  EntryType word/correction/learned + CommonWords-Warnungen
 │   ├── DictionaryStore.swift  ~/Library/Application Support/Stasi/dictionary.json + File-Watcher
-│   ├── TranscriptionRecord.swift  Record-Modell + HistoryStore (history.json, deleteAll/purge)
+│   ├── TranscriptionRecord.swift  Record-Modell inkl. optionaler PolishSummary + HistoryStore
+│   │                          (alte history.json kompatibel, deleteAll/purge)
 │   ├── HotkeyEngine.swift     CGEventTap listen-only (Session-Tap) + ShortcutDetector
 │   │                          (⌃⌘V/⌃⌘C-Chords + Fn-Doppeltipp, pur testbar)
 │   ├── StatsCalculator.swift  Insights-/Rail-Statistik (WPM, Streaks, App-Nutzung, Zeit
@@ -145,7 +154,8 @@ Sources/Stasi/
 
 scripts/make-app.sh            → build/Stasi.app (stabil signiert, Icon aus import/…/icons/anthrazit)
 scripts/gen_icon.swift         → Fallback-Icon-Generator
-Tests/StasiTests/              → 204 Tests (XCTest): DictationSession/HotkeyReenablePolicy/
+Tests/StasiTests/              → 290 Tests (XCTest): TextTidy/FillerFilter/SelfCorrectionResolver/
+                                 TranscriptPolisher/DictationSession/HotkeyReenablePolicy/
                                  AudioCaptureFile/DictionaryWatcher/ThemeV3/CopyV3/
                                  ProtocolSearch/PillChrome/UpdateChecker + Bestand
 ```
@@ -251,7 +261,8 @@ echter, vom Nutzer reproduzierter Bug:
 
 - **`swift test` kann an der Runner-Infra hängen** – zuverlässig:
   `swift build --build-tests && xcrun xctest .build/arm64-apple-macosx/debug/StasiPackageTests.xctest`
-- Suite: 204 Tests, davon Pipeline (2 aktiv + 4 gated), DictationSession (14),
+- Suite: 290 Tests, davon Pipeline (2 aktiv + 4 gated), TextTidy (10), FillerFilter (26),
+  SelfCorrectionResolver (37), TranscriptPolisher (9), DictationSession (14),
   HotkeyReenablePolicy (8), AudioCaptureFile (4), DictionaryWatcher (2),
   ShortcutDetector (11), ThemeV3 (7), CopyV3 (14), ProtocolSearch (13),
   PillChrome (4), UpdateChecker (11), MicrophoneCatalog (6),
@@ -275,6 +286,6 @@ Nach Rebuild: TCC neu erteilen (App zeigt Status im Bericht + Einstellungen).
 
 - Auto-gelernt aktivieren (Begriffe aus Transkripten vorschlagen)
 - whisper.cpp-Fallback mit echtem Initial-Prompt-Biasing (BiasProvider-Hook existiert)
-- Sprachwechsel pro Äußerung · Snippets · KI-Nachbearbeitung (Toggle vorhanden)
+- Sprachwechsel pro Äußerung · Snippets · optionaler KI-Feinschliff (Block 3C)
 - Hands-free (Fn-Doppeltipp) neu belegbar machen (aktuell fest verdrahtet)
 - Design-Feinschliff: weitere Änderungen über den `import/design_handoff_stasi/`-Prozess
