@@ -28,12 +28,11 @@ final class AppState {
     let settings: SettingsStore
     let dictionary: DictionaryStore
     let history: HistoryStore
-    let audio = AudioCapture()
-    // Pro Diktat eine frische Engine (actor, eigener Executor)
-    private var speech: TranscriptionEngine?
-    private var feedTask: Task<Void, Never>?
-    private var consumeTask: Task<Void, Never>?
-    private var audioContinuation: AsyncStream<AudioChunk>.Continuation?
+    let audio: any AudioCapturing
+    private let speechFactory: @MainActor (Locale, [String]) -> any SpeechEngining
+    private let requestMicrophone: @MainActor () async -> Bool
+    private let audioDirectory: URL
+    private(set) var currentSession: DictationSession?
     var hotkey: HotkeyEngine?
     /// Tap wurde angelegt (says nichts über Event-Lieferung!)
     private(set) var tapInstalled = false
@@ -58,7 +57,6 @@ final class AppState {
 
     private var recordStart: Date?
     private var elapsedTimer: Timer?
-    private var currentAudioURL: URL?
 
     // MARK: Command-Channel
     // Hotkey-Tap-Callbacks und @objc-Button-Thunks dürfen KEINE Tasks spawnen
@@ -93,14 +91,32 @@ final class AppState {
         }
     }
 
-    init(settings: SettingsStore) {
+    init(settings: SettingsStore,
+         dictionary: DictionaryStore? = nil,
+         history: HistoryStore? = nil,
+         audio: any AudioCapturing = AudioCapture(),
+         speechFactory: @escaping @MainActor (Locale, [String]) -> any SpeechEngining = {
+             TranscriptionEngine(locale: $0, biasWords: $1)
+         },
+         requestMicrophone: @escaping @MainActor () async -> Bool = {
+             await Permissions.requestMicrophone()
+         },
+         installHotkey: Bool = true,
+         audioDirectory: URL? = nil) {
         self.settings = settings
-        self.dictionary = DictionaryStore()
-        self.history = HistoryStore()
+        self.dictionary = dictionary ?? DictionaryStore()
+        self.history = history ?? HistoryStore()
+        self.audio = audio
+        self.speechFactory = speechFactory
+        self.requestMicrophone = requestMicrophone
+        self.audioDirectory = audioDirectory ?? DictionaryStore.appSupportDirectory
+            .appendingPathComponent("audio", isDirectory: true)
         (commandStream, commandContinuation) = AsyncStream.makeStream(of: HotkeyCommand.self)
         accessibilityGranted = Permissions.accessibilityGranted
         listenEventGranted = Permissions.listenEventGranted
-        installTap() // installiert nur, wenn Eingabe-Überwachung erteilt ist
+        if installHotkey {
+            installTap() // installiert nur, wenn Bedienungshilfen erteilt sind
+        }
 
         // Audio→Engine-Verdrahtung passiert pro Diktat in startDictation
         // (Stream + EIN Drain-Task, garantiert Puffer-Reihenfolge).
@@ -260,26 +276,50 @@ final class AppState {
         startElapsedTimer()
         playStartSound()
 
+        let locale = settings.transcriptionLocale
+        let dictionaryEntries = dictionary.entries
+        let biasWords = DictionaryBiaser(entries: dictionaryEntries).vocabularyContext()
+        let targetApp = NSWorkspace.shared.frontmostApplication?.localizedName ?? ""
+        try? FileManager.default.createDirectory(at: audioDirectory, withIntermediateDirectories: true)
+        let audioURL = audioDirectory.appendingPathComponent("\(UUID().uuidString).wav")
+        let session = DictationSession(
+            locale: locale,
+            dictionaryEntries: dictionaryEntries,
+            targetApp: targetApp,
+            audioURL: audioURL,
+            speech: speechFactory(locale, biasWords),
+            audio: audio
+        )
+        currentSession = session
+
         DebugLog.log("STASI-APP: startDictation → Phase recording")
-        Task { @MainActor in
+        session.setupTask = Task { @MainActor [weak self, weak session] in
+            guard let self, let session,
+                  session === self.currentSession,
+                  session.state == .settingUp else { return }
             do {
                 // Mikrofon-Recht ZUERST klären (async, blockiert nichts) –
                 // die AVAudioEngine ohne Recht anzufassen hängt sonst den
                 // Main-Thread in der synchronen TCC-Abfrage fest.
-                guard await Permissions.requestMicrophone() else {
+                let microphoneGranted = await self.requestMicrophone()
+                guard session === self.currentSession else { return }
+                guard session.state == .settingUp else { return }
+                guard microphoneGranted else {
                     DebugLog.log("STASI-APP: startDictation abgebrochen – Mikrofon-Recht fehlt")
-                    onToast?("Mikrofon-Zugriff fehlt – in Systemeinstellungen erlauben", false)
-                    phase = .idle
-                    stopElapsedTimer()
+                    self.onToast?("Mikrofon-Zugriff fehlt – in Systemeinstellungen erlauben", false)
+                    await session.teardown()
+                    guard session === self.currentSession else { return }
+                    self.finishAbortedSession(session)
                     return
                 }
 
-                let biasWords = DictionaryBiaser(entries: dictionary.entries).vocabularyContext()
-                let speech = TranscriptionEngine(locale: settings.transcriptionLocale, biasWords: biasWords)
-                self.speech = speech
-
-                let chunks = try await speech.start()
-                guard let format = await speech.preferredInputFormat() else {
+                let chunks = try await session.speech.start()
+                guard session === self.currentSession else { return }
+                guard session.state == .settingUp else { return }
+                let format = await session.speech.preferredInputFormat()
+                guard session === self.currentSession else { return }
+                guard session.state == .settingUp else { return }
+                guard let format else {
                     throw TranscriptionError.noAudioFormat
                 }
                 DebugLog.log("STASI-APP: Engine bereit (\(format.sampleRate) Hz)")
@@ -289,53 +329,40 @@ final class AppState {
                 let (audioStream, audioContinuation) = AsyncStream<AudioChunk>.makeStream(
                     bufferingPolicy: .bufferingNewest(64)
                 )
-                self.audioContinuation = audioContinuation
-                self.feedTask = Task.detached(priority: .userInitiated) {
+                session.audioContinuation = audioContinuation
+                let speech = session.speech
+                session.feedTask = Task.detached(priority: .userInitiated) {
                     for await chunk in audioStream {
                         await speech.feed(chunk)
                     }
                 }
 
-                // WAV-Mitschrieb für Play/Export
-                let audioDir = DictionaryStore.appSupportDirectory.appendingPathComponent("audio", isDirectory: true)
-                try? FileManager.default.createDirectory(at: audioDir, withIntermediateDirectories: true)
-                currentAudioURL = audioDir.appendingPathComponent("\(UUID().uuidString).wav")
-
-                try audio.start(outputFormat: format,
-                                recordTo: currentAudioURL,
-                                preferredMicUID: settings.preferredMicUID) { chunk in
-                    audioContinuation.yield(chunk)
-                }
-                DebugLog.log("STASI-APP: audio.start fertig – Aufnahme läuft")
-
-                // Nutzer hat während des Hochfahrens schon losgelassen?
-                guard self.phase == .recording else {
-                    DebugLog.log("STASI-APP: Start abgebrochen – Phase wechselte während Setup")
-                    _ = self.audio.stop()
-                    audioContinuation.finish()
-                    self.audioContinuation = nil
-                    await self.feedTask?.value
-                    self.feedTask = nil
-                    await speech.finish()
-                    self.speech = nil
-                    return
-                }
-
-                self.consumeTask = Task { @MainActor in
+                session.consumeTask = Task { @MainActor [weak self, weak session] in
                     do {
                         for try await chunk in chunks {
+                            guard let self, let session,
+                                  session === self.currentSession else { return }
                             self.partialText = chunk.text
                         }
                     } catch {
                         DebugLog.log("STASI-APP: Transkript-Strom Fehler: \(error.localizedDescription)")
                     }
                 }
+
+                try session.audio.start(outputFormat: format,
+                                recordTo: session.audioURL,
+                                preferredMicUID: self.settings.preferredMicUID) { chunk in
+                    audioContinuation.yield(chunk)
+                }
+                session.state = .recording
+                DebugLog.log("STASI-APP: audio.start fertig – Aufnahme läuft")
             } catch {
                 DebugLog.log("STASI-APP: startDictation FEHLER: \(error.localizedDescription)")
-                partialText = "⚠︎ \(error.localizedDescription)"
-                phase = .idle
-                currentAudioURL = nil
-                self.speech = nil
+                guard session === self.currentSession else { return }
+                await session.teardown()
+                guard session === self.currentSession else { return }
+                self.partialText = "⚠︎ \(error.localizedDescription)"
+                self.finishAbortedSession(session)
             }
         }
     }
@@ -350,60 +377,74 @@ final class AppState {
             requestDiscard()
             return
         }
+        guard let session = currentSession else { return }
+        session.state = .stopping
         phase = .transcribing
         stopElapsedTimer()
         playStopSound()
-        let recordedURL = audio.stop()
         let duration = elapsed
-        let speech = self.speech
 
-        Task { @MainActor in
-            defer { resetLevel() }
+        Task { @MainActor [weak self, weak session] in
+            guard let self, let session else { return }
+            await session.setupTask?.value
+            guard session === self.currentSession else { return }
+
+            guard session.audio.isRunning else {
+                DebugLog.log("STASI-APP: Kurz-Tipp während Setup")
+                await session.teardown()
+                guard session === self.currentSession else { return }
+                self.onToast?("Zu kurz – Taste gedrückt halten", false)
+                self.finishAbortedSession(session)
+                return
+            }
+
+            let recordedURL = session.audio.stop()
             // Erst alle gepufferten Chunks in die Engine drainen, DANN
             // finalisieren – sonst fehlt das Satzende.
-            audioContinuation?.finish()
-            audioContinuation = nil
-            await feedTask?.value
-            feedTask = nil
+            session.audioContinuation?.finish()
+            session.audioContinuation = nil
+            await session.feedTask?.value
+            guard session === self.currentSession else { return }
+            session.feedTask = nil
             DebugLog.log("STASI-APP: Audio gedraint, finalisiere…")
-            await speech?.finish()
-            await consumeTask?.value
-            consumeTask = nil
-            self.speech = nil
+            await session.speech.finish()
+            guard session === self.currentSession else { return }
+            await session.consumeTask?.value
+            guard session === self.currentSession else { return }
+            session.consumeTask = nil
+            session.setupTask = nil
+            session.state = .finished
+            self.resetLevel()
 
-            let raw = partialText
+            let raw = self.partialText
             DebugLog.log("STASI-APP: Transkription fertig (\(raw.count) Zeichen)")
-            finishTranscription(rawText: raw,
-                                duration: duration,
-                                audioURL: recordedURL ?? currentAudioURL)
-            currentAudioURL = nil
+            self.currentSession = nil
+            self.finishTranscription(rawText: raw,
+                                     duration: duration,
+                                     audioURL: recordedURL ?? session.audioURL,
+                                     session: session)
         }
     }
 
     /// Pill-Aktionen
     func requestDiscard() {
         guard phase == .recording else { return }
+        guard let session = currentSession else { return }
         DebugLog.log("STASI-APP: requestDiscard")
         discardRequested = true
+        session.state = .stopping
+        phase = .transcribing
         stopElapsedTimer()
         playStopSound()
-        _ = audio.stop()
-        audioContinuation?.finish()
-        audioContinuation = nil
-        feedTask?.cancel()
-        feedTask = nil
-        consumeTask?.cancel()
-        consumeTask = nil
-        let speech = self.speech
-        self.speech = nil
-        onToast?(Copy.toastDiscarded, false)
-        Task { @MainActor in
-            await speech?.finish() // Stream sauber beenden
-            try? FileManager.default.removeItem(at: currentAudioURL ?? URL(fileURLWithPath: "/dev/null"))
-            currentAudioURL = nil
-            resetLevel()
-            partialText = ""
-            phase = .idle
+        Task { @MainActor [weak self, weak session] in
+            guard let self, let session else { return }
+            await session.setupTask?.value
+            guard session === self.currentSession else { return }
+            let wasRunning = session.audio.isRunning
+            await session.teardown()
+            guard session === self.currentSession else { return }
+            self.onToast?(wasRunning ? Copy.toastDiscarded : "Zu kurz – Taste gedrückt halten", false)
+            self.finishAbortedSession(session)
         }
     }
 
@@ -412,12 +453,15 @@ final class AppState {
         stopDictation(commit: true)
     }
 
-    private func finishTranscription(rawText: String, duration: Double, audioURL: URL?) {
+    private func finishTranscription(rawText: String,
+                                     duration: Double,
+                                     audioURL: URL?,
+                                     session: DictationSession) {
         DebugLog.log("STASI-APP: finishTranscription (\(rawText.count) Zeichen roh)")
         let trimmedRaw = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
 
         // Korrektur-Pass (garantierter Pfad)
-        let (corrected, applied) = CorrectionEngine.correct(trimmedRaw, entries: dictionary.entries)
+        let (corrected, applied) = CorrectionEngine.correct(trimmedRaw, entries: session.dictionaryEntries)
         let trimmed = corrected.trimmingCharacters(in: .whitespacesAndNewlines)
 
         guard !trimmed.isEmpty else {
@@ -430,12 +474,12 @@ final class AppState {
         history.insert(
             TranscriptionRecord(
                 date: Date(),
-                localeID: settings.transcriptionLocale.identifier,
+                localeID: session.locale.identifier,
                 rawText: trimmedRaw,
                 correctedText: trimmed,
                 corrections: applied,
                 durationSecs: duration,
-                targetApp: NSWorkspace.shared.frontmostApplication?.localizedName ?? "",
+                targetApp: session.targetApp,
                 audioPath: audioURL?.path
             )
         )
@@ -464,6 +508,15 @@ final class AppState {
                 self?.partialText = ""
             }
         }
+    }
+
+    private func finishAbortedSession(_ session: DictationSession) {
+        guard session === currentSession else { return }
+        currentSession = nil
+        resetLevel()
+        partialText = ""
+        phase = .idle
+        stopElapsedTimer()
     }
 
     func copy(_ record: TranscriptionRecord) {

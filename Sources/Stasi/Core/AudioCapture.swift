@@ -11,11 +11,27 @@ struct AudioChunk: @unchecked Sendable {
     let buffer: AVAudioPCMBuffer
 }
 
+/// Schmale Capture-Schnittstelle, damit der Session-Lebenszyklus ohne echte
+/// Mikrofon-Hardware getestet werden kann.
+@MainActor
+protocol AudioCapturing: AnyObject, Sendable {
+    var isRunning: Bool { get }
+    var latestLevel: Double { get }
+
+    func start(outputFormat: AVAudioFormat,
+               recordTo url: URL?,
+               preferredMicUID: String?,
+               onBuffer: @escaping @Sendable (AudioChunk) -> Void) throws
+
+    @discardableResult
+    func stop() -> URL?
+}
+
 // MARK: - AudioCapture (Mikrofon-Capture + WAV-Mitschrieb + VU-Level)
 // Nimmt im NATIVEN Mikrofon-Format auf und konvertiert zum Wunschformat der
 // Engine (SpeechAnalyzer verlangt z. B. Int16 – Float32 füttern killt den
 // Prozess mit einer harten Precondition).
-final class AudioCapture: @unchecked Sendable {
+final class AudioCapture: AudioCapturing, @unchecked Sendable {
     private let engine = AVAudioEngine()
     private nonisolated(unsafe) var converter: AVAudioConverter?
     private nonisolated(unsafe) var outputFormat: AVAudioFormat?
