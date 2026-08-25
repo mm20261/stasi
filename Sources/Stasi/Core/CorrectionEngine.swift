@@ -41,10 +41,13 @@ enum CorrectionEngine {
             var matchedStrings: [String] = []
             for match in matches.reversed() {
                 guard let r = Range(match.range(at: 0), in: text) else { continue }
-                matchedStrings.append(String(text[r]))
+                let matched = String(text[r])
+                guard matched != entry.replacementTarget else { continue }
+                matchedStrings.append(matched)
                 text.replaceSubrange(r, with: entry.replacementTarget)
             }
             matchedStrings.reverse()
+            guard !matchedStrings.isEmpty else { continue }
 
             applied.append(AppliedCorrection(
                 entryID: entry.id,

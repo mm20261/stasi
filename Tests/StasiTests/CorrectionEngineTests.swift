@@ -106,6 +106,21 @@ final class CorrectionEngineTests: XCTestCase {
         XCTAssertEqual(text, "cloud code")
         XCTAssertTrue(applied.isEmpty)
     }
+
+    func testIdenticalMatchesDoNotCountAsCorrections() {
+        let entries = [DictionaryEntry(type: .word, value: "Anthropic")]
+        let (text, applied) = CorrectionEngine.correct("Anthropic und anthropic", entries: entries)
+        XCTAssertEqual(text, "Anthropic und Anthropic")
+        XCTAssertEqual(applied.count, 1)
+        XCTAssertEqual(applied.first?.matched, "anthropic")
+    }
+
+    func testOnlyIdenticalMatchesProduceNoAppliedCorrection() {
+        let entries = [DictionaryEntry(type: .word, value: "Anthropic")]
+        let (text, applied) = CorrectionEngine.correct("Anthropic", entries: entries)
+        XCTAssertEqual(text, "Anthropic")
+        XCTAssertTrue(applied.isEmpty)
+    }
 }
 
 // MARK: - CommonWords-Warnungen
@@ -153,10 +168,27 @@ final class BiasProviderTests: XCTestCase {
         XCTAssertTrue(biaser.vocabularyContext().isEmpty)
     }
 
-    func testCorrectionsContributeSource() {
+    func testCorrectionsContributeTarget() {
         let biaser = DictionaryBiaser(entries: [
             DictionaryEntry(type: .correction, from: "cloud code", to: "Claude Code"),
         ])
-        XCTAssertEqual(biaser.vocabularyContext(), ["cloud code"])
+        XCTAssertEqual(biaser.vocabularyContext(), ["Claude Code"])
+    }
+
+    func testLearnedExcluded() {
+        let biaser = DictionaryBiaser(entries: [
+            DictionaryEntry(type: .learned, value: "Geheimbegriff"),
+            DictionaryEntry(type: .word, value: "Vercel"),
+        ])
+        XCTAssertEqual(biaser.vocabularyContext(), ["Vercel"])
+    }
+
+    func testDeduplicatedWithStableOrder() {
+        let biaser = DictionaryBiaser(entries: [
+            DictionaryEntry(type: .word, value: "Vercel"),
+            DictionaryEntry(type: .correction, from: "wersell", to: "Vercel"),
+            DictionaryEntry(type: .word, value: "Linear"),
+        ])
+        XCTAssertEqual(biaser.vocabularyContext(), ["Vercel", "Linear"])
     }
 }
