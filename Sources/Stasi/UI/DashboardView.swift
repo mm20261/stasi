@@ -15,7 +15,7 @@ struct DashboardView: View {
     @State private var playingId: UUID?
     @State private var heroCopied = false
 
-    private let player = AudioPlayerHelper()
+    @State private var player = AudioPlayerHelper()
     private var calendar: Calendar { .current }
 
     // MARK: Daten

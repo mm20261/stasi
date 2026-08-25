@@ -68,8 +68,8 @@ final class StatusBarController {
 
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         item.button?.image = Self.icon(forPhase: .idle)
-        rebuildMenu()
         statusItem = item
+        rebuildMenu()
     }
 
     private var lastPhase: AppState.Phase = .idle
@@ -230,7 +230,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 app.hotkey?.ensureEnabled()
             }
             if tickCount % 40 == 0 {
-                app.refreshPermissionStateAsync() // alle 2 s, TCC-XPC im Hintergrund
+                // Alle 2 s: TCC-Preflights bleiben sicher unter dem 1-Hz-Limit.
+                app.refreshPermissionStateAsync()
             }
             if tickCount % 1200 == 0 {
                 app.applyRetention() // Retention alle ~60 s prüfen

@@ -27,9 +27,6 @@ extension Color {
                   blue: Double(hex & 0xFF) / 255,
                   opacity: 1)
     }
-
-    /// v3 kennt keinen Dark Mode – der Aufhellungs-Hook bleibt als Identität erhalten.
-    func brightenedForDarkMode() -> Color { self }
 }
 
 extension NSColor {

@@ -14,6 +14,7 @@ struct SettingsWindowView: View {
 
     // Mikrofon-Popover
     @State private var micPopoverOpen = false
+    @State private var availableMics: [MicDevice] = []
 
     // Update-Prüfung
     @State private var updater = UpdateChecker()
@@ -46,6 +47,7 @@ struct SettingsWindowView: View {
         }
         .frame(maxWidth: .infinity, alignment: .center)
         .onAppear { app.refreshPermissionState() }
+        .onDisappear { cancelHotkeyRecording() }
     }
 
     // MARK: Sektionen (Mono-Kicker + Hauptkarte, Zeilen 13×16)
@@ -391,20 +393,12 @@ struct SettingsWindowView: View {
             .popover(isPresented: $micPopoverOpen, arrowEdge: .bottom) {
                 MicPickerPopover(selection: Binding(
                     get: { settings.preferredMicUID },
-                    set: { settings.preferredMicUID = $0 }))
+                    set: { settings.preferredMicUID = $0 }),
+                    devices: $availableMics)
             }
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 13)
-    }
-
-    private var availableMics: [MicDevice] {
-        MicrophoneCatalog.catalog(from: MicrophoneScanner.scan().map { raw in
-            MicDevice(uid: raw.transportUID ?? raw.name,
-                      name: raw.name,
-                      isDefault: raw.transportUID != nil
-                                 && raw.transportUID == MicrophoneScanner.defaultInputTransportUID())
-        })
     }
 
     private var languageRow: some View {
@@ -643,7 +637,11 @@ struct SettingsWindowView: View {
                 .buttonStyle(.plain)
 
                 if let available = updater.state.availableVersion {
-                    Button("UPDATE AUF V \(available)") {}
+                    Button("UPDATE AUF V \(available)") {
+                        if let url = updater.state.releaseURL {
+                            NSWorkspace.shared.open(url)
+                        }
+                    }
                         .font(Theme.Typo.kicker(size: 10.5))
                         .tracking(0.8)
                         .textCase(.uppercase)
@@ -653,6 +651,7 @@ struct SettingsWindowView: View {
                         .background(RoundedRectangle(cornerRadius: 5)
                             .fill(Theme.Palette.stempelrot))
                         .buttonStyle(.plain)
+                        .disabled(updater.state.releaseURL == nil)
                 }
             }
             .padding(.horizontal, 16)
@@ -710,17 +709,9 @@ struct BlinkingCursor: View {
 
 struct MicPickerPopover: View {
     @Binding var selection: String?
+    @Binding var devices: [MicDevice]
     @Environment(\.dismiss) private var dismiss
     @State private var levelTick = 0.0
-
-    private var devices: [MicDevice] {
-        MicrophoneCatalog.catalog(from: MicrophoneScanner.scan().map { raw in
-            MicDevice(uid: raw.transportUID ?? raw.name,
-                      name: raw.name,
-                      isDefault: raw.transportUID != nil
-                                 && raw.transportUID == MicrophoneScanner.defaultInputTransportUID())
-        })
-    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -767,7 +758,10 @@ struct MicPickerPopover: View {
         }
         .frame(width: 270)
         .background(Theme.Palette.papier)
-        .onAppear { levelTick = 1 }
+        .onAppear {
+            devices = Self.scanDevices()
+            levelTick = 1
+        }
     }
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -775,6 +769,15 @@ struct MicPickerPopover: View {
     private func barHeight(_ i: Int) -> CGFloat {
         let phase = levelTick * 2 + Double(i) * 0.9
         return 6 + CGFloat(abs(sin(phase))) * 8
+    }
+
+    private static func scanDevices() -> [MicDevice] {
+        let defaultUID = MicrophoneScanner.defaultInputTransportUID()
+        return MicrophoneCatalog.catalog(from: MicrophoneScanner.scan().map { raw in
+            MicDevice(uid: raw.transportUID ?? raw.name,
+                      name: raw.name,
+                      isDefault: raw.transportUID != nil && raw.transportUID == defaultUID)
+        })
     }
 
     private func micRow(_ device: MicDevice, isStandard: Bool, isSelected: Bool,

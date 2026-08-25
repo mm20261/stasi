@@ -18,7 +18,7 @@ struct ProtocolsView: View {
     @State private var copiedId: UUID?
     @FocusState private var searchFocused: Bool
 
-    private var player = AudioPlayerHelper()
+    @State private var player = AudioPlayerHelper()
     private var calendar: Calendar { .current }
 
     // MARK: Gefilterte Daten

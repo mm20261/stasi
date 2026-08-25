@@ -6,14 +6,6 @@ import SwiftUI
 // Bewusst KOMPLETT in AppKit: SwiftUI-Interaktion in manuell verwalteten
 // NSPanels crasht unter macOS 26.6 (Button-Gesture/Executor-Bug).
 
-// MARK: - Modell (einfache Felder, vom Controller gesetzt)
-
-@MainActor
-final class PillModel {
-    var level: Double = 0
-    var secs: TimeInterval = 0
-}
-
 // MARK: - Panel
 
 final class PillPanel: NSPanel {
@@ -58,7 +50,6 @@ final class PillPanel: NSPanel {
 @MainActor
 final class PillController {
     static let shared = PillController()
-    let model = PillModel()
     var app: AppState?
     private var pillPanel: PillPanel?
     private var pillView: RecordingPillView?
@@ -79,8 +70,6 @@ final class PillController {
         switch phase {
         case .recording:
             let view = ensurePill(app: app)
-            model.level = level
-            model.secs = elapsed
             view.applyChrome(for: source)
             view.update(level: level, secs: elapsed)
             if entered || sourceChanged {
@@ -225,8 +214,6 @@ final class RecordingPillView: NSView {
             main.centerYAnchor.constraint(equalTo: centerYAnchor),
             timerLabel.widthAnchor.constraint(greaterThanOrEqualToConstant: 22),
         ])
-        pillWidthConstraint = constraints.first { $0.firstAttribute == .width }
-
         // Leichtes Schweben (translateY −3px, 3 s) – reine Core Animation,
         // kein Timer, kein Executor-Kontakt.
         let float = CABasicAnimation(keyPath: "transform.translation.y")
@@ -237,8 +224,6 @@ final class RecordingPillView: NSView {
         float.repeatCount = .infinity
         layer?.add(float, forKey: "float")
     }
-
-    private var pillWidthConstraint: NSLayoutConstraint?
 
     /// v4: ✕ und ✓ nur bei gehaltener Push-to-talk-Taste (Hands-free ohne).
     func applyChrome(for source: RecordingSource) {
