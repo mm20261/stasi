@@ -1,5 +1,8 @@
 # STASI · Design-Handoff
 
+> **Überholt** – maßgeblich ist `import/design_handoff_v3/DESIGN.md`; dieses Dokument
+> bleibt als historischer Brief erhalten.
+
 **Für:** Externe Gestaltung (Figma / Framer / KI-Design-Tool / Handentwurf)
 **Ziel:** Du lieferst Werte + Screen-Entwürfe zurück, ich baue sie 1:1 in die App ein.
 **Regel:** Jeder visuelle Wert im Code kommt aus einem Token. Dein Entwurf darf also
