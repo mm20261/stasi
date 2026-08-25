@@ -225,9 +225,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 source: app.recordingSource
             )
             if tickCount % 20 == 0, app.accessibilityGranted {
-                // NUR mit Eingabe-Überwachungs-Recht reaktivieren: einen von
-                // TCC deaktivierten Tap wieder einzuschalten kostet den
-                // Prozess sämtliche Maus-Events (Klick-Blackhole).
+                // NUR mit Bedienungshilfen-Recht und ausschließlich hier
+                // gezählt reaktivieren – nie direkt aus dem Tap-Callback.
                 app.hotkey?.ensureEnabled()
             }
             if tickCount % 40 == 0 {

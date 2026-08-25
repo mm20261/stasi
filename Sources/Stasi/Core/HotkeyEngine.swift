@@ -1,6 +1,41 @@
 import AppKit
 import CoreGraphics
 
+// MARK: - Tap-Reaktivierungsrichtlinie
+
+/// Reine Zähl-/Aufgabe-Logik. Der Aufrufer injiziert die Abfrage des echten
+/// Tap-Zustands; nur `HotkeyEngine.ensureEnabled()` führt die Reaktivierung aus.
+struct HotkeyReenablePolicy {
+    enum Action: Equatable {
+        case none
+        case reenable(attempt: Int)
+        case giveUp
+    }
+
+    let maxReenableAttempts: Int
+    private(set) var reenableCount = 0
+    private(set) var gaveUp = false
+
+    init(maxReenableAttempts: Int = 3) {
+        self.maxReenableAttempts = maxReenableAttempts
+    }
+
+    mutating func evaluate(isTapEnabled: () -> Bool) -> Action {
+        guard !gaveUp else { return .none }
+        guard !isTapEnabled() else {
+            reenableCount = 0
+            return .none
+        }
+
+        reenableCount += 1
+        guard reenableCount <= maxReenableAttempts else {
+            gaveUp = true
+            return .giveUp
+        }
+        return .reenable(attempt: reenableCount)
+    }
+}
+
 // MARK: - HotkeyEngine
 // Globaler Push-to-Talk-Hotkey via CGEventTap (listen-only).
 // Standard: Rechte Command-Taste HALTEN = aufnehmen, loslassen = stoppen.
@@ -17,18 +52,26 @@ final class HotkeyEngine: @unchecked Sendable {
     var onRelease: (() -> Void)?
     var onChord: ((Combo) -> Void)?
     var onHandsFree: (() -> Void)?
+    var onTapStopped: (() -> Void)?
 
     private let combo: Combo
     private var tap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
     private(set) var isDown = false
+    private(set) var isOperational = false
+    private var tapWasDisabled = false
     private var shortcut = ShortcutDetector()
+    private var reenablePolicy: HotkeyReenablePolicy
 
-    init(combo: Combo, chords: [Combo] = [], handsFreeEnabled: Bool = false) {
+    init(combo: Combo, chords: [Combo] = [], handsFreeEnabled: Bool = false,
+         reenablePolicy: HotkeyReenablePolicy = HotkeyReenablePolicy()) {
         self.combo = combo
+        self.reenablePolicy = reenablePolicy
         self.shortcut.chords = chords
         self.shortcut.handsFreeEnabled = handsFreeEnabled
     }
+
+    var gaveUp: Bool { reenablePolicy.gaveUp }
 
     @discardableResult
     func start() -> Bool {
@@ -43,7 +86,8 @@ final class HotkeyEngine: @unchecked Sendable {
         // · .cgSessionEventTap + .defaultTap braucht NUR Bedienungshilfen,
         //   nicht die zickige Eingabe-Überwachung (deren Grant nach jedem
         //   Re-Sign kaputt war und deren Tauziehen Maus-Events schluckte).
-        // · tapDisabled-Events werden direkt im Callback re-armed.
+        // · tapDisabled-Events markieren nur den Zustand. Reaktivierung
+        //   passiert ausschließlich gezählt in ensureEnabled().
         // Events werden IMMER unverändert durchgereicht (kein Konsumieren).
         guard let port = CGEvent.tapCreate(
             tap: .cgSessionEventTap,
@@ -54,10 +98,9 @@ final class HotkeyEngine: @unchecked Sendable {
                 guard let refcon else { return Unmanaged.passUnretained(event) }
                 let engine = Unmanaged<HotkeyEngine>.fromOpaque(refcon).takeUnretainedValue()
                 if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
-                    if let tap = engine.tap {
-                        NSLog("STASI-HK: Tap deaktiviert (%d) – re-arm im Callback", type.rawValue)
-                        CGEvent.tapEnable(tap: tap, enable: true)
-                    }
+                    engine.tapWasDisabled = true
+                    engine.isOperational = false
+                    NSLog("STASI-HK: Tap deaktiviert (%d) – Reaktivierung nur im Poll", type.rawValue)
                     return Unmanaged.passUnretained(event)
                 }
                 engine.handle(type: type, event: event)
@@ -74,6 +117,8 @@ final class HotkeyEngine: @unchecked Sendable {
         CGEvent.tapEnable(tap: port, enable: true)
         tap = port
         runLoopSource = source
+        isOperational = CGEvent.tapIsEnabled(tap: port)
+        tapWasDisabled = !isOperational
 
         // KEIN NSEvent-Global-Monitor mehr: Der braucht Eingabe-Überwachung
         // (die wir nicht mehr anfordern) – ein unberechtigter Keyboard-Monitor
@@ -84,40 +129,40 @@ final class HotkeyEngine: @unchecked Sendable {
         return true
     }
 
-    private var reenableCount = 0
-    /// System deaktiviert den Tap wiederholt (TCC greift erst nach Neustart) –
-    /// dann NICHT weiterkämpfen, sonst entzieht macOS dem Prozess alle Maus-Events.
-    private(set) var gaveUp = false
-
     /// Reaktiviert den Tap, falls macOS ihn wegen Timeout deaktiviert hat.
     /// Nach 3 Deaktivierungen: aufgeben und Tap stoppen (App-Neustart nötig).
     func ensureEnabled() {
-        guard let tap, !gaveUp else { return }
-        if !CGEvent.tapIsEnabled(tap: tap) {
-            reenableCount += 1
-            if reenableCount > 3 {
-                DebugLog.log("STASI-HK: Tap wird wiederholt vom System deaktiviert – gebe auf. App-Neustart nötig, damit die Freigabe greift.")
-                gaveUp = true
-                stop()
-                return
-            }
-            DebugLog.log("STASI-HK: Tap war deaktiviert – reaktiviere (\(reenableCount)/3)")
+        guard let tap, !reenablePolicy.gaveUp else { return }
+        switch reenablePolicy.evaluate(isTapEnabled: { CGEvent.tapIsEnabled(tap: tap) }) {
+        case .none:
+            isOperational = true
+            tapWasDisabled = false
+        case .reenable(let attempt):
+            DebugLog.log("STASI-HK: Tap war deaktiviert – reaktiviere (\(attempt)/\(reenablePolicy.maxReenableAttempts))")
             CGEvent.tapEnable(tap: tap, enable: true)
-        } else {
-            reenableCount = 0
+            isOperational = CGEvent.tapIsEnabled(tap: tap)
+            tapWasDisabled = !isOperational
+        case .giveUp:
+            DebugLog.log("STASI-HK: Tap wird wiederholt vom System deaktiviert – gebe auf. App-Neustart nötig, damit die Freigabe greift.")
+            isOperational = false
+            tapWasDisabled = true
+            stop()
+            onTapStopped?()
         }
     }
 
     func stop() {
         if let tap {
             CGEvent.tapEnable(tap: tap, enable: false)
-            if let runLoopSource {
-                CFRunLoopRemoveSource(CFRunLoopGetMain(), runLoopSource, .commonModes)
-            }
+            CFMachPortInvalidate(tap)
+        }
+        if let runLoopSource {
+            CFRunLoopRemoveSource(CFRunLoopGetMain(), runLoopSource, .commonModes)
         }
         tap = nil
         runLoopSource = nil
         isDown = false
+        isOperational = false
     }
 
     deinit { stop() }

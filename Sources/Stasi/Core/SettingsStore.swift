@@ -233,6 +233,7 @@ enum Copy {
     static let anleitungText = "halten und sprechen."
     static let anleitungStatusReady = "Bereit"
     static let anleitungStatusBlocked = "Hotkey inaktiv"
+    static let hotkeyRestartRequired = "Neustart nötig"
 
     // Leerzustand erster Start
     static let firstStartTitle = "Noch nichts protokolliert."

@@ -38,13 +38,16 @@ final class AppState {
     private(set) var tapInstalled = false
     /// Bedienungshilfen erteilt + Tap installiert → Hotkey wirklich scharf
     /// (Session-Tap braucht keine Eingabe-Überwachung mehr)
-    var hotkeyReady: Bool { tapInstalled && accessibilityGranted }
+    var hotkeyReady: Bool {
+        tapInstalled && accessibilityGranted && hotkey?.isOperational == true
+    }
     var accessibilityGranted = false
     var listenEventGranted = false
 
     /// Warum der Hotkey (noch) nicht scharf ist – für die UI.
     var hotkeyBlocker: String? {
         if !accessibilityGranted { return "Bedienungshilfen" }
+        if hotkey?.gaveUp == true { return Copy.hotkeyRestartRequired }
         return nil
     }
 
@@ -63,7 +66,7 @@ final class AppState {
     // (macOS 26.6 korrumpiert sonst Executor-Metadaten → SwiftUI-Crashes).
     // Stattdessen: thread-sicheres yield in einen AsyncStream; EIN Task aus
     // echtem Concurrency-Kontext (startCommandLoop) konsumiert die Commands.
-    enum HotkeyCommand: Sendable { case press, release, discard, commit, handsFree }
+    enum HotkeyCommand: Sendable { case press, release, discard, commit, handsFree, tapStopped }
     private let commandStream: AsyncStream<HotkeyCommand>
     private let commandContinuation: AsyncStream<HotkeyCommand>.Continuation
     private var commandLoopStarted = false
@@ -86,6 +89,7 @@ final class AppState {
                 case .discard: requestDiscard()
                 case .commit: requestCommit()
                 case .handsFree: handsFreeToggle()
+                case .tapStopped: tapInstalled = false
                 }
             }
         }
@@ -145,6 +149,7 @@ final class AppState {
         hk.onPress = { [weak self] in self?.enqueue(.press) }
         hk.onRelease = { [weak self] in self?.enqueue(.release) }
         hk.onHandsFree = { [weak self] in self?.enqueue(.handsFree) }
+        hk.onTapStopped = { [weak self] in self?.enqueue(.tapStopped) }
         if hk.start() {
             hotkey = hk
             tapInstalled = true
@@ -155,7 +160,7 @@ final class AppState {
     /// XPC-Calls – bewusst nur ~1×/s (20 Hz Preflights können die TCC-Dialoge
     /// blockieren, was der Nutzer als "eingefrorenes Fenster" erlebte).
     func refreshPermissionState() {
-        hotkey?.ensureEnabled()
+        if accessibilityGranted { hotkey?.ensureEnabled() }
         applyPermissionState(ax: Permissions.accessibilityGranted,
                              listen: Permissions.listenEventGranted)
     }
@@ -187,7 +192,7 @@ final class AppState {
         accessibilityGranted = ax
         listenEventGranted = listen
         // Session-Tap braucht Bedienungshilfen (die auch fürs Einfügen nötig sind).
-        if ax && !tapInstalled {
+        if ax && !tapInstalled && hotkey?.gaveUp != true {
             installTap()
         }
     }
