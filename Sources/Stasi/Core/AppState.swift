@@ -33,9 +33,11 @@ final class AppState {
     private let speechFactory: @MainActor (Locale, [String]) -> any SpeechEngining
     private let requestMicrophone: @MainActor () async -> Bool
     private let modelInstaller: @Sendable (Locale) async throws -> Void
+    private let spellChecker: @MainActor (String, String) -> Bool
     private let audioDirectory: URL
     private(set) var modelReadyByLocale: [String: Bool] = [:]
     @ObservationIgnored private var modelPreparationTasks: [String: Task<Bool, Never>] = [:]
+    @ObservationIgnored private var knownWordCache: [String: Bool] = [:]
     private(set) var currentSession: DictationSession?
     var hotkey: HotkeyEngine?
     /// Tap wurde angelegt (says nichts über Event-Lieferung!)
@@ -126,6 +128,18 @@ final class AppState {
          modelInstaller: @escaping @Sendable (Locale) async throws -> Void = {
              try await TranscriptionEngine.ensureModelInstalled(locale: $0)
          },
+         spellChecker: @escaping @MainActor (String, String) -> Bool = { word, language in
+             var wordCount = 0
+             let misspelling = NSSpellChecker.shared.checkSpelling(
+                 of: word,
+                 startingAt: 0,
+                 language: language,
+                 wrap: false,
+                 inSpellDocumentWithTag: 0,
+                 wordCount: &wordCount
+             )
+             return misspelling.location == NSNotFound
+         },
          installHotkey: Bool = true,
          audioDirectory: URL? = nil) {
         self.settings = settings
@@ -135,6 +149,7 @@ final class AppState {
         self.speechFactory = speechFactory
         self.requestMicrophone = requestMicrophone
         self.modelInstaller = modelInstaller
+        self.spellChecker = spellChecker
         self.audioDirectory = audioDirectory ?? DictionaryStore.appSupportDirectory
             .appendingPathComponent("audio", isDirectory: true)
         (commandStream, commandContinuation) = AsyncStream.makeStream(of: HotkeyCommand.self)
@@ -593,19 +608,32 @@ final class AppState {
             return
         }
 
-        history.insert(
-            TranscriptionRecord(
-                date: Date(),
-                localeID: localeSnapshot.identifier,
-                rawText: trimmedRaw,
-                correctedText: trimmed,
-                corrections: outcome.corrections,
-                durationSecs: durationSnapshot,
-                targetApp: targetAppSnapshot,
-                audioPath: audioURLSnapshot?.path,
-                polish: outcome.summary
-            )
+        let newRecord = TranscriptionRecord(
+            date: Date(),
+            localeID: localeSnapshot.identifier,
+            rawText: trimmedRaw,
+            correctedText: trimmed,
+            corrections: outcome.corrections,
+            durationSecs: durationSnapshot,
+            targetApp: targetAppSnapshot,
+            audioPath: audioURLSnapshot?.path,
+            polish: outcome.summary
         )
+        history.insert(newRecord)
+
+        let historicalRecords = history.records.filter { $0.id != newRecord.id }
+        let learned = AutoLearnScout.candidates(
+            newRecord: newRecord,
+            historyExcludingNew: historicalRecords,
+            dictionary: dictionary.entries,
+            ignored: dictionary.ignoredLearned,
+            locale: localeSnapshot,
+            isKnownWord: { [self] word in
+                isKnownWord(word, locale: localeSnapshot)
+            },
+            options: .init()
+        )
+        dictionary.mergeLearned(learned)
 
         currentSession = nil
         phase = .injecting
@@ -642,6 +670,21 @@ final class AppState {
         partialText = ""
         phase = .idle
         stopElapsedTimer()
+    }
+
+    private func isKnownWord(_ word: String, locale: Locale) -> Bool {
+        let polishLocale = PolishLocale(locale: locale)
+        let language: String
+        switch polishLocale {
+        case .de: language = "de"
+        case .en: language = "en"
+        case .other: return true
+        }
+        let key = "\(language):\(word.lowercased())"
+        if let cached = knownWordCache[key] { return cached }
+        let known = spellChecker(word, language)
+        knownWordCache[key] = known
+        return known
     }
 
     func copy(_ record: TranscriptionRecord) {

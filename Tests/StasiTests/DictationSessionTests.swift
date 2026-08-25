@@ -151,6 +151,15 @@ final class DictationSessionTests: XCTestCase {
         func installedLocaleIDs() -> [String] { localeIDs }
     }
 
+    private final class SpellCheckerSpy {
+        private(set) var calls: [(word: String, language: String)] = []
+
+        func isKnown(_ word: String, language: String) -> Bool {
+            calls.append((word, language))
+            return false
+        }
+    }
+
     private func makeDirectory(_ name: String = #function) -> URL {
         let directory = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
             .appendingPathComponent(".build/test-artifacts", isDirectory: true)
@@ -172,6 +181,7 @@ final class DictationSessionTests: XCTestCase {
                          engines: [FakeSpeechEngine],
                          permission: @escaping @MainActor () async -> Bool = { true },
                          modelInstaller: @escaping @Sendable (Locale) async throws -> Void = { _ in },
+                         spellChecker: @escaping @MainActor (String, String) -> Bool = { _, _ in true },
                          directory: URL? = nil) -> AppState {
         let root = directory ?? makeDirectory()
         let dictionary = DictionaryStore(directory: root.appendingPathComponent("dictionary"))
@@ -185,6 +195,7 @@ final class DictationSessionTests: XCTestCase {
             speechFactory: { _, _ in remaining.removeFirst() },
             requestMicrophone: permission,
             modelInstaller: modelInstaller,
+            spellChecker: spellChecker,
             installHotkey: false,
             audioDirectory: root.appendingPathComponent("audio")
         )
@@ -208,6 +219,40 @@ final class DictationSessionTests: XCTestCase {
         XCTAssertFalse(app.modelReady(for: english))
         let installedLocaleIDs = await spy.installedLocaleIDs()
         XCTAssertEqual(installedLocaleIDs, ["de_DE"])
+    }
+
+    func testFinishedDictationMergesLearnedCandidateUsingInjectedSpellChecker() async {
+        let directory = makeDirectory()
+        let audio = FakeAudioCapture()
+        let speech = FakeSpeechEngine(text: "Wir verwenden Frobulator heute")
+        let spellChecker = SpellCheckerSpy()
+        let app = makeApp(
+            audio: audio,
+            engines: [speech],
+            spellChecker: { word, language in
+                spellChecker.isKnown(word, language: language)
+            },
+            directory: directory
+        )
+        app.history.insert(TranscriptionRecord(
+            date: Date().addingTimeInterval(-60),
+            localeID: "de_DE",
+            rawText: "Der Frobulator hilft",
+            correctedText: "Der Frobulator hilft",
+            corrections: []
+        ))
+
+        app.startDictation()
+        await waitUntil { audio.isRunning }
+        app.stopDictation(commit: true)
+        await waitUntil { app.dictionary.entries.contains { $0.type == .learned } }
+
+        let learned = app.dictionary.entries.first { $0.type == .learned }
+        XCTAssertEqual(learned?.value, "Frobulator")
+        XCTAssertEqual(learned?.note, "2× diktiert")
+        XCTAssertEqual(spellChecker.calls.count, 1)
+        XCTAssertEqual(spellChecker.calls.first?.word, "Frobulator")
+        XCTAssertEqual(spellChecker.calls.first?.language, "de")
     }
 
     private func waitUntil(timeout: TimeInterval = 1,
