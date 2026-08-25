@@ -6,7 +6,8 @@ Stasi ist eine lokale macOS-Diktier-App im Stil von Wispr Flow: systemweites Dik
 ## About the Design Files
 Die Dateien in diesem Bundle sind **Design-Referenzen in HTML** (interaktiver Prototyp), kein Produktionscode. Aufgabe: die Designs in der Zielumgebung nachbauen (z. B. Electron + React, Tauri, oder Swift/AppKit). Existiert noch kein Codebase, ist **Tauri (Rust + Webview) oder Electron mit React** die naheliegendste Wahl, da das Design webbasiert spezifiziert ist. Für die eigentliche Transkription lokales Whisper (z. B. whisper.cpp) vorgesehen — nicht Teil dieses Designs.
 
-- `Stasi.dc.html` — der komplette Prototyp (alle Screens, klickbar). Im Browser öffnen.
+- `Stasi v2.dc.html` — **maßgebliches finales Design** (Flow-artige Anordnung, einklappbare Sidebar, Mini-Pill mit Pegel-Waveform). Im Browser öffnen.
+- `Stasi.dc.html` — ältere v1 als Referenz.
 - `Stasi Icons.dc.html` — Icon-Showcase.
 - `assets/` + `icons/` — SVG-Master und exportfertige PNGs (siehe `icons/README.md`).
 - `macos-window.jsx`, `image-slot.js`, `support.js` — Prototyp-Laufzeit, NICHT übernehmen.
@@ -141,6 +142,16 @@ Dunkle Pill (pill-bg, radius 999, Schatten, Slide-up 250ms):
 - Alle UI-Icons sind Inline-SVGs (24er-ViewBox, stroke 1.7–1.8, round caps) — aus `Stasi.dc.html` übernehmbar
 
 ## Files
-- `Stasi.dc.html` — kompletter Prototyp (maßgeblich)
+- `Stasi v2.dc.html` — kompletter Prototyp (maßgeblich)
+- `Stasi.dc.html` — v1 (Referenz)
 - `Stasi Icons.dc.html` — Icon-Showcase
 - `assets/*.svg`, `icons/**` — Grafik-Assets
+
+## v2-Änderungen (maßgeblich gegenüber obiger Screen-Beschreibung)
+- Standard-Akzent jetzt Anthrazit `#1A1917`; ironische Copy standardmäßig AUS; kein Dark Mode
+- "Der Bericht" = Startseite: Begrüßung, Protokoll-Liste "HEUTE" (Zeit / Text 3 Zeilen geclampt / Play, Kopieren, ⋯-Menü), rechts 252px-Rail (Wörter gesamt, WPM, Serie + "Deine Akte"-Fortschritt)
+- Eigener Insights-Screen: 3 Stat-Karten, "Wohin diktiert wird"-Balken, Streak-Heatmap (16×7)
+- Sidebar einklappbar (200px ↔ 64px Icon-only, Panel-Icon oben, Transition .25s); Einstellungen als eigener Punkt UNTEN links; kein "Diktat simulieren"-Button — Aufnahme startet nur per Hotkey
+- Mini-Aufnahme-Pill: 26px hoch, unten mittig: ✕ (16px) · roter Punkt · 14 Pegel-Balken (2px breit, Höhe 2-14px, reagieren auf Lautstärke, transition .12s) · Timer 9px mono · ✓ (17px). Toast: "Protokolliert ✓"
+- Karten: radius 16px, ohne Border, Schatten 0 2px 8px color-mix(accent 12%); Hintergrund linear-gradient(160deg,#F3F6FA,#F8F7F3); Mikro-Animationen: Nav-Hover translateX(3px), Karten-Hover translateY(-3px), Icon-Hover scale(1.1)
+- App-Icon in beiden Tönen unter icons-v2/ (blau + anthrazit)

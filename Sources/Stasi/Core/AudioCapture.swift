@@ -164,7 +164,9 @@ final class AudioCapture: @unchecked Sendable {
         }
     }
 
-    /// RMS → normalisierter Pegel (0…1), Wurzel-Kurve für gefällige Animation.
+    /// RMS → normalisierter Pegel (0…1). Höherer Gain + steilerer Exponent
+    /// (0.6 statt 0.4) spreizt die Dynamik: leise bleibt klein, laut schlägt
+    /// deutlich aus – damit die Waveform wirklich auf Lautstärke reagiert.
     nonisolated static func computeLevel(of buffer: AVAudioPCMBuffer) -> Double {
         guard let data = buffer.floatChannelData?[0] else { return 0 }
         let frames = Int(buffer.frameLength)
@@ -174,6 +176,6 @@ final class AudioCapture: @unchecked Sendable {
             sum += data[i] * data[i]
         }
         let rms = sqrt(sum / Float(frames / 4 + 1))
-        return Double(pow(min(rms * 6.0, 1.0), 0.4))
+        return Double(pow(min(rms * 7.0, 1.0), 0.6))
     }
 }

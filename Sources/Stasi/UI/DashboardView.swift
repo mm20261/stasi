@@ -1,12 +1,22 @@
 import SwiftUI
+import AppKit
+import UniformTypeIdentifiers
 
-// MARK: - Der Bericht (Dashboard)
+// MARK: - Der Bericht (Dashboard, v2)
+// Startseite: Begrüßung, Heute-Liste (Play/Kopieren/⋯-Menü), rechte Rail
+// (Wörter gesamt, WPM, Serie, „Deine Akte"-Fortschritt).
 
 struct DashboardView: View {
     @Environment(AppState.self) private var app
     @Environment(SettingsStore.self) private var settings
     @Environment(AppSelection.self) private var selection
 
+    @State private var expandedIds: Set<UUID> = []
+    @State private var playingId: UUID?
+    @State private var copiedId: UUID?
+    @State private var menuId: UUID?
+
+    private let player = AudioPlayerHelper()
     private var calendar: Calendar { .current }
 
     private var greeting: String {
@@ -19,255 +29,335 @@ struct DashboardView: View {
         }
     }
 
-    private var todayWords: Int {
-        app.history.records
-            .filter { calendar.isDateInToday($0.date) }
-            .reduce(0) { $0 + $1.wordCount }
-    }
-
-    private var weekWords: Int {
-        app.history.records
-            .filter { calendar.isDate($0.date, equalTo: Date(), toGranularity: .weekOfYear) }
-            .reduce(0) { $0 + $1.wordCount }
-    }
-
-    private var avgDuration: TimeInterval {
-        let recs = app.history.records.filter { $0.durationSecs > 0 }
-        guard !recs.isEmpty else { return 0 }
-        return recs.reduce(0) { $0 + $1.durationSecs } / Double(recs.count)
-    }
-
-    /// Wörter pro Tag, Mo–So der aktuellen Woche
-    private var wordsPerDay: [(day: String, count: Int, isToday: Bool)] {
-        let symbols = ["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"]
-        let weekStart = calendar.dateInterval(of: .weekOfYear, for: Date())!.start
-        return symbols.enumerated().map { index, symbol in
-            let day = calendar.date(byAdding: .day, value: index, to: weekStart)!
-            let count = app.history.records
-                .filter { calendar.isDate($0.date, inSameDayAs: day) }
-                .reduce(0) { $0 + $1.wordCount }
-            return (symbol, count, calendar.isDateInToday(day))
-        }
+    private var todayRecords: [TranscriptionRecord] {
+        app.history.records.filter { calendar.isDateInToday($0.date) }
     }
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 26) {
+            VStack(alignment: .leading, spacing: 0) {
                 header
-                hotkeyCard
-                statsSection
-                bottomGrid
+                if let blocker = app.hotkeyBlocker {
+                    blockerRow(blocker)
+                }
+                HStack(alignment: .top, spacing: 18) {
+                    todayColumn
+                        .frame(maxWidth: .infinity, alignment: .topLeading)
+                    rail
+                        .frame(width: 252)
+                }
+                .padding(.top, 24)
             }
             .padding(.horizontal, 32)
-            .padding(.vertical, 28)
+            .padding(.top, 10)
+            .padding(.bottom, 80)
         }
     }
 
     // MARK: Kopf
 
     private var header: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 8) {
             Text("TAGESBERICHT · \(Date().formatted(.dateTime.weekday(.wide).day().month(.wide)))")
-                .kicker(Theme.accent.brightenedForDarkMode())
-            HStack {
-                Text("\(greeting)\(settings.userName.isEmpty ? "" : ", \(settings.userName)")" + ".")
-                    .font(Theme.Typo.h1())
-                    .tracking(-0.3)
-                    .foregroundColor(Theme.Palette.ink)
-                Spacer()
-            }
+                .kicker(Theme.accent)
+            Text("\(greeting)\(settings.userName.isEmpty ? "" : ", \(settings.userName)").")
+                .font(Theme.Typo.h1())
+                .tracking(-0.3)
+                .foregroundColor(Theme.Palette.ink)
         }
     }
 
-    // MARK: Hotkey-Karte
-
-    private var hotkeyCard: some View {
-        HStack(spacing: Theme.Metrics.gridGap) {
-            KeyBadge(comboText)
-            Text(modeHint)
+    private func blockerRow(_ blocker: String) -> some View {
+        HStack(spacing: 8) {
+            Circle().fill(Theme.Palette.recRed).frame(width: 7, height: 7)
+            Text("Hotkey inaktiv – \(blocker) fehlt.")
                 .font(Theme.Typo.secondary())
                 .foregroundColor(Theme.Palette.sub)
+            Button("Erteilen") {
+                Task { @MainActor in app.requestMissingPermissions() }
+            }
+            .font(Theme.Typo.secondary())
+            .buttonStyle(GhostButtonStyle())
+        }
+        .padding(.top, 14)
+    }
 
-            if let blocker = app.hotkeyBlocker {
-                HStack(spacing: 6) {
-                    Circle().fill(Theme.Palette.recRed).frame(width: 7, height: 7)
-                    Text("Hotkey inaktiv – \(blocker) fehlt")
+    // MARK: Heute-Liste
+
+    private var todayColumn: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .firstTextBaseline) {
+                Text("HEUTE")
+                    .kicker(Theme.Palette.sub)
+                Spacer()
+                HStack(spacing: 8) {
+                    Text("\(todayRecords.count) Protokolle")
                         .font(Theme.Typo.secondary())
                         .foregroundColor(Theme.Palette.sub)
-                    Button("Erteilen") {
-                        Task { @MainActor in app.requestMissingPermissions() }
-                    }
-                    .buttonStyle(GhostButtonStyle())
+                    Button("Alle ansehen") { selection.section = .protokolle }
+                        .font(Theme.Typo.secondary())
+                        .buttonStyle(.plain)
+                        .foregroundColor(Theme.accent)
                 }
             }
+            .padding(.horizontal, 4)
 
-            Spacer()
-
-            if app.phase != .idle {
-                HStack(spacing: 6) {
-                    Circle()
-                        .fill(Theme.Palette.recRed)
-                        .frame(width: 8, height: 8)
-                        .pulseForever(intensity: 0.5)
-                    Text(app.phase.rawValue)
-                        .kicker(Theme.accent.brightenedForDarkMode())
-                }
-            }
-        }
-        .card(padding: 14)
-    }
-
-    private var comboText: String {
-        VirtualKey.name(for: Int(app.currentCombo.keyCode))
-            .replacingOccurrences(of: " halten", with: "")
-    }
-
-    private var modeHint: String {
-        settings.hotkeyMode == .pushToTalk
-            ? "Halten zum Sprechen, loslassen zum Einfügen."
-            : "Einmal drücken startet, nochmal beendet."
-    }
-
-    // MARK: Statistiken
-
-    private var statsSection: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("ÜBERWACHUNGSBERICHT KW\(weekNumber) — LÜCKENLOS ERFASST")
-                .kicker(Theme.Palette.sub.opacity(0.8))
-
-            HStack(spacing: Theme.Metrics.gridGap) {
-                StatTile(value: "\(todayWords)", label: "Wörter heute", delta: nil)
-                StatTile(value: "\(weekWords)", label: "Diese Woche", delta: nil)
-                StatTile(value: "\(app.history.records.count)", label: "Protokolle", delta: nil)
-                StatTile(value: avgDuration > 0 ? String(format: "%.0f s", avgDuration) : "—",
-                         label: "Ø Dauer", delta: nil)
-            }
-        }
-    }
-
-    private var weekNumber: Int {
-        calendar.component(.weekOfYear, from: Date())
-    }
-
-    // MARK: Chart + letzte Protokolle
-
-    private var bottomGrid: some View {
-        HStack(alignment: .top, spacing: Theme.Metrics.gridGap) {
-            chartCard
-                .frame(maxWidth: .infinity)
-            recentProtocolsCard
-                .frame(maxWidth: .infinity)
-        }
-    }
-
-    private var chartCard: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text("Wörter pro Tag")
-                .font(Theme.Typo.body().weight(.medium))
-                .foregroundColor(Theme.Palette.ink)
-
-            let data = wordsPerDay
-            let maxCount = max(data.map(\.count).max() ?? 1, 1)
-
-            HStack(alignment: .bottom, spacing: 10) {
-                ForEach(Array(data.enumerated()), id: \.offset) { _, item in
-                    chartBar(item: item, maxCount: maxCount)
-                }
-            }
-            .frame(minHeight: 120, alignment: .bottom)
-        }
-        .card(padding: 18)
-    }
-
-    private func chartBar(item: (day: String, count: Int, isToday: Bool), maxCount: Int) -> some View {
-        let barColor: Color = {
-            if item.count == 0 { return Theme.Palette.hover }
-            if item.isToday { return Theme.accent.brightenedForDarkMode() }
-            return Theme.accent.brightenedForDarkMode().opacity(0.22)
-        }()
-        let height: CGFloat = item.count == 0 ? 5 : max(CGFloat(item.count) / CGFloat(maxCount) * 90, 5)
-
-        return VStack(spacing: 6) {
-            RoundedRectangle(cornerRadius: 2.5)
-                .fill(barColor)
-                .frame(height: height)
-                .frame(maxHeight: 95, alignment: .bottom)
-            Text(item.day)
-                .font(Theme.Typo.kicker(size: 9.5))
-                .foregroundColor(item.isToday ? Theme.accent.brightenedForDarkMode() : Theme.Palette.sub)
-        }
-        .frame(maxWidth: .infinity)
-    }
-
-    private var recentProtocolsCard: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Text("Letzte Protokolle")
-                    .font(Theme.Typo.body().weight(.medium))
-                    .foregroundColor(Theme.Palette.ink)
-                Spacer()
-                Button("Alle ansehen") { selection.section = .protokolle }
-                    .font(Theme.Typo.secondary())
-                    .buttonStyle(.plain)
-                    .foregroundColor(Theme.accent.brightenedForDarkMode())
-            }
-
-            if app.history.records.isEmpty {
-                Text(Copy.emptyProtocols(settings))
-                    .font(Theme.Typo.secondary())
-                    .foregroundColor(Theme.Palette.sub)
-                    .padding(.vertical, 12)
-            } else {
-                ForEach(app.history.records.prefix(3)) { record in
-                    HStack(spacing: 10) {
-                        Text(record.date.formatted(.dateTime.hour().minute()))
-                            .font(Theme.Typo.counter(11))
-                            .foregroundColor(Theme.Palette.sub)
-                        Text(record.correctedText)
-                            .font(Theme.Typo.body())
-                            .foregroundColor(Theme.Palette.ink)
-                            .lineLimit(1)
-                            .truncationMode(.tail)
-                        Spacer(minLength: 8)
-                        if !record.targetApp.isEmpty {
-                            Text("→ \(record.targetApp)")
-                                .font(Theme.Typo.counter(11))
-                                .foregroundColor(Theme.accent.brightenedForDarkMode())
+            VStack(spacing: 0) {
+                if todayRecords.isEmpty {
+                    emptyState
+                } else {
+                    ForEach(Array(todayRecords.enumerated()), id: \.element.id) { index, record in
+                        row(for: record)
+                        if index < todayRecords.count - 1 {
+                            Divider().overlay(Theme.Palette.line)
+                                .padding(.leading, 18)
                         }
                     }
-                    .padding(.vertical, 4)
                 }
             }
+            .card(padding: 0)
+        }
+    }
+
+    private var emptyState: some View {
+        VStack(spacing: 6) {
+            Text("Keine Protokolle heute")
+                .font(Theme.Typo.body().weight(.medium))
+                .foregroundColor(Theme.Palette.ink)
+            Text(Copy.emptyProtocols(settings))
+                .font(Theme.Typo.secondary())
+                .foregroundColor(Theme.Palette.sub)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 40)
+    }
+
+    private func row(for record: TranscriptionRecord) -> some View {
+        let isExpanded = expandedIds.contains(record.id)
+        let isPlaying = playingId == record.id
+
+        return HStack(alignment: .top, spacing: 16) {
+            Text(record.date.formatted(.dateTime.hour().minute()))
+                .font(Theme.Typo.counter(10.5))
+                .foregroundColor(Theme.Palette.sub)
+                .frame(width: 64, alignment: .leading)
+                .padding(.top, 3)
+
+            VStack(alignment: .leading, spacing: 7) {
+                Text(record.correctedText)
+                    .font(Theme.Typo.body())
+                    .lineHeight()
+                    .foregroundColor(Theme.Palette.ink)
+                    .lineLimit(isExpanded ? nil : 3)
+                    .multilineTextAlignment(.leading)
+                    .contentShape(Rectangle())
+                    .onTapGesture { toggleExpand(record.id) }
+
+                Text(metaLine(record))
+                    .font(Theme.Typo.counter(10))
+                    .foregroundColor(Theme.Palette.sub)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            HStack(spacing: 2) {
+                if record.audioPath != nil {
+                    actionButton(isPlaying ? "stop.fill" : "play.fill",
+                                 active: isPlaying, filled: true) {
+                        Task { @MainActor in togglePlay(record) }
+                    }
+                }
+                actionButton(copiedId == record.id ? "checkmark" : "doc.on.doc",
+                             active: copiedId == record.id, filled: false) {
+                    Task { @MainActor in
+                        app.copy(record)
+                        copiedId = record.id
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 1.6) {
+                            if copiedId == record.id { copiedId = nil }
+                        }
+                    }
+                }
+                menuButton(for: record)
+            }
+        }
+        .padding(.horizontal, 18)
+        .padding(.vertical, 16)
+        .contentShape(Rectangle())
+    }
+
+    private func metaLine(_ record: TranscriptionRecord) -> String {
+        var parts: [String] = []
+        if !record.targetApp.isEmpty { parts.append("→ \(record.targetApp)") }
+        if record.durationSecs > 0 {
+            parts.append(String(format: "%.0f:%02d", record.durationSecs / 60,
+                                Int(record.durationSecs) % 60))
+        }
+        parts.append("\(record.wordCount) Wörter")
+        return parts.joined(separator: " · ")
+    }
+
+    // MARK: Rail
+
+    private var rail: some View {
+        VStack(spacing: 14) {
+            statsCard
+            akteCard
+        }
+    }
+
+    private var statsCard: some View {
+        VStack(spacing: 0) {
+            railStat(value: StatsCalculator.compactCount(StatsCalculator.totalWords(app.history.records)),
+                     label: "Wörter gesamt")
+            railStat(value: wpmText, label: "Wörter / Minute")
+            railStat(value: "\(StatsCalculator.currentStreak(app.history.records)) Tage",
+                     label: "Serie")
+        }
+        .card(padding: 20)
+    }
+
+    private func railStat(value: String, label: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 9) {
+            Text(value)
+                .font(Theme.Typo.stat())
+                .tracking(-0.5)
+                .monospacedDigit()
+                .foregroundColor(Theme.Palette.ink)
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
+            Text(label)
+                .font(Theme.Typo.secondary())
+                .foregroundColor(Theme.Palette.sub)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.vertical, 7)
+    }
+
+    private var wpmText: String {
+        guard let wpm = StatsCalculator.wordsPerMinute(app.history.records) else { return "—" }
+        return "\(Int(wpm.rounded()))"
+    }
+
+    private var akteCard: some View {
+        let milestone = 10_000
+        let total = StatsCalculator.totalWords(app.history.records)
+        let remainder = total % milestone
+        let progress = Double(remainder) / Double(milestone)
+        let next = milestone - remainder
+
+        return VStack(alignment: .leading, spacing: 0) {
+            Text("Deine Akte")
+                .font(.custom("Geist", size: 14).weight(.semibold))
+                .foregroundColor(Theme.Palette.ink)
+            Text(akteNote)
+                .font(.custom("Geist", size: 11.5))
+                .foregroundColor(Theme.Palette.sub)
+                .lineHeight()
+                .padding(.top, 3)
+
+            GeometryReader { geo in
+                ZStack(alignment: .leading) {
+                    Capsule().fill(Theme.Palette.hover)
+                    Capsule().fill(Theme.accent)
+                        .frame(width: max(6, geo.size.width * progress))
+                }
+            }
+            .frame(height: 6)
+            .padding(.top, 12)
+
+            Text("NÄCHSTER EINTRAG IN \(StatsCalculator.compactCount(next)) WÖRTERN")
+                .font(Theme.Typo.kicker(size: 10))
+                .tracking(0.6)
+                .foregroundColor(Theme.Palette.sub)
+                .padding(.top, 7)
         }
         .card(padding: 18)
     }
-}
 
-// MARK: - Stat-Kachel
+    private var akteNote: String {
+        settings.ironyOn
+            ? "Alles dokumentiert, nichts vergessen. Du führst sie ausnahmsweise selbst."
+            : "Dein Diktier-Fortschritt diese Woche."
+    }
 
-struct StatTile: View {
-    let value: String
-    let label: String
-    let delta: String?
+    // MARK: Zeilen-Aktionen
 
-    var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(value)
-                .font(Theme.Typo.stat())
-                .monospacedDigit()
-                .lineLimit(1)
-                .minimumScaleFactor(0.7)
-                .foregroundColor(Theme.Palette.ink)
-            HStack(spacing: 6) {
-                Text(label.uppercased())
-                    .kicker(Theme.Palette.sub)
-                if let delta {
-                    Text(delta)
-                        .kicker(Theme.accent.brightenedForDarkMode())
+    private func actionButton(_ symbol: String, active: Bool, filled: Bool,
+                              action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: symbol)
+                .font(.system(size: 12, weight: active ? .semibold : .regular))
+                .foregroundStyle(active ? Theme.accent : Theme.Palette.sub)
+                .frame(width: 28, height: 28)
+                .background(
+                    RoundedRectangle(cornerRadius: 9)
+                        .fill(active ? Theme.tint(Theme.accent) : Color.clear)
+                )
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .scaleOnHover()
+    }
+
+    private func menuButton(for record: TranscriptionRecord) -> some View {
+        Menu {
+            Button("Audio extrahieren (.wav)") { extractAudio(record) }
+            Button("Export als .txt") { export(record, asMarkdown: false) }
+            Button("Export als .md") { export(record, asMarkdown: true) }
+            Divider()
+            Button("Löschen", role: .destructive) {
+                Task { @MainActor in
+                    if playingId == record.id { player.stop(); playingId = nil }
+                    app.history.delete(record)
                 }
             }
+        } label: {
+            Text("⋯")
+                .font(.system(size: 15))
+                .foregroundColor(Theme.Palette.sub)
+                .frame(width: 28, height: 28)
+                .contentShape(Rectangle())
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .card(padding: 14)
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .scaleOnHover()
+    }
+
+    private func toggleExpand(_ id: UUID) {
+        if expandedIds.contains(id) { expandedIds.remove(id) } else { expandedIds.insert(id) }
+    }
+
+    private func togglePlay(_ record: TranscriptionRecord) {
+        if playingId == record.id {
+            player.stop()
+            playingId = nil
+        } else if let path = record.audioPath {
+            player.play(url: URL(fileURLWithPath: path)) {
+                Task { @MainActor in self.playingId = nil }
+            }
+            playingId = record.id
+        }
+    }
+
+    private func extractAudio(_ record: TranscriptionRecord) {
+        guard let path = record.audioPath else { return }
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [UTType(filenameExtension: "wav") ?? .audio]
+        panel.nameFieldStringValue = "stasi-audio.wav"
+        if panel.runModal() == .OK, let url = panel.url {
+            try? FileManager.default.copyItem(atPath: path, toPath: url.path)
+        }
+    }
+
+    private func export(_ record: TranscriptionRecord, asMarkdown: Bool) {
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.plainText]
+        let base = record.date.formatted(.iso8601.year().month().day().dateSeparator(.dash))
+        panel.nameFieldStringValue = "protokoll-\(base).\(asMarkdown ? "md" : "txt")"
+        if panel.runModal() == .OK, let url = panel.url {
+            let content = asMarkdown
+                ? "# Protokoll · \(record.date.formatted(.dateTime.day().month().year().hour().minute()))\n\n\(record.correctedText)\n"
+                : record.correctedText
+            try? content.write(to: url, atomically: true, encoding: .utf8)
+        }
     }
 }

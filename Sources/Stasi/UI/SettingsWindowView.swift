@@ -2,7 +2,7 @@ import SwiftUI
 import AVFoundation
 import AppKit
 
-// MARK: - Einstellungen (im Fenster, max-width 600)
+// MARK: - Einstellungen (v2, max-width 620)
 
 struct SettingsWindowView: View {
     @Environment(AppState.self) private var app
@@ -14,22 +14,20 @@ struct SettingsWindowView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 26) {
                 header
-                VStack(alignment: .leading, spacing: 22) {
+                VStack(alignment: .leading, spacing: 24) {
                     aufnahmeSection
                     eingabeSection
                     verhaltenSection
+                    darstellungSection
+                    speicherSection
                     ueberSection
                 }
             }
             .padding(.horizontal, 32)
             .padding(.vertical, 28)
-            .frame(maxWidth: 600, alignment: .leading)
+            .frame(maxWidth: 620, alignment: .leading)
         }
         .frame(maxWidth: .infinity, alignment: .center)
-        // KEIN .onDisappear: SwiftUI feuert Appearance-Closures auch beim
-        // App-Beenden (windowWillClose-Teardown) – der Executor-Check im
-        // Closure crashte dort (macOS 26.6). Der Monitor-Guard in
-        // beginHotkeyRecording reicht gegen Doppel-Monitore.
         .onAppear { app.refreshPermissionState() }
     }
 
@@ -46,18 +44,12 @@ struct SettingsWindowView: View {
         section("AUFNAHME") {
             shortcutRow(label: "Push-to-talk",
                         description: "Halten zum Sprechen, loslassen zum Einfügen.",
-                        badge: comboText) {
+                        badge: comboText, editable: true) {
                 if !recordingHotkey { beginHotkeyRecording() }
             }
             shortcutRow(label: "Hands-free-Modus",
-                        description: "Doppeltipp startet die Aufnahme ohne Halten.",
-                        badge: "fn ×2", disabled: true) {}
-            shortcutRow(label: "Letztes Protokoll einfügen",
-                        description: "Tippt das letzte Diktat an der Cursorposition.",
-                        badge: "⌃ ⌘ V", disabled: true) {}
-            shortcutRow(label: "Letztes Protokoll kopieren",
-                        description: "Kopiert das letzte Diktat in die Zwischenablage.",
-                        badge: "⌃ ⌘ C", disabled: true) {}
+                        description: "Doppeltipp auf fn startet und stoppt die Aufnahme freihändig.",
+                        badge: "fn ×2")
 
             Divider().overlay(Theme.Palette.line)
 
@@ -98,7 +90,7 @@ struct SettingsWindowView: View {
     @State private var hotkeyCaptureMonitor: Any?
 
     private func beginHotkeyRecording() {
-        guard hotkeyCaptureMonitor == nil else { return } // kein Doppel-Monitor
+        guard hotkeyCaptureMonitor == nil else { return }
         recordingHotkey = true
         hotkeyCaptureMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .flagsChanged]) { event in
             if let monitor = hotkeyCaptureMonitor { NSEvent.removeMonitor(monitor) }
@@ -107,25 +99,34 @@ struct SettingsWindowView: View {
             switch event.type {
             case .keyDown where event.keyCode == 53:
                 break // ESC bricht ab
+            case .flagsChanged:
+                // Modifier-Taste (z. B. rechte ⌘) als Hotkey übernehmen.
+                if Self.isModifierKey(event.keyCode),
+                   !event.modifierFlags.intersection([.command, .control, .option, .shift]).isEmpty {
+                    app.applyHotkey(HotkeyEngine.Combo(keyCode: UInt64(event.keyCode), flags: 0))
+                }
+            case .keyDown:
+                let keyCode = UInt64(event.keyCode)
+                var flags: UInt64 = 0
+                if event.modifierFlags.contains(.command) { flags |= CGEventFlags.maskCommand.rawValue }
+                if event.modifierFlags.contains(.control) { flags |= CGEventFlags.maskControl.rawValue }
+                if event.modifierFlags.contains(.option) { flags |= CGEventFlags.maskAlternate.rawValue }
+                if event.modifierFlags.contains(.shift) { flags |= CGEventFlags.maskShift.rawValue }
+                app.applyHotkey(HotkeyEngine.Combo(keyCode: keyCode, flags: flags))
             default:
-                app.applyHotkey(HotkeyEngine.Combo(keyCode: UInt64(event.keyCode), flags: 0))
+                break
             }
             return nil
         }
     }
 
+    private static func isModifierKey(_ code: UInt16) -> Bool {
+        [54, 55, 56, 57, 58, 59, 60, 61, 63].contains(Int(code))
+    }
+
     private var comboText: String {
         if recordingHotkey { return "Taste drücken…" }
-        let c = app.currentCombo
-        let name: String
-        switch Int(c.keyCode) {
-        case 54: name = "⌘ R"
-        case 55: name = "⌘ L"
-        case 49: name = "Leertaste"
-        case 63: name = "fn"
-        default: name = VirtualKey.name(for: Int(c.keyCode)).replacingOccurrences(of: " halten", with: "")
-        }
-        return name
+        return VirtualKey.display(app.currentCombo)
     }
 
     // MARK: Eingabe
@@ -171,6 +172,34 @@ struct SettingsWindowView: View {
         }
     }
 
+    // MARK: Darstellung (Akzentfarbe)
+
+    private var darstellungSection: some View {
+        section("DARSTELLUNG") {
+            HStack(spacing: 10) {
+                ForEach(SettingsStore.accentPresets, id: \.1) { name, hex in
+                    Button {
+                        settings.accentHex = hex
+                    } label: {
+                        Circle()
+                            .fill(Color(stasiHex: hex))
+                            .frame(width: 26, height: 26)
+                            .overlay(
+                                Circle().strokeBorder(
+                                    settings.accentHex == hex ? Theme.Palette.ink : Theme.Palette.line,
+                                    lineWidth: settings.accentHex == hex ? 2 : 1)
+                            )
+                    }
+                    .buttonStyle(.plain)
+                    .scaleOnHover()
+                    .help(name)
+                }
+                Spacer()
+            }
+            settingHint("Standard ist Anthrazit – die Akzentfarbe zieht sich durch Nav, Charts und die Aufnahme-Pill.")
+        }
+    }
+
     // MARK: Über
 
     private var ueberSection: some View {
@@ -187,7 +216,33 @@ struct SettingsWindowView: View {
                     .font(Theme.Typo.secondary())
                     .foregroundColor(Theme.Palette.sub)
             }
+
             Divider().overlay(Theme.Palette.line)
+
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Stasi v 0.9 · Akte 001")
+                        .font(Theme.Typo.body().weight(.medium))
+                        .foregroundColor(Theme.Palette.ink)
+                    Text("Neueste Version im GitHub-Repo")
+                        .font(Theme.Typo.secondary())
+                        .foregroundColor(Theme.Palette.sub)
+                }
+                Spacer()
+                Link(destination: URL(string: "https://github.com/leomcguire/stasi")!) {
+                    Text("Auf GitHub prüfen")
+                        .font(.custom("Geist", size: 12).weight(.semibold))
+                        .foregroundColor(Theme.accent)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 8)
+                        .background(Theme.tint(Theme.accent))
+                        .cornerRadius(10)
+                }
+                .buttonStyle(.plain)
+            }
+
+            Divider().overlay(Theme.Palette.line)
+
             Text(Copy.privacyFootnote(settings))
                 .font(Theme.Typo.secondary())
                 .foregroundColor(Theme.Palette.sub)
@@ -199,15 +254,15 @@ struct SettingsWindowView: View {
 
     private func section(_ kickerText: String, @ViewBuilder content: () -> some View) -> some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text(kickerText).kicker(Theme.accent.brightenedForDarkMode())
+            Text(kickerText).kicker(Theme.accent)
             VStack(alignment: .leading, spacing: 14) { content() }
                 .card(padding: 18)
         }
     }
 
     private func shortcutRow(label: String, description: String,
-                             badge: String, disabled: Bool = false,
-                             action: @escaping () -> Void) -> some View {
+                             badge: String, editable: Bool = false,
+                             action: @escaping () -> Void = {}) -> some View {
         HStack {
             VStack(alignment: .leading, spacing: 2) {
                 Text(label).font(Theme.Typo.body()).foregroundColor(Theme.Palette.ink)
@@ -218,10 +273,15 @@ struct SettingsWindowView: View {
             Spacer()
             KeyBadge(badge)
                 .opacity(recordingHotkey && label == "Push-to-talk" ? 0.5 : 1)
-            Button(disabled ? "Bald" : "Ändern") { action() }
-                .font(Theme.Typo.secondary())
-                .buttonStyle(GhostButtonStyle())
-                .disabled(disabled)
+            if editable {
+                Button("Ändern") { action() }
+                    .font(Theme.Typo.secondary())
+                    .buttonStyle(GhostButtonStyle())
+            } else {
+                Label("Aktiv", systemImage: "checkmark")
+                    .font(Theme.Typo.secondary())
+                    .foregroundStyle(Theme.Palette.successColor)
+            }
         }
     }
 
@@ -245,6 +305,53 @@ struct SettingsWindowView: View {
             .font(Theme.Typo.kicker(size: 10))
             .tracking(0.2)
             .foregroundColor(Theme.Palette.sub.opacity(0.85))
+    }
+
+    // MARK: Speicher (Aufbewahrungsdauer + Alles löschen)
+
+    @State private var showDeleteConfirm = false
+
+    private var speicherSection: some View {
+        section("SPEICHER") {
+            Picker("Aufnahmen aufbewahren",
+                   selection: Binding(get: { settings.retention },
+                                      set: { settings.retention = $0 })) {
+                ForEach(Retention.allCases) { r in
+                    Text(r.label).tag(r)
+                }
+            }
+            .pickerStyle(.menu)
+            settingHint("Ältere Protokolle und ihre Audio-Aufnahmen werden automatisch von diesem Mac gelöscht.")
+
+            Divider().overlay(Theme.Palette.line)
+
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Alles löschen")
+                        .font(Theme.Typo.body())
+                        .foregroundColor(Theme.Palette.ink)
+                    Text("Entfernt alle Protokolle und Aufnahmen von diesem Mac.")
+                        .font(Theme.Typo.secondary())
+                        .foregroundColor(Theme.Palette.sub)
+                }
+                Spacer()
+                Button("Alles löschen", role: .destructive) {
+                    showDeleteConfirm = true
+                }
+                .buttonStyle(GhostButtonStyle(destructive: true))
+            }
+        }
+        .alert("Alle Daten löschen?", isPresented: $showDeleteConfirm) {
+            Button("Alles löschen", role: .destructive) {
+                app.history.deleteAll()
+            }
+            Button("Abbrechen", role: .cancel) {}
+        } message: {
+            Text("Alle Protokolle und Audio-Aufnahmen werden unwiderruflich von diesem Mac entfernt.")
+        }
+        .onChange(of: settings.retention) { _, _ in
+            app.applyRetention()
+        }
     }
 }
 

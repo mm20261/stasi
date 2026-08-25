@@ -78,4 +78,33 @@ final class HistoryStore {
         }
         save()
     }
+
+    /// Löscht sämtliche Protokolle inkl. Audio-Dateien.
+    func deleteAll() {
+        for record in records {
+            if let audioPath = record.audioPath {
+                try? FileManager.default.removeItem(atPath: audioPath)
+            }
+        }
+        records.removeAll()
+        save()
+    }
+
+    /// Entfernt Protokolle (und deren Audio), die älter als `days` Tage sind.
+    /// Liefert die Anzahl der entfernten Einträge.
+    @discardableResult
+    func purge(olderThan days: Int, now: Date = Date()) -> Int {
+        guard days > 0 else { return 0 }
+        let cutoff = now.addingTimeInterval(-Double(days) * 86_400)
+        let stale = records.filter { $0.date < cutoff }
+        guard !stale.isEmpty else { return 0 }
+        for record in stale {
+            if let audioPath = record.audioPath {
+                try? FileManager.default.removeItem(atPath: audioPath)
+            }
+        }
+        records.removeAll { $0.date < cutoff }
+        save()
+        return stale.count
+    }
 }

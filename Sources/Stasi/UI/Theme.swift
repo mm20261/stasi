@@ -1,9 +1,9 @@
 import SwiftUI
 import CoreText
 
-// MARK: - Design-System v3 „Cloud Design Handoff"
-// Tokens 1:1 aus Import/design_handoff_stasi/README.md übernommen.
-// Light + Dark Mode via adaptive Farben; Akzent user-wählbar.
+// MARK: - Design-System v2 „Stasi v2 Handoff"
+// Tokens 1:1 aus Import/design_handoff_stasi/Stasi v2.dc.html übernommen.
+// Kein Dark Mode (laut v2 maßgeblich), Akzent user-wählbar (Standard Anthrazit).
 
 enum FontLoader {
     nonisolated static func registerBundledFonts() {
@@ -12,15 +12,6 @@ enum FontLoader {
             CTFontManagerRegisterFontsForURL(url as CFURL, .process, nil)
         }
     }
-}
-
-private func adaptive(light: UInt32, dark: UInt32) -> Color {
-    Color(nsColor: NSColor(name: nil) { appearance in
-        let hex = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? dark : light
-        return NSColor(srgbRed: CGFloat((hex >> 16) & 0xFF) / 255,
-                       green: CGFloat((hex >> 8) & 0xFF) / 255,
-                       blue: CGFloat(hex & 0xFF) / 255, alpha: 1)
-    })
 }
 
 extension Color {
@@ -32,42 +23,41 @@ extension Color {
                   opacity: 1)
     }
 
-    /// Aufhellung für Dark Mode: mix mit hellem Grau-Blau (wie color-mix oklab im Handoff).
-    func brightenedForDarkMode() -> Color {
-        Color(nsColor: NSColor(name: nil) { appearance in
-            let isDark = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-            let ns = NSColor(self).usingColorSpace(.sRGB) ?? .controlAccentColor
-            guard isDark else { return ns }
-            func mix(_ a: CGFloat, _ b: CGFloat) -> CGFloat { a * 0.62 + b * 0.38 }
-            return NSColor(red: mix(ns.redComponent, 232 / 255),
-                           green: mix(ns.greenComponent, 236 / 255),
-                           blue: mix(ns.blueComponent, 242 / 255), alpha: 1)
-        })
-    }
+    /// v2 kennt keinen Dark Mode – der Aufhellungs-Hook bleibt als Identität
+    /// erhalten, damit bestehende Aufrufe unverändert funktionieren.
+    func brightenedForDarkMode() -> Color { self }
 }
 
 enum Theme {
-    // MARK: Farbe (adaptiv Light/Dark laut Handoff)
+    // MARK: Farbe (Light – v2 kennt kein Dark Mode)
     enum Palette {
-        static let background   = adaptive(light: 0xF4F4F2, dark: 0x252420)
-        static let surface      = adaptive(light: 0xFFFFFF, dark: 0x2F2E2A)
-        static let ink          = adaptive(light: 0x1A1917, dark: 0xF0EEE9)
-        static let sub          = adaptive(light: 0x716E67, dark: 0xA3A099)
-        static let line         = adaptive(light: 0xE4E2DC, dark: 0x3D3B36)
-        static let hover        = adaptive(light: 0xECEAE5, dark: 0x383631)
+        /// Fensterhintergrund als Verlauf (160deg #F3F6FA → #F8F7F3)
+        static let backgroundTop   = Color(stasiHex: 0xF3F6FA)
+        static let backgroundBottom = Color(stasiHex: 0xF8F7F3)
+        static let background      = Color(stasiHex: 0xF6F6F4) // solide Fallbackfarbe
+        static let surface         = Color(stasiHex: 0xFFFFFF)
+        static let ink             = Color(stasiHex: 0x1A1917)
+        static let sub             = Color(stasiHex: 0x8A8780)
+        static let line            = Color(stasiHex: 0xECEAE4)
+        static let hover           = Color(stasiHex: 0xF1F4F8)
 
-        // Aufnahme-Pill (dunkel in beiden Modi)
-        static let pill         = Color(stasiHex: 0x1A1917)
-        static let pillDark     = Color(stasiHex: 0x403E38)
-        static let pillInk      = Color(stasiHex: 0xF4F2ED)
-
-        static let recRed       = Color(stasiHex: 0xFF453A)
-        static let destructive  = Color(stasiHex: 0xC8102E)
-        static let successColor = Color(stasiHex: 0x30A46C)
+        static let recRed          = Color(stasiHex: 0xFF453A)
+        static let destructive     = Color(stasiHex: 0xC8102E)
+        static let successColor    = Color(stasiHex: 0x30A46C)
     }
 
-    /// Akzent-Tint (aktive Nav, Charts): accent 11 % auf surface.
+    static var backgroundGradient: LinearGradient {
+        LinearGradient(colors: [Palette.backgroundTop, Palette.backgroundBottom],
+                       startPoint: .topLeading, endPoint: .bottomTrailing)
+    }
+
+    /// Akzent-Tint (aktive Flächen, Badge-Hintergründe): accent 12 %.
     static func tint(_ accent: Color) -> Color {
+        accent.opacity(0.12)
+    }
+
+    /// Kartenschatten: `0 2px 8px color-mix(accent 12%, transparent)`.
+    static func shadow(_ accent: Color) -> Color {
         accent.opacity(0.12)
     }
 
@@ -75,14 +65,16 @@ enum Theme {
     /// Theme.accent im Body lesen, tracken damit accentHex automatisch.
     nonisolated(unsafe) static weak var sharedSettings: SettingsStore?
 
-    @MainActor static var accent: Color { sharedSettings?.accentColor ?? Color(stasiHex: 0x1D4E89) }
-    @MainActor static var accentPressed: Color { sharedSettings?.accentPressedColor ?? Color(stasiHex: 0x16406F) }
+    @MainActor static var accent: Color { sharedSettings?.accentColor ?? Color(stasiHex: 0x1A1917) }
+    @MainActor static var accentPressed: Color { sharedSettings?.accentPressedColor ?? Color(stasiHex: 0x141311) }
 
-    // MARK: Raum & Form (Handoff: Karten r12 ohne Schatten, Controls r8–9, Pill 999)
+    // MARK: Raum & Form (v2: Karten r16 ohne Border + Schatten, Controls r9/r12, Pill 999)
     enum Metrics {
-        static let sidebarWidth: CGFloat = 212
-        static let radiusCard: CGFloat = 12
+        static let sidebarWidth: CGFloat = 200
+        static let sidebarCollapsed: CGFloat = 64
+        static let radiusCard: CGFloat = 16
         static let radiusControl: CGFloat = 9
+        static let radiusInput: CGFloat = 12
         static let radiusPill: CGFloat = 999
         static let hairline: CGFloat = 1
         static let gridGap: CGFloat = 12
@@ -90,27 +82,29 @@ enum Theme {
 
     // MARK: Typografie – Geist / Geist Mono (Fallback: System)
     enum Typo {
-        static let ui = Font.custom("Geist", size: 13.5)
+        static let ui = Font.custom("Geist", size: 13)
         static let mono = Font.custom("Geist Mono", size: 11)
 
-        static func h1() -> Font { .custom("Geist", size: 28).weight(.semibold) }
+        static func h1() -> Font { .custom("Geist", size: 27).weight(.bold) }
         static func stat() -> Font { .custom("Geist", size: 24).weight(.semibold) }
+        static func bigStat() -> Font { .custom("Geist", size: 28).weight(.bold) }
         static func body() -> Font { ui }
-        static func secondary() -> Font { .custom("Geist", size: 12.5) }
-        static func kicker(size: CGFloat = 10.5) -> Font {
+        static func secondary() -> Font { .custom("Geist", size: 12) }
+        static func kicker(size: CGFloat = 10) -> Font {
             .custom("Geist Mono", size: size).weight(.medium)
         }
         static func counter(_ size: CGFloat = 13) -> Font {
             .custom("Geist Mono", size: size)
         }
-        static func nav() -> Font { .custom("Geist", size: 13.5) }
-        static func wordmark() -> Font { .custom("Geist Mono", size: 17).weight(.semibold) }
+        static func nav() -> Font { .custom("Geist", size: 13) }
+        static func wordmark() -> Font { .custom("Geist Mono", size: 15).weight(.semibold) }
     }
 
     // MARK: Bewegung
     enum Motion {
         static let fast = Animation.easeOut(duration: 0.15)
         static let panel = Animation.smooth(duration: 0.25)
+        static let micro = Animation.easeInOut(duration: 0.18)
     }
 }
 
@@ -133,22 +127,61 @@ extension View {
     func kicker(_ color: Color) -> some View { modifier(KickerStyle(color: color)) }
 }
 
+/// v2-Karte: radius 16, KEINE Border, Akzent-Schatten `0 2px 8px`.
 struct CardStyle: ViewModifier {
     var padding: CGFloat = 16
     func body(content: Content) -> some View {
         content
             .padding(padding)
             .background(Theme.Palette.surface)
-            .cornerRadius(Theme.Metrics.radiusCard)
-            .overlay(
-                RoundedRectangle(cornerRadius: Theme.Metrics.radiusCard)
-                    .strokeBorder(Theme.Palette.line, lineWidth: Theme.Metrics.hairline)
-            )
+            .clipShape(RoundedRectangle(cornerRadius: Theme.Metrics.radiusCard))
+            .shadow(color: Theme.shadow(Theme.accent), radius: 8, x: 0, y: 2)
     }
 }
 
 extension View {
     func card(padding: CGFloat = 16) -> some View { modifier(CardStyle(padding: padding)) }
+}
+
+/// v2-Mikrointeraktion: Karte bei Hover leicht anheben (translateY −3px).
+struct LiftOnHover: ViewModifier {
+    @State private var hovered = false
+    func body(content: Content) -> some View {
+        content
+            .offset(y: hovered ? -3 : 0)
+            .shadow(color: Theme.shadow(Theme.accent),
+                    radius: hovered ? 12 : 8, x: 0, y: hovered ? 6 : 2)
+            .onHover { hovered = $0 }
+            .animation(Theme.Motion.micro, value: hovered)
+    }
+}
+
+/// v2-Mikrointeraktion: Nav-Zeile bei Hover nach rechts rücken (translateX 3px).
+struct SlideOnHover: ViewModifier {
+    @State private var hovered = false
+    func body(content: Content) -> some View {
+        content
+            .offset(x: hovered ? 3 : 0)
+            .onHover { hovered = $0 }
+            .animation(Theme.Motion.micro, value: hovered)
+    }
+}
+
+/// v2-Mikrointeraktion: Icon-Button bei Hover skalieren (1.1).
+struct ScaleOnHover: ViewModifier {
+    @State private var hovered = false
+    func body(content: Content) -> some View {
+        content
+            .scaleEffect(hovered ? 1.1 : 1)
+            .onHover { hovered = $0 }
+            .animation(Theme.Motion.micro, value: hovered)
+    }
+}
+
+extension View {
+    func liftOnHover() -> some View { modifier(LiftOnHover()) }
+    func slideOnHover() -> some View { modifier(SlideOnHover()) }
+    func scaleOnHover() -> some View { modifier(ScaleOnHover()) }
 }
 
 /// Key-Badge (Tastenkürzel-Chip, z. B. „⌥ Leertaste“)
@@ -159,13 +192,13 @@ struct KeyBadge: View {
 
     var body: some View {
         Text(text)
-            .font(Theme.Typo.kicker(size: 11))
+            .font(Theme.Typo.kicker(size: 11.5))
             .tracking(0.5)
             .foregroundColor(Theme.Palette.ink)
-            .padding(.horizontal, 8)
+            .padding(.horizontal, 9)
             .padding(.vertical, 4)
             .background(Theme.Palette.hover)
-            .cornerRadius(6)
+            .cornerRadius(7)
     }
 }
 
@@ -199,6 +232,41 @@ struct GhostButtonStyle: ButtonStyle {
             .background(Capsule().fill(Theme.Palette.surface))
             .overlay(Capsule().strokeBorder(Theme.Palette.line, lineWidth: Theme.Metrics.hairline))
             .opacity(configuration.isPressed ? 0.7 : 1)
+            .animation(Theme.Motion.fast, value: configuration.isPressed)
+    }
+}
+
+/// v2-Input: surface-Hintergrund, radius 12, kein Border, Akzent-Schatten.
+struct StasiInputStyle: ViewModifier {
+    func body(content: Content) -> some View {
+        content
+            .textFieldStyle(.plain)
+            .font(Font.custom("Geist", size: 13.5))
+            .padding(.horizontal, 16)
+            .padding(.vertical, 11)
+            .background(Theme.Palette.surface)
+            .clipShape(RoundedRectangle(cornerRadius: Theme.Metrics.radiusInput))
+            .shadow(color: Theme.shadow(Theme.accent), radius: 8, x: 0, y: 2)
+    }
+}
+
+extension View {
+    func stasiInput() -> some View { modifier(StasiInputStyle()) }
+}
+
+/// v2-Akzent-Button (radius 12, Akzent, weiß, Hover −2px).
+struct AccentButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(Font.custom("Geist", size: 13).weight(.semibold))
+            .foregroundColor(.white)
+            .padding(.horizontal, 18)
+            .padding(.vertical, 11)
+            .background(
+                RoundedRectangle(cornerRadius: Theme.Metrics.radiusInput)
+                    .fill(configuration.isPressed ? Theme.accentPressed : Theme.accent)
+            )
+            .scaleEffect(configuration.isPressed ? 0.97 : 1)
             .animation(Theme.Motion.fast, value: configuration.isPressed)
     }
 }

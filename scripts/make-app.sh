@@ -65,7 +65,7 @@ cat > "$CONTENTS/Info.plist" <<PLIST
 PLIST
 
 echo "▸ Icon…"
-ICON_PNG_DIR="$ROOT/Import/design_handoff_stasi/icons/AppIcon"
+ICON_PNG_DIR="$ROOT/Import/design_handoff_stasi/icons/anthrazit"
 if [ -d "$ICON_PNG_DIR" ]; then
     # Handoff-Icon nutzen
     ICONSET="$ROOT/build/icon.iconset"

@@ -17,23 +17,31 @@ App getippt. Komplett **on-device** via macOS-26-`SpeechTranscriber` (EN/DE).
 - **Echte Mac-App** (Dock-Icon, App-Menü, ⌘,-Settings im Fenster) – bewusst KEIN
   Menu-bar-Utility, aber MIT sekundärem NSStatusItem-Menü.
 - Name „Stasi" mit dezenter Ironie in der Copy („Wir hören zu.") – abschaltbar.
-- Design: „Cloud Design"-Handoff (Nutzer hat es extern gestaltet) in `Import/design_handoff_stasi/`
-  – Sidebar-Layout, Geist/Geist-Mono-Fonts (gebündelt), Light/Dark, 8 wählbare Akzentfarben.
-  Design-Tokens zentral in `Sources/Stasi/UI/Theme.swift`. Vorschau: `preview/tokens.html`.
-  Ursprüngliche Spezifikation: `DESIGN-HANDOFF.md`.
+- Design: v2-Handoff (maßgeblich: `Import/design_handoff_stasi/Stasi v2.dc.html`) – Sidebar-
+  Layout (einklappbar 200↔64 px), Geist/Geist-Mono-Fonts (gebündelt), KEIN Dark Mode,
+  5 Akzentfarben (Standard Anthrazit `#1A1917`), Ironie-Copy standardmäßig AUS.
+  Design-Tokens zentral in `Sources/Stasi/UI/Theme.swift` (Gradient-bg, Karten r16 ohne
+  Border + Akzent-Schatten). Weitere Änderungen über den Handoff-Prozess (Token-Vertrag).
 
-## Aktueller Stand (Stand: 24.08.2026, später Abend)
+## Aktueller Stand (Stand: 25.08.2026)
 
 **Funktioniert end-to-end:** Hotkey (rechte ⌘ halten) → Aufnahme → on-device-Transkription
 (EN/DE) → Dictionary-Biasing + Korrektur-Pass → Injection in fokussierte App → Protokoll-
-Historie (persistiert, Play/Export .txt/.md/Löschen) → Dashboard mit Stats + Wochenchart.
-Aufnahme-Pill (Wispr-Kompaktstil, rein AppKit) mit ✕ Verwerfen / ✓ Sofort einfügen + Toasts.
+Historie (persistiert, Play/Export .txt/.md/Audio .wav/Löschen). UI im v2-Design: Sidebar
+einklappbar, „Der Bericht" (Heute-Liste + 252px-Rail), eigener **Insights**-Screen
+(Stat-Karten, Wohin-diktiert-Balken, Streak-Heatmap 16×7), Aufnahme-Pill im Mini-Format
+(26px, Timer + 14 Pegelbalken, Akzent-Farbe, Float/Puls-Animation).
+Nach jedem Diktat landet der korrigierte Text **automatisch in der Zwischenablage**
+(⌘V zum Einfügen – wie bei Wispr). **Fn-Doppeltipp** (Hands-free Toggle) über den
+EINEN Session-Tap via `ShortcutDetector`. **Push-to-talk-Shortcut frei belegbar**
+(Modifier + Taste) in den Einstellungen.
+**Speicher-Sektion**: Aufbewahrungsdauer (Nie/1Tag/1Woche/2Wochen/1Monat) + „Alles löschen"
+(Retention purged alte Protokolle + WAVs beim Start, bei Änderung und ~60s-Poll).
 
-**Test-Suite: 54 Tests, 0 Fehler** (`Tests/StasiTests/`). 4 Pipeline-E2E-Tests sind gated
+**Test-Suite: 92 Tests, 0 Fehler** (`Tests/StasiTests/`). 4 Pipeline-E2E-Tests sind gated
 (siehe Regeln unten). TDD etabliert – bei Änderungen an Logik: erst Test, dann Fix.
 
 ### Bekannte Platzhalter („Bald" im UI)
-- Hands-free-Modus (Doppeltipp fn), ⌃⌘V (letztes Protokoll einfügen), ⌃⌘C (kopieren)
 - „Auto-gelernt": UI + Store-Mechanik da (`EntryType.learned`, `promote`), aber automatische
   Begriffs-Erkennung beim Diktieren noch NICHT aktiv
 - KI-Nachbearbeitung (Toggle stored, inaktiv) · Mikrofon-Auswahl (nutzt aktives macOS-Gerät)
@@ -48,8 +56,10 @@ Sources/Stasi/
 │                             (NSStatusItem+NSMenu – bewusst KEIN MenuBarExtra!)
 ├── Core/
 │   ├── AppState.swift         @MainActor @Observable State-Machine idle→recording→transcribing
-│   │                          →injecting; Hotkey-Modi (PTT/Umschalten), Sounds, WAV-Mitschrieb
-│   ├── SettingsStore.swift    @Observable mit GESPEICHERTEN Properties + didSet-UserDefaults
+│   │                          →injecting; Hotkey-Modi (PTT/Umschalten), Sounds, WAV-Mitschrieb,
+│   │                          Zusatz-Shortcuts (copyLast/insertLast/handsFree), applyRetention
+│   ├── SettingsStore.swift    @Observable mit GESPEICHERTEN Properties + didSet-UserDefaults;
+│   │                          Retention-Enum (Nie/1Tag/1Woche/2Wochen/1Monat)
 │   ├── AudioCapture.swift     AVAudioEngine-Tap; Render-Thread NUR: lock-geschützter RMS +
 │   │                          thread-safe yield; WAV auf serialer writeQueue
 │   ├── TranscriptionEngine.swift  SpeechAnalyzer/SpeechTranscriber, Biasing via
@@ -59,19 +69,21 @@ Sources/Stasi/
 │   ├── CorrectionEngine.swift Garantierter Korrektur-Pass (siehe Regeln!)
 │   ├── DictionaryModel.swift  EntryType word/correction/learned + CommonWords-Warnungen
 │   ├── DictionaryStore.swift  ~/Library/Application Support/Stasi/dictionary.json + File-Watcher
-│   ├── TranscriptionRecord.swift  Record-Modell + HistoryStore (history.json, persistiert)
-│   ├── HotkeyEngine.swift     CGEventTap listen-only + NSEvent-Fallback-Monitor + ensureEnabled
+│   ├── TranscriptionRecord.swift  Record-Modell + HistoryStore (history.json, deleteAll/purge)
+│   ├── HotkeyEngine.swift     CGEventTap listen-only (Session-Tap) + ShortcutDetector
+│   │                          (⌃⌘V/⌃⌘C-Chords + Fn-Doppeltipp, pur testbar)
+│   ├── StatsCalculator.swift  Insights-/Rail-Statistik (WPM, Streaks, App-Nutzung, Zeit
+│   │                          gespart, Wochen-Delta, Heatmap, Kompaktformat)
 │   ├── BiasProvider.swift     Wörterbuch → kurze Kontextliste (max 12, kürzeste zuerst)
 │   └── TextInjector.swift     CGEvents mit Unicode-Chunks (24er), Thread.sleep-Gating
 ├── UI/                        Theme.swift (Tokens), RootView, Sidebar, DashboardView,
-│                              ProtocolsView, DictionaryView, SettingsWindowView, AccountView,
-│                              RecordingPill.swift (AppKit!), Effects.swift (pulseForever)
+│                              InsightsView, ProtocolsView, DictionaryView, SettingsWindowView,
+│                              AccountView, RecordingPill.swift (AppKit!), Effects.swift
 └── Support/                   Permissions.swift (Mikrofon/AX/ListenEvent!), VirtualKey.swift
 
-scripts/make-app.sh            → build/Stasi.app (ad-hoc signiert, Icon aus Import/-PNGs)
+scripts/make-app.sh            → build/Stasi.app (stabil signiert, Icon aus Import/…/icons/anthrazit)
 scripts/gen_icon.swift         → Fallback-Icon-Generator
-preview/token-template.json    → Design-Token-Vorlage für den Nutzer
-Tests/StasiTests/              → 54 Tests (XCTest)
+Tests/StasiTests/              → 87 Tests (XCTest)
 ```
 
 ## ⚠️ HART ERARBEITETE REGELN (macOS 26.6 / Swift 6.3 – NICHT verletzen!)
@@ -177,7 +189,8 @@ echter, vom Nutzer reproduzierter Bug:
 - **`swift test` kann an der Runner-Infra hängen** – zuverlässig:
   `swift build --build-tests && xcrun xctest .build/arm64-apple-macosx/debug/StasiPackageTests.xctest`
 - Suite: CorrectionEngine (14), Stores (12), Settings/Copy/Keys/Level (24), Pipeline (4 aktiv
-  + 4 gated). Bei Logik-Änderungen: erst Test schreiben/ändern, dann implementieren (TDD).
+  + 4 gated), StatsCalculator (17), ShortcutDetector (10). Bei Logik-Änderungen: erst Test
+  schreiben/ändern, dann implementieren (TDD).
 - Diagnose-Logs laufen mit: `STASI-HK PRESS/RELEASE`, `STASI-PILL ✓/✕`, `STASI-APP …`,
   `STASI-WATCH` (Main-Thread-Stalls >1 s). Lesen:
   `log show --last 30m --predicate 'eventMessage CONTAINS "STASI"' --style compact`
@@ -195,9 +208,7 @@ Nach Rebuild: TCC neu erteilen (App zeigt Status im Bericht + Einstellungen).
 ## Offene Ideen / Roadmap
 
 - Auto-gelernt aktivieren (Begriffe aus Transkripten vorschlagen)
-- Hands-free-Modus + ⌃⌘V/⌃⌘C-Shortcuts real implementieren
 - whisper.cpp-Fallback mit echtem Initial-Prompt-Biasing (BiasProvider-Hook existiert)
 - Sprachwechsel pro Äußerung · Snippets · KI-Nachbearbeitung (Toggle vorhanden)
-- Design-Feinschliff: Nutzer findet v2 „altbacken" → neues Design kommt aus
-  `Import/design_handoff_stasi/` (bereits umgesetzt) – weitere Änderungen über
-  `DESIGN-HANDOFF.md`-Prozess (Token-Vertrag!)
+- Hands-free (Fn-Doppeltipp) neu belegbar machen (aktuell fest verdrahtet)
+- Design-Feinschliff: weitere Änderungen über den `Import/design_handoff_stasi/`-Prozess

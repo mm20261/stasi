@@ -29,7 +29,7 @@ struct StasiApp: App {
                     appState.accessibilityGranted = Permissions.accessibilityGranted
                 }
         }
-        .defaultSize(width: 1080, height: 700)
+        .defaultSize(width: 1200, height: 780)
         .windowStyle(.automatic)
         .commands {
             CommandGroup(replacing: .appSettings) {
@@ -191,6 +191,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             PillController.shared.showToast(message, success: success)
         }
         PillController.shared.app = app
+        app.applyRetention()
         statusBar.install(app: app, settings: settings, selection: selection)
         poll()
     }
@@ -219,7 +220,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 phase: app.phase,
                 partialText: app.partialText,
                 elapsed: app.elapsed,
-                level: app.displayLevel
+                level: app.displayLevel,
+                accentHex: app.settings.accentHex
             )
             if tickCount % 20 == 0, app.accessibilityGranted {
                 // NUR mit Eingabe-Überwachungs-Recht reaktivieren: einen von
@@ -229,6 +231,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             if tickCount % 40 == 0 {
                 app.refreshPermissionStateAsync() // alle 2 s, TCC-XPC im Hintergrund
+            }
+            if tickCount % 1200 == 0 {
+                app.applyRetention() // Retention alle ~60 s prüfen
             }
         }
     }

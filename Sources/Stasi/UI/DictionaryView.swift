@@ -1,6 +1,6 @@
 import SwiftUI
 
-// MARK: - Wörterbuch (Tabs: Begriffe / Ersetzungen / Auto-gelernt)
+// MARK: - Wörterbuch (v2-Restyle, Tabs: Begriffe / Ersetzungen / Auto-gelernt)
 
 struct DictionaryView: View {
     @Environment(AppState.self) private var app
@@ -23,13 +23,17 @@ struct DictionaryView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            header
-            tabs
-            content
+        ScrollView {
+            VStack(alignment: .leading, spacing: 18) {
+                header
+                tabs
+                content
+            }
+            .padding(.horizontal, 32)
+            .padding(.vertical, 28)
+            .frame(maxWidth: 620, alignment: .leading)
         }
-        .padding(.horizontal, 32)
-        .padding(.vertical, 28)
+        .frame(maxWidth: .infinity, alignment: .center)
     }
 
     private var header: some View {
@@ -38,8 +42,8 @@ struct DictionaryView: View {
                 .font(Theme.Typo.h1())
                 .tracking(-0.3)
                 .foregroundColor(Theme.Palette.ink)
-            Text("Damit Stasi deine Namen und Begriffe richtig schreibt.")
-                .font(Theme.Typo.secondary())
+            Text("Eigene Begriffe, damit Stasi sie korrekt protokolliert.")
+                .font(Theme.Typo.body())
                 .foregroundColor(Theme.Palette.sub)
         }
     }
@@ -82,13 +86,13 @@ struct DictionaryView: View {
     // MARK: Begriffe
 
     private var begriffeTab: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            AddRowContainer {
-                TextField("Neuer Begriff…", text: $newTerm)
-                    .textFieldStyle(.plain)
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(spacing: 8) {
+                TextField("Begriff hinzufügen — z. B. OnePage, Meta CAPI …", text: $newTerm)
+                    .stasiInput()
                     .onSubmit { addTerm() }
                 Button("Hinzufügen") { Task { @MainActor in addTerm() } }
-                    .buttonStyle(PillButtonStyle())
+                    .buttonStyle(AccentButtonStyle())
                     .disabled(newTerm.trimmingCharacters(in: .whitespaces).isEmpty)
             }
             termList(type: .word) { entry in
@@ -114,19 +118,19 @@ struct DictionaryView: View {
     // MARK: Ersetzungen
 
     private var ersetzungenTab: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            AddRowContainer {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(spacing: 8) {
                 TextField("Kürzel (gehört)", text: $newFrom)
-                    .textFieldStyle(.plain)
+                    .stasiInput()
                     .onSubmit { addReplacement() }
                 Image(systemName: "arrow.right")
                     .font(.system(size: 11))
                     .foregroundColor(Theme.Palette.sub)
                 TextField("Langform (geschrieben)", text: $newTo)
-                    .textFieldStyle(.plain)
+                    .stasiInput()
                     .onSubmit { addReplacement() }
                 Button("Hinzufügen") { Task { @MainActor in addReplacement() } }
-                    .buttonStyle(PillButtonStyle())
+                    .buttonStyle(AccentButtonStyle())
                     .disabled(newFrom.trimmingCharacters(in: .whitespaces).isEmpty
                               || newTo.trimmingCharacters(in: .whitespaces).isEmpty)
             }
@@ -239,24 +243,34 @@ struct DictionaryView: View {
     }
 }
 
-// MARK: - Add-Zeile (Input + Button in Karte)
+// MARK: - Icon-Button (28×28, Hover: Akzent bzw. Rot für Löschen)
 
-struct AddRowContainer<Content: View>: View {
-    @ViewBuilder let content: Content
+struct RowIconButton: View {
+    let symbol: String
+    var destructive = false
+    let action: () -> Void
 
-    init(@ViewBuilder content: () -> Content) {
-        self.content = content()
-    }
+    @State private var hovered = false
 
     var body: some View {
-        HStack(spacing: Theme.Metrics.gridGap) {
-            content
+        Button(action: action) {
+            Image(systemName: symbol)
+                .font(.system(size: 13))
+                .foregroundStyle(hovered
+                                 ? (destructive ? Theme.Palette.destructive : Theme.accent)
+                                 : Theme.Palette.sub)
+                .frame(width: 28, height: 28)
+                .background(
+                    RoundedRectangle(cornerRadius: 9)
+                        .fill(hovered
+                              ? (destructive ? Theme.Palette.destructive.opacity(0.08) : Theme.tint(Theme.accent))
+                              : Color.clear)
+                )
+                .contentShape(Rectangle())
         }
-        .padding(12)
-        .background(Theme.Palette.surface)
-        .cornerRadius(Theme.Metrics.radiusCard)
-        .overlay(RoundedRectangle(cornerRadius: Theme.Metrics.radiusCard)
-            .strokeBorder(Theme.Palette.line, lineWidth: Theme.Metrics.hairline))
+        .buttonStyle(.plain)
+        .onHover { hovered = $0 }
+        .animation(Theme.Motion.micro, value: hovered)
     }
 }
 
@@ -275,9 +289,16 @@ struct EditableTermRow: View {
             if editing {
                 TextField("", text: $draft)
                     .textFieldStyle(.plain)
+                    .font(Theme.Typo.body())
+                    .padding(.horizontal, 11)
+                    .padding(.vertical, 6)
+                    .background(Theme.Palette.backgroundTop)
+                    .cornerRadius(9)
+                    .overlay(RoundedRectangle(cornerRadius: 9)
+                        .strokeBorder(Theme.accent, lineWidth: 1))
                     .onSubmit { commit() }
                 Button("Speichern") { Task { @MainActor in commit() } }
-                    .buttonStyle(PillButtonStyle())
+                    .buttonStyle(AccentButtonStyle())
             } else {
                 Text(entry.value)
                     .font(Theme.Typo.body())
@@ -294,10 +315,11 @@ struct EditableTermRow: View {
                 }
             }
             Spacer()
-            iconBtn(editing ? "checkmark" : "pencil", action: editing ? { commit() } : { startEdit() })
-            iconBtn("trash", destructive: true, action: onDelete)
+            RowIconButton(symbol: editing ? "checkmark" : "pencil",
+                          action: editing ? { commit() } : { startEdit() })
+            RowIconButton(symbol: "trash", destructive: true, action: onDelete)
         }
-        .padding(.horizontal, 10)
+        .padding(.horizontal, 12)
         .padding(.vertical, 9)
     }
 
@@ -308,17 +330,6 @@ struct EditableTermRow: View {
             var e = entry; e.value = v; onSave(e)
         }
         editing = false
-    }
-
-    @ViewBuilder private func iconBtn(_ symbol: String, destructive: Bool = false,
-                                      action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Image(systemName: symbol)
-                .font(.system(size: 11.5))
-                .foregroundStyle(destructive ? Theme.Palette.sub : Theme.Palette.sub)
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
     }
 }
 
@@ -337,10 +348,24 @@ struct EditableReplacementRow: View {
                 TextField("", text: $draftFrom)
                     .textFieldStyle(.plain)
                     .font(Theme.Typo.counter())
+                    .padding(.horizontal, 11)
+                    .padding(.vertical, 6)
+                    .background(Theme.Palette.backgroundTop)
+                    .cornerRadius(9)
+                    .overlay(RoundedRectangle(cornerRadius: 9)
+                        .strokeBorder(Theme.accent, lineWidth: 1))
                 Image(systemName: "arrow.right").font(.system(size: 11)).foregroundColor(Theme.Palette.sub)
                 TextField("", text: $draftTo)
                     .textFieldStyle(.plain)
-                Button("Speichern") { commit() }.buttonStyle(PillButtonStyle())
+                    .font(Theme.Typo.body())
+                    .padding(.horizontal, 11)
+                    .padding(.vertical, 6)
+                    .background(Theme.Palette.backgroundTop)
+                    .cornerRadius(9)
+                    .overlay(RoundedRectangle(cornerRadius: 9)
+                        .strokeBorder(Theme.accent, lineWidth: 1))
+                Button("Speichern") { Task { @MainActor in commit() } }
+                    .buttonStyle(AccentButtonStyle())
             } else {
                 Text(entry.matchSource)
                     .font(Theme.Typo.counter(11.5))
@@ -359,10 +384,11 @@ struct EditableReplacementRow: View {
                 }
             }
             Spacer()
-            iconBtn(editing ? "checkmark" : "pencil", action: editing ? { commit() } : { startEdit() })
-            iconBtn("trash", action: onDelete)
+            RowIconButton(symbol: editing ? "checkmark" : "pencil",
+                          action: editing ? { commit() } : { startEdit() })
+            RowIconButton(symbol: "trash", destructive: true, action: onDelete)
         }
-        .padding(.horizontal, 10)
+        .padding(.horizontal, 12)
         .padding(.vertical, 9)
     }
 
@@ -374,15 +400,5 @@ struct EditableReplacementRow: View {
             var e = entry; e.from = f; e.to = t; onSave(e)
         }
         editing = false
-    }
-
-    @ViewBuilder private func iconBtn(_ symbol: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Image(systemName: symbol)
-                .font(.system(size: 11.5))
-                .foregroundStyle(Theme.Palette.sub)
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
     }
 }

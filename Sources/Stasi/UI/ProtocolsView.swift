@@ -1,5 +1,6 @@
 import SwiftUI
 import AVFoundation
+import UniformTypeIdentifiers
 
 // MARK: - Protokolle (Transcriptions-Historie)
 
@@ -140,6 +141,7 @@ struct ProtocolsView: View {
 
     private func rowMenu(for record: TranscriptionRecord) -> some View {
         Menu {
+            Button("Audio extrahieren (.wav)") { extractAudio(record) }
             Button("Export als .txt") { export(record, asMarkdown: false) }
             Button("Export als .md") { export(record, asMarkdown: true) }
             Divider()
@@ -204,6 +206,16 @@ struct ProtocolsView: View {
                 ? "# Protokoll · \(record.date.formatted(.dateTime.day().month().year().hour().minute()))\n\n\(record.correctedText)\n"
                 : record.correctedText
             try? content.write(to: url, atomically: true, encoding: .utf8)
+        }
+    }
+
+    private func extractAudio(_ record: TranscriptionRecord) {
+        guard let path = record.audioPath else { return }
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [UTType(filenameExtension: "wav") ?? .audio]
+        panel.nameFieldStringValue = "stasi-audio.wav"
+        if panel.runModal() == .OK, let url = panel.url {
+            try? FileManager.default.copyItem(atPath: path, toPath: url.path)
         }
     }
 }

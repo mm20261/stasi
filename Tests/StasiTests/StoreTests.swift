@@ -103,9 +103,9 @@ final class HistoryStoreTests: XCTestCase {
         super.tearDown()
     }
 
-    private func makeRecord(text: String = "Hallo Welt") -> TranscriptionRecord {
+    private func makeRecord(text: String = "Hallo Welt", date: Date = Date()) -> TranscriptionRecord {
         TranscriptionRecord(
-            date: Date(),
+            date: date,
             localeID: "de_DE",
             rawText: text,
             correctedText: text,
@@ -150,5 +150,59 @@ final class HistoryStoreTests: XCTestCase {
     func testWordCount() {
         let record = makeRecord(text: "eins zwei drei vier\nfünf")
         XCTAssertEqual(record.wordCount, 5)
+    }
+
+    // MARK: Retention (Aufbewahrungsdauer)
+
+    func testDeleteAllRemovesRecordsAndAudio() throws {
+        let audioFile = tempDir.appendingPathComponent("a.wav")
+        try Data([0x00]).write(to: audioFile)
+        var r = makeRecord(text: "mit Audio")
+        r.audioPath = audioFile.path
+        store.insert(r)
+        store.insert(makeRecord(text: "ohne Audio"))
+
+        store.deleteAll()
+
+        XCTAssertTrue(store.records.isEmpty)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: audioFile.path))
+
+        let reloaded = HistoryStore(directory: tempDir)
+        XCTAssertTrue(reloaded.records.isEmpty)
+    }
+
+    func testPurgeRemovesOnlyOldRecords() {
+        let now = Date()
+        let old = makeRecord(text: "alt", date: now.addingTimeInterval(-20 * 86_400))
+        let recent = makeRecord(text: "neu", date: now)
+        store.insert(old)
+        store.insert(recent)
+
+        let purged = store.purge(olderThan: 7, now: now)
+
+        XCTAssertEqual(purged, 1)
+        XCTAssertEqual(store.records.count, 1)
+        XCTAssertEqual(store.records.first?.correctedText, "neu")
+    }
+
+    func testPurgeRemovesAudioFilesOfPurgedRecords() throws {
+        let now = Date()
+        let audioFile = tempDir.appendingPathComponent("old.wav")
+        try Data([0x00]).write(to: audioFile)
+        var old = makeRecord(text: "alt", date: now.addingTimeInterval(-10 * 86_400))
+        old.audioPath = audioFile.path
+        store.insert(old)
+
+        store.purge(olderThan: 7, now: now)
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: audioFile.path))
+    }
+
+    func testPurgeKeepsEverythingWhenWithinRetention() {
+        let now = Date()
+        store.insert(makeRecord(text: "frisch", date: now.addingTimeInterval(-3 * 86_400)))
+        let purged = store.purge(olderThan: 7, now: now)
+        XCTAssertEqual(purged, 0)
+        XCTAssertEqual(store.records.count, 1)
     }
 }

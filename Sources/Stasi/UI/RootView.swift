@@ -10,15 +10,12 @@ struct RootView: View {
     var body: some View {
         HStack(spacing: 0) {
             SidebarView()
-            Rectangle()
-                .fill(Theme.Palette.line)
-                .frame(width: Theme.Metrics.hairline)
             content
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .background(Theme.Palette.background)
-        .preferredColorScheme(colorScheme)
-        .overlay(alignment: .topTrailing) { avatarButton.padding(14) }
+        .background(Theme.backgroundGradient)
+        .preferredColorScheme(.light) // v2: kein Dark Mode
+        .overlay(alignment: .topTrailing) { avatarButton.padding(.top, 12).padding(.trailing, 20) }
         .onAppear { app.refreshPermissionState() }
     }
 
@@ -26,6 +23,7 @@ struct RootView: View {
     private var content: some View {
         switch selection.section {
         case .bericht: DashboardView()
+        case .insights: InsightsView()
         case .protokolle: ProtocolsView()
         case .woerterbuch: DictionaryView()
         case .einstellungen: SettingsWindowView()
@@ -64,13 +62,5 @@ struct RootView: View {
             return (String(parts[0].prefix(1)) + String(parts[1].prefix(1))).uppercased()
         }
         return settings.userName.prefix(2).uppercased().isEmpty ? "S" : String(settings.userName.prefix(2)).uppercased()
-    }
-
-    private var colorScheme: ColorScheme? {
-        switch settings.appearance {
-        case .system: nil
-        case .light: .light
-        case .dark: .dark
-        }
     }
 }

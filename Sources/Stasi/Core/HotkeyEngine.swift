@@ -13,17 +13,21 @@ final class HotkeyEngine: @unchecked Sendable {
         /// Rechte Command-Taste, ohne zusätzliche Modifier.
         static let defaultPTT = Combo(keyCode: 54, flags: 0)
     }
-
     var onPress: (() -> Void)?
     var onRelease: (() -> Void)?
+    var onChord: ((Combo) -> Void)?
+    var onHandsFree: (() -> Void)?
 
     private let combo: Combo
     private var tap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
     private(set) var isDown = false
+    private var shortcut = ShortcutDetector()
 
-    init(combo: Combo) {
+    init(combo: Combo, chords: [Combo] = [], handsFreeEnabled: Bool = false) {
         self.combo = combo
+        self.shortcut.chords = chords
+        self.shortcut.handsFreeEnabled = handsFreeEnabled
     }
 
     @discardableResult
@@ -122,21 +126,58 @@ final class HotkeyEngine: @unchecked Sendable {
 
     private func handle(type: CGEventType, event: CGEvent) {
         let keyCode = event.getIntegerValueField(.keyboardEventKeycode)
-        let matchesKey = UInt64(bitPattern: Int64(keyCode)) == combo.keyCode
+        let keyCodeU = UInt64(bitPattern: Int64(keyCode))
+        let matchesKey = keyCodeU == combo.keyCode
+        let isModifier = Self.modifierFlag(for: keyCodeU) != nil
 
+        // PTT
         switch type {
-        case .flagsChanged where matchesKey:
+        case .flagsChanged where matchesKey && isModifier:
             // Modifier-Taste (z. B. rechte Command): Down/Up aus Flags ableiten.
-            let commandDown = event.flags.contains(.maskCommand)
-            transition(to: commandDown)
-        case .keyDown where matchesKey && combo.flags != 0:
-            transition(to: event.flags.contains(CGEventFlags(rawValue: combo.flags)))
-        case .keyDown where matchesKey && combo.flags == 0:
-            transition(to: true)
-        case .keyUp where matchesKey && combo.flags == 0:
+            // Ist bei Command gleichzeitig Control gedrückt, ist es ein Chord,
+            // kein Diktat-Start.
+            var down = event.flags.contains(Self.modifierFlag(for: keyCodeU)!)
+            if Self.modifierFlag(for: keyCodeU) == .maskCommand,
+               event.flags.contains(.maskControl) { down = false }
+            transition(to: down)
+        case .keyDown where matchesKey && !isModifier:
+            // Normale Taste: Down, wenn geforderte Modifier gehalten werden.
+            let down = combo.flags == 0 || (event.flags.rawValue & combo.flags) == combo.flags
+            transition(to: down)
+        case .keyUp where matchesKey && !isModifier:
             transition(to: false)
         default:
             break
+        }
+
+        // Zusatz-Shortcuts (Fn-Doppeltipp)
+        let kind: ShortcutDetector.Kind
+        switch type {
+        case .keyDown: kind = .keyDown
+        case .keyUp: kind = .keyUp
+        default: kind = .flagsChanged
+        }
+        let isRepeat = event.getIntegerValueField(.keyboardEventAutorepeat) != 0
+        let events = shortcut.process(kind: kind, keyCode: keyCodeU,
+                                      flags: event.flags.rawValue, isRepeat: isRepeat)
+        for e in events {
+            switch e {
+            case .chord(let c): onChord?(c)
+            case .handsFreeTap: onHandsFree?()
+            }
+        }
+    }
+
+    /// Bildet eine Modifier-Taste auf ihr CGEventFlag ab; nil für normale Tasten.
+    private static func modifierFlag(for keyCode: UInt64) -> CGEventFlags? {
+        switch keyCode {
+        case 54, 55: return .maskCommand
+        case 56, 60: return .maskShift
+        case 58, 61: return .maskAlternate
+        case 59: return .maskControl
+        case 63: return .maskSecondaryFn
+        case 57: return .maskAlphaShift
+        default: return nil
         }
     }
 
@@ -146,5 +187,57 @@ final class HotkeyEngine: @unchecked Sendable {
         DebugLog.log("STASI-HK: \(down ? "PRESS" : "RELEASE")")
         // Der Tap-Callback läuft auf dem Main-RunLoop → direkter Aufruf ist sicher.
         down ? onPress?() : onRelease?()
+    }
+}
+
+// MARK: - ShortcutDetector
+// Reiner, zustandsbehafteter Detektor für Zusatz-Shortcuts: Chord-Aktionen
+// und Fn-Doppeltipp (Hands-free). Kein CGEvent nötig → testbar.
+
+struct ShortcutDetector {
+    enum Kind: Equatable {
+        case keyDown, keyUp, flagsChanged
+    }
+
+    enum Event: Equatable {
+        case chord(HotkeyEngine.Combo)
+        case handsFreeTap
+    }
+
+    static let fnKeyCode: UInt64 = 63
+    static let secondaryFn: UInt64 = CGEventFlags.maskSecondaryFn.rawValue
+
+    var chords: [HotkeyEngine.Combo] = []
+    var handsFreeEnabled = false
+    var doubleTapWindow: TimeInterval = 0.35
+
+    private var fnWasDown = false
+    private var lastFnDownAt: Date?
+
+    mutating func process(kind: Kind, keyCode: UInt64, flags: UInt64,
+                          isRepeat: Bool = false, now: Date = Date()) -> [Event] {
+        var events: [Event] = []
+
+        if kind == .keyDown && !isRepeat {
+            for chord in chords where chord.keyCode == keyCode
+                && (flags & chord.flags) == chord.flags {
+                events.append(.chord(chord))
+            }
+        }
+
+        if handsFreeEnabled, kind == .flagsChanged, keyCode == Self.fnKeyCode {
+            let down = (flags & Self.secondaryFn) != 0
+            if down && !fnWasDown {
+                if let last = lastFnDownAt, now.timeIntervalSince(last) <= doubleTapWindow {
+                    events.append(.handsFreeTap)
+                    lastFnDownAt = nil
+                } else {
+                    lastFnDownAt = now
+                }
+            }
+            fnWasDown = down
+        }
+
+        return events
     }
 }

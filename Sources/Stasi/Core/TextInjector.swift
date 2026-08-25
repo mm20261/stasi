@@ -1,5 +1,6 @@
 import AppKit
 import CoreGraphics
+import ApplicationServices
 
 // MARK: - TextInjector
 // Tippt fertigen Text per synthetisierter Keyboard-Events in die fokussierte App.
@@ -39,5 +40,34 @@ enum TextInjector {
 
             offset = end
         }
+    }
+
+    /// Prüft via Accessibility-API, ob das fokussierte UI-Element der
+    /// vordersten App ein bearbeitbares Textfeld ist. Bei false würde
+    /// `inject()` einen System-Beep auslösen (kein Textfeld im Fokus).
+    static func isFocusedElementEditable() -> Bool {
+        let systemWide = AXUIElementCreateSystemWide()
+        var app: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(systemWide,
+                                            kAXFocusedApplicationAttribute as CFString,
+                                            &app) == .success else { return false }
+        var element: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(app as! AXUIElement,
+                                            kAXFocusedUIElementAttribute as CFString,
+                                            &element) == .success else { return false }
+        var role: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element as! AXUIElement,
+                                            kAXRoleAttribute as CFString,
+                                            &role) == .success,
+              let roleString = role as? String else { return false }
+        return isEditableRole(roleString)
+    }
+
+    /// Reine Rollen-Prüfung, testbar ohne AX-Abhängigkeit.
+    static func isEditableRole(_ role: String) -> Bool {
+        role == "AXTextField"
+            || role == "AXTextArea"
+            || role == "AXWebArea"
+            || role == "AXComboBox"
     }
 }

@@ -25,10 +25,10 @@ final class SettingsStoreTests: XCTestCase {
     func testDefaultsOnFirstLaunch() {
         let settings = SettingsStore(defaults: defaults)
         XCTAssertEqual(settings.appearance, .system)
-        XCTAssertEqual(settings.accentHex, 0x1D4E89)
+        XCTAssertEqual(settings.accentHex, 0x1A1917)
         XCTAssertEqual(settings.hotkeyMode, .pushToTalk)
         XCTAssertTrue(settings.soundOn)
-        XCTAssertTrue(settings.ironyOn)
+        XCTAssertFalse(settings.ironyOn)
         XCTAssertFalse(settings.autostartOn)
     }
 
@@ -72,6 +72,22 @@ final class SettingsStoreTests: XCTestCase {
         settings.userName = "Phil"
         let reloaded = SettingsStore(defaults: defaults)
         XCTAssertEqual(reloaded.userName, "Phil")
+    }
+
+    func testRetentionDefaultAndPersistence() {
+        let settings = SettingsStore(defaults: defaults)
+        XCTAssertEqual(settings.retention, .forever)
+        settings.retention = .oneMonth
+        let reloaded = SettingsStore(defaults: defaults)
+        XCTAssertEqual(reloaded.retention, .oneMonth)
+    }
+
+    func testRetentionDaysMapping() {
+        XCTAssertNil(Retention.forever.days)
+        XCTAssertEqual(Retention.oneDay.days, 1)
+        XCTAssertEqual(Retention.oneWeek.days, 7)
+        XCTAssertEqual(Retention.twoWeeks.days, 14)
+        XCTAssertEqual(Retention.oneMonth.days, 30)
     }
 }
 
@@ -119,6 +135,43 @@ final class VirtualKeyTests: XCTestCase {
 
     func testUnknownKeyFallsBack() {
         XCTAssertEqual(VirtualKey.name(for: 999), "Taste 999")
+    }
+
+    func testComboDisplayModifierOnly() {
+        XCTAssertEqual(VirtualKey.display(HotkeyEngine.Combo(keyCode: 54, flags: 0)), "⌘ Rechts")
+    }
+
+    func testComboDisplayKeyWithModifiers() {
+        let flags = CGEventFlags.maskAlternate.rawValue
+        XCTAssertEqual(VirtualKey.display(HotkeyEngine.Combo(keyCode: 49, flags: flags)), "⌥ Leertaste")
+    }
+
+    func testComboDisplayLetter() {
+        XCTAssertEqual(VirtualKey.display(HotkeyEngine.Combo(keyCode: 0, flags: 0)), "A")
+    }
+
+    func testComboDisplayMultiModifiers() {
+        let flags = CGEventFlags.maskControl.rawValue | CGEventFlags.maskCommand.rawValue
+        XCTAssertEqual(VirtualKey.display(HotkeyEngine.Combo(keyCode: 8, flags: flags)), "⌃⌘ C")
+    }
+
+    func testModifierSymbolsOrder() {
+        let flags = CGEventFlags.maskShift.rawValue | CGEventFlags.maskAlternate.rawValue
+        XCTAssertEqual(VirtualKey.modifierSymbols(flags), "⌥⇧")
+    }
+
+    func testEditableRoles() {
+        XCTAssertTrue(TextInjector.isEditableRole("AXTextField"))
+        XCTAssertTrue(TextInjector.isEditableRole("AXTextArea"))
+        XCTAssertTrue(TextInjector.isEditableRole("AXWebArea"))
+        XCTAssertTrue(TextInjector.isEditableRole("AXComboBox"))
+    }
+
+    func testNonEditableRoles() {
+        XCTAssertFalse(TextInjector.isEditableRole("AXButton"))
+        XCTAssertFalse(TextInjector.isEditableRole("AXWindow"))
+        XCTAssertFalse(TextInjector.isEditableRole("AXGroup"))
+        XCTAssertFalse(TextInjector.isEditableRole(""))
     }
 }
 

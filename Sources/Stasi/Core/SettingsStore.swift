@@ -8,6 +8,33 @@ import AVFoundation
 // Persistenz – berechnete Properties über UserDefaults werden vom Observable-
 // Makro NICHT getrackt (Views würden bei Änderung nicht neu zeichnen).
 
+/// Aufbewahrungsdauer für Aufnahmen/Protokolle.
+enum Retention: String, CaseIterable, Identifiable {
+    case forever, oneDay, oneWeek, twoWeeks, oneMonth
+    var id: String { rawValue }
+
+    /// Tage; nil = nie löschen.
+    var days: Int? {
+        switch self {
+        case .forever: nil
+        case .oneDay: 1
+        case .oneWeek: 7
+        case .twoWeeks: 14
+        case .oneMonth: 30
+        }
+    }
+
+    var label: String {
+        switch self {
+        case .forever: "Nie löschen"
+        case .oneDay: "1 Tag"
+        case .oneWeek: "1 Woche"
+        case .twoWeeks: "2 Wochen"
+        case .oneMonth: "1 Monat"
+        }
+    }
+}
+
 @MainActor
 @Observable
 final class SettingsStore {
@@ -24,8 +51,7 @@ final class SettingsStore {
     }
 
     static let accentPresets: [(String, UInt32)] = [
-        ("Blau", 0x1D4E89), ("Tinte", 0x1A1917), ("Orange", 0xD64500),
-        ("Rot", 0xC8102E), ("Weinrot", 0x8A1E1E), ("Gold", 0xB5892E),
+        ("Anthrazit", 0x1A1917), ("Blau", 0x1D4E89), ("Orange", 0xD64500),
         ("Grün", 0x2D6A4F), ("Violett", 0x5B4A8A),
     ]
 
@@ -44,8 +70,10 @@ final class SettingsStore {
         language = defaults.string(forKey: "stasi.langChoice") ?? "auto"
         soundOn = defaults.object(forKey: "stasi.soundOn") as? Bool ?? true
         aiPostProcess = defaults.object(forKey: "stasi.aiOn") as? Bool ?? false
-        ironyOn = defaults.object(forKey: "stasi.ironyOn") as? Bool ?? true
+        ironyOn = defaults.object(forKey: "stasi.ironyOn") as? Bool ?? false
         autostartOn = defaults.object(forKey: "stasi.autostartOn") as? Bool ?? false
+        if let raw = defaults.string(forKey: "stasi.retention"),
+           let r = Retention(rawValue: raw) { retention = r }
 
         Theme.sharedSettings = self
     }
@@ -56,7 +84,7 @@ final class SettingsStore {
         didSet { d.set(appearance.rawValue, forKey: "stasi.appearance") }
     }
 
-    var accentHex: UInt32 = 0x1D4E89 {
+    var accentHex: UInt32 = 0x1A1917 {
         didSet { d.set(Int(accentHex), forKey: "stasi.accentHex") }
     }
 
@@ -103,6 +131,10 @@ final class SettingsStore {
             d.set(autostartOn, forKey: "stasi.autostartOn")
             try? autostartOn ? SMAppService.mainApp.register() : SMAppService.mainApp.unregister()
         }
+    }
+
+    var retention: Retention = .forever {
+        didSet { d.set(retention.rawValue, forKey: "stasi.retention") }
     }
 
     // MARK: Init – Zustand aus Defaults laden

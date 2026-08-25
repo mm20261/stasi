@@ -63,7 +63,7 @@ final class AppState {
     // (macOS 26.6 korrumpiert sonst Executor-Metadaten → SwiftUI-Crashes).
     // Stattdessen: thread-sicheres yield in einen AsyncStream; EIN Task aus
     // echtem Concurrency-Kontext (startCommandLoop) konsumiert die Commands.
-    enum HotkeyCommand: Sendable { case press, release, discard, commit }
+    enum HotkeyCommand: Sendable { case press, release, discard, commit, handsFree }
     private let commandStream: AsyncStream<HotkeyCommand>
     private let commandContinuation: AsyncStream<HotkeyCommand>.Continuation
     private var commandLoopStarted = false
@@ -85,6 +85,7 @@ final class AppState {
                 case .release: hotkeyReleased()
                 case .discard: requestDiscard()
                 case .commit: requestCommit()
+                case .handsFree: handsFreeToggle()
                 }
             }
         }
@@ -121,10 +122,11 @@ final class AppState {
         }
         guard !tapInstalled else { return }
         DebugLog.log("STASI-APP: installTap – Bedienungshilfen erteilt, erstelle Session-Tap")
-        let hk = HotkeyEngine(combo: currentCombo)
+        let hk = HotkeyEngine(combo: currentCombo, handsFreeEnabled: true)
         // Kein Task, kein Actor-Hop im Tap-Pfad – nur enqueue (thread-sicher).
         hk.onPress = { [weak self] in self?.enqueue(.press) }
         hk.onRelease = { [weak self] in self?.enqueue(.release) }
+        hk.onHandsFree = { [weak self] in self?.enqueue(.handsFree) }
         if hk.start() {
             hotkey = hk
             tapInstalled = true
@@ -435,9 +437,24 @@ final class AppState {
 
         phase = .injecting
         partialText = trimmed
-        onToast?("Protokolliert. Eingefügt ✓", true)
+        // Auto-Kopieren: Das letzte Protokoll liegt immer in der Zwischenablage,
+        // sodass einfaches ⌘V zum (erneuten) Einfügen genügt – wie bei Wispr.
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(trimmed, forType: .string)
+
         Task.detached(priority: .userInitiated) {
-            TextInjector.inject(trimmed)
+            // Nur tippen, wenn ein editierbares Textfeld fokussiert ist –
+            // sonst spielt macOS den Fehler-Beep (kein Textfeld im Fokus).
+            let editable = TextInjector.isFocusedElementEditable()
+            await MainActor.run { [weak self] in
+                guard let self else { return }
+                self.onToast?(editable
+                              ? "Protokolliert ✓"
+                              : "In Zwischenablage kopiert – ⌘V zum Einfügen", true)
+            }
+            if editable {
+                TextInjector.inject(trimmed)
+            }
             await MainActor.run { [weak self] in
                 self?.phase = .idle
                 self?.partialText = ""
@@ -448,6 +465,27 @@ final class AppState {
     func copy(_ record: TranscriptionRecord) {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(record.correctedText, forType: .string)
+    }
+
+    // MARK: Zusatz-Shortcuts (Fn-Doppeltipp)
+
+    /// Fn-Doppeltipp – Hands-free: Aufnahme starten bzw. beenden (Togglen).
+    func handsFreeToggle() {
+        if phase == .idle {
+            startDictation()
+        } else if phase == .recording {
+            requestCommit()
+        }
+    }
+
+    /// Aufbewahrungsdauer anwenden: Protokolle + Audio löschen, die älter
+    /// als die eingestellte Dauer sind.
+    func applyRetention() {
+        guard let days = settings.retention.days else { return }
+        let purged = history.purge(olderThan: days)
+        if purged > 0 {
+            DebugLog.log("STASI-APP: Retention – \(purged) alte Protokolle gelöscht")
+        }
     }
 
     // MARK: Level / Timer
