@@ -41,7 +41,7 @@ App getippt. Komplett **on-device** via macOS-26-`SpeechTranscriber` (EN/DE).
 > Controls-r9 (keine Capsule-Mixe), „Jetzt ausprobieren" startet echte Probaufnahme,
 > Status-Chip-Puls aktiv, Wörterbuch-Index mit 16 px Leading-Padding.
 
-## Aktueller Stand (Stand: 25.08.2026 – v3-Look mit V4-Features)
+## Aktueller Stand (Stand: 26.08.2026 – v3-Look mit V4-Features)
 
 **Funktioniert end-to-end:** Hotkey (rechte ⌘ halten) → Aufnahme → on-device-Transkription
 (EN/DE) → deterministische Nachbearbeitung STANDARD (Zögerlaute, Stotterer, konservative
@@ -73,13 +73,14 @@ gesetzt – Systemstandard bleibt unangetastet).
 „Alles löschen" (Retention purged beim Start, bei Änderung und ~60s-Poll).
 Das Mikrofon-Popover zeigt den echten Systemstandard-Gerätenamen und den Auswahlstatus;
 der frühere kosmetische Fake-Pegel ist entfernt.
+Nach jedem neuen Protokoll schlägt **Auto-gelernt** wiederholt diktierte, unbekannte
+Begriffe vor (DE konservativ über Großschreibung mitten im Satz, EN zusätzlich über
+unbekannte Wörter). Vorschläge lassen sich übernehmen oder dauerhaft ignorieren.
 
-**Test-Suite: 290 Tests, 0 Fehler** (`Tests/StasiTests/`; davon 4 Pipeline-E2E gated).
+**Test-Suite: 307 Tests, 0 Fehler** (`Tests/StasiTests/`; davon 4 Pipeline-E2E gated).
 TDD etabliert – bei Änderungen an Logik: erst Test, dann Fix.
 
 ### Bekannte Platzhalter („Bald" im UI)
-- „Auto-gelernt": UI + Store-Mechanik da (`EntryType.learned`, `promote`), aber automatische
-  Begriffs-Erkennung beim Diktieren noch NICHT aktiv
 - Nachbearbeitung STANDARD ist regelbasiert aktiv; KI-Feinschliff/REFINE folgt erst in Block 3C
 - Sprache „Automatisch" = Systemsprache (SpeechTranscriber kann nicht pro Äußerung erkennen)
 
@@ -96,7 +97,8 @@ Sources/Stasi/
 │   │                          →polishing→injecting; Session-Snapshots vor Nachbearbeitung,
 │   │                          Modellbereitschaft pro Locale, Hotkey-Modi
 │   │                          (PTT/Umschalten), Sounds, WAV-Mitschrieb, aktive Zusatz-Shortcuts
-│   │                          (copyLast/insertLast/handsFree), applyRetention
+│   │                          (copyLast/insertLast/handsFree), Spellchecker-Cache,
+│   │                          Auto-gelernt-Zusammenführung, applyRetention
 │   ├── DictationSession.swift @MainActor Besitzer einer Diktat-Session: unveränderliche Snapshots,
 │   │                          Setup/Feed/Consume-Tasks und idempotentes Teardown
 │   ├── SettingsStore.swift    @Observable mit GESPEICHERTEN Properties + didSet-UserDefaults;
@@ -117,8 +119,9 @@ Sources/Stasi/
 │   ├── FillerFilter.swift     Reine Zögerlaut-, Stotter- und Diskursfüller-Pässe
 │   ├── SelfCorrectionResolver.swift  Konservative Rahmenregel + starker Klassen-Fallback
 │   ├── TranscriptPolisher.swift  Orchestriert STANDARD-Pässe und Summary; AUS = alter Korrekturpfad
+│   ├── AutoLearnScout.swift  Reine DE-/EN-Kandidatenheuristik mit Protokollzählung
 │   ├── DictionaryModel.swift  EntryType word/correction/learned + CommonWords-Warnungen
-│   ├── DictionaryStore.swift  ~/Library/Application Support/Stasi/dictionary.json + File-Watcher
+│   ├── DictionaryStore.swift  dictionary.json inkl. Auto-gelernt-Ignorierliste + File-Watcher
 │   ├── TranscriptionRecord.swift  Record-Modell inkl. optionaler PolishSummary + HistoryStore
 │   │                          (alte history.json kompatibel, deleteAll/purge)
 │   ├── HotkeyEngine.swift     CGEventTap listen-only (Session-Tap) + ShortcutDetector
@@ -154,7 +157,7 @@ Sources/Stasi/
 
 scripts/make-app.sh            → build/Stasi.app (stabil signiert, Icon aus import/…/icons/anthrazit)
 scripts/gen_icon.swift         → Fallback-Icon-Generator
-Tests/StasiTests/              → 290 Tests (XCTest): TextTidy/FillerFilter/SelfCorrectionResolver/
+Tests/StasiTests/              → 307 Tests (XCTest): AutoLearnScout/TextTidy/FillerFilter/SelfCorrectionResolver/
                                  TranscriptPolisher/DictationSession/HotkeyReenablePolicy/
                                  AudioCaptureFile/DictionaryWatcher/ThemeV3/CopyV3/
                                  ProtocolSearch/PillChrome/UpdateChecker + Bestand
@@ -261,8 +264,9 @@ echter, vom Nutzer reproduzierter Bug:
 
 - **`swift test` kann an der Runner-Infra hängen** – zuverlässig:
   `swift build --build-tests && xcrun xctest .build/arm64-apple-macosx/debug/StasiPackageTests.xctest`
-- Suite: 290 Tests, davon Pipeline (2 aktiv + 4 gated), TextTidy (10), FillerFilter (26),
-  SelfCorrectionResolver (37), TranscriptPolisher (9), DictationSession (14),
+- Suite: 307 Tests, davon Pipeline (2 aktiv + 4 gated), AutoLearnScout (13),
+  TextTidy (10), FillerFilter (26), SelfCorrectionResolver (37),
+  TranscriptPolisher (9), DictationSession (15),
   HotkeyReenablePolicy (8), AudioCaptureFile (4), DictionaryWatcher (2),
   ShortcutDetector (11), ThemeV3 (7), CopyV3 (14), ProtocolSearch (13),
   PillChrome (4), UpdateChecker (11), MicrophoneCatalog (6),
@@ -284,7 +288,6 @@ Nach Rebuild: TCC neu erteilen (App zeigt Status im Bericht + Einstellungen).
 
 ## Offene Ideen / Roadmap
 
-- Auto-gelernt aktivieren (Begriffe aus Transkripten vorschlagen)
 - whisper.cpp-Fallback mit echtem Initial-Prompt-Biasing (BiasProvider-Hook existiert)
 - Sprachwechsel pro Äußerung · Snippets · optionaler KI-Feinschliff (Block 3C)
 - Hands-free (Fn-Doppeltipp) neu belegbar machen (aktuell fest verdrahtet)
