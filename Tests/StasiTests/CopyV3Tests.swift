@@ -69,6 +69,13 @@ final class CopyV3Tests: XCTestCase {
         XCTAssertEqual(Copy.toastLogged, "Protokolliert")
         XCTAssertEqual(Copy.toastCopied, "Kopiert — ⌘V")
         XCTAssertEqual(Copy.toastDiscarded, "Verworfen")
+        XCTAssertEqual(Copy.toastNothingHeard, "Nichts gehört")
+    }
+
+    func testPillStatusTexts() {
+        XCTAssertEqual(Copy.pillTranscribing, "Transkribiere…")
+        XCTAssertEqual(Copy.pillInjecting, "Füge ein…")
+        XCTAssertEqual(Copy.pillModelLoading, "Modell lädt…")
     }
 
     func testGreetingByHour() {

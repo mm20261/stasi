@@ -26,6 +26,7 @@ final class SettingsStoreTests: XCTestCase {
         let settings = SettingsStore(defaults: defaults)
         XCTAssertEqual(settings.accentHex, 0x1A1917)
         XCTAssertEqual(settings.hotkeyMode, .pushToTalk)
+        XCTAssertTrue(settings.handsFreeOn)
         XCTAssertTrue(settings.soundOn)
         XCTAssertFalse(settings.ironyOn)
         XCTAssertFalse(settings.autostartOn)
@@ -59,6 +60,13 @@ final class SettingsStoreTests: XCTestCase {
         settings.hotkeyMode = .toggle
         let reloaded = SettingsStore(defaults: defaults)
         XCTAssertEqual(reloaded.hotkeyMode, .toggle)
+    }
+
+    func testHandsFreePersistence() {
+        let settings = SettingsStore(defaults: defaults)
+        settings.handsFreeOn = false
+        let reloaded = SettingsStore(defaults: defaults)
+        XCTAssertFalse(reloaded.handsFreeOn)
     }
 
     func testTranscriptionLocale() {

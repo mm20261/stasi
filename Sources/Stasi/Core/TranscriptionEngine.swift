@@ -57,6 +57,17 @@ actor TranscriptionEngine: SpeechEngining {
         self.biasWords = Array(biasWords.prefix(12))
     }
 
+    /// Öffentliche Vorbereitungs-Fassade für AppState. Erzeugt keine Session
+    /// und lädt ausschließlich das zur Locale passende Apple-Sprachmodell.
+    static func ensureModelInstalled(locale: Locale) async throws {
+        guard SpeechTranscriber.isAvailable else {
+            throw TranscriptionError.engineUnavailable
+        }
+        let resolved = await SpeechTranscriber.supportedLocale(equivalentTo: locale)
+            ?? Locale(identifier: "en-US")
+        try await ensureModelInstalled(for: makeTranscriber(locale: resolved))
+    }
+
     /// Wunschformat der Engine – AudioCapture konvertiert dorthin.
     func preferredInputFormat() async -> AVAudioFormat? {
         let module = transcriber ?? Self.makeTranscriber(locale: locale)

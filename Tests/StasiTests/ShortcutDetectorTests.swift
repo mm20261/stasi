@@ -45,6 +45,12 @@ final class ShortcutDetectorTests: XCTestCase {
         XCTAssertEqual(events, [.chord(copyLast)])
     }
 
+    func testAppCommandsMapCopyAndInsertChords() {
+        XCTAssertEqual(AppState.hotkeyCommand(for: AppState.copyLastChord), .copyLast)
+        XCTAssertEqual(AppState.hotkeyCommand(for: AppState.insertLastChord), .insertLast)
+        XCTAssertNil(AppState.hotkeyCommand(for: .defaultPTT))
+    }
+
     func testFnSingleTapDoesNotFire() {
         var d = ShortcutDetector()
         d.handsFreeEnabled = true

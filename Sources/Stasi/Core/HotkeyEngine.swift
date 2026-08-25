@@ -41,7 +41,7 @@ struct HotkeyReenablePolicy {
 // Standard: Rechte Command-Taste HALTEN = aufnehmen, loslassen = stoppen.
 
 final class HotkeyEngine: @unchecked Sendable {
-    struct Combo: Codable, Equatable {
+    struct Combo: Codable, Equatable, Sendable {
         var keyCode: UInt64      // CGEvent-KeyCode
         var flags: UInt64        // erforderliche Modifier-Maske (CGEventFlags.rawValue)
 

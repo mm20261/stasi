@@ -141,6 +141,16 @@ final class DictationSessionTests: XCTestCase {
         func resolve(_ granted: Bool) { continuation?.resume(returning: granted) }
     }
 
+    private actor ModelInstallerSpy {
+        private var localeIDs: [String] = []
+
+        func install(_ locale: Locale) {
+            localeIDs.append(locale.identifier)
+        }
+
+        func installedLocaleIDs() -> [String] { localeIDs }
+    }
+
     private func makeDirectory(_ name: String = #function) -> URL {
         let directory = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
             .appendingPathComponent(".build/test-artifacts", isDirectory: true)
@@ -161,6 +171,7 @@ final class DictationSessionTests: XCTestCase {
     private func makeApp(audio: FakeAudioCapture,
                          engines: [FakeSpeechEngine],
                          permission: @escaping @MainActor () async -> Bool = { true },
+                         modelInstaller: @escaping @Sendable (Locale) async throws -> Void = { _ in },
                          directory: URL? = nil) -> AppState {
         let root = directory ?? makeDirectory()
         let dictionary = DictionaryStore(directory: root.appendingPathComponent("dictionary"))
@@ -173,9 +184,30 @@ final class DictationSessionTests: XCTestCase {
             audio: audio,
             speechFactory: { _, _ in remaining.removeFirst() },
             requestMicrophone: permission,
+            modelInstaller: modelInstaller,
             installHotkey: false,
             audioDirectory: root.appendingPathComponent("audio")
         )
+    }
+
+    func testModelReadinessIsTrackedPerLocale() async {
+        let spy = ModelInstallerSpy()
+        let app = makeApp(
+            audio: FakeAudioCapture(),
+            engines: [FakeSpeechEngine()],
+            modelInstaller: { locale in await spy.install(locale) }
+        )
+        let german = Locale(identifier: "de_DE")
+        let english = Locale(identifier: "en_US")
+
+        XCTAssertFalse(app.modelReady(for: german))
+        XCTAssertFalse(app.modelReady(for: english))
+        await app.prepareModel(for: german)
+
+        XCTAssertTrue(app.modelReady(for: german))
+        XCTAssertFalse(app.modelReady(for: english))
+        let installedLocaleIDs = await spy.installedLocaleIDs()
+        XCTAssertEqual(installedLocaleIDs, ["de_DE"])
     }
 
     private func waitUntil(timeout: TimeInterval = 1,

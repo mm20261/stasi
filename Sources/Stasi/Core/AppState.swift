@@ -31,7 +31,10 @@ final class AppState {
     let audio: any AudioCapturing
     private let speechFactory: @MainActor (Locale, [String]) -> any SpeechEngining
     private let requestMicrophone: @MainActor () async -> Bool
+    private let modelInstaller: @Sendable (Locale) async throws -> Void
     private let audioDirectory: URL
+    private(set) var modelReadyByLocale: [String: Bool] = [:]
+    @ObservationIgnored private var modelPreparationTasks: [String: Task<Bool, Never>] = [:]
     private(set) var currentSession: DictationSession?
     var hotkey: HotkeyEngine?
     /// Tap wurde angelegt (says nichts über Event-Lieferung!)
@@ -66,7 +69,18 @@ final class AppState {
     // (macOS 26.6 korrumpiert sonst Executor-Metadaten → SwiftUI-Crashes).
     // Stattdessen: thread-sicheres yield in einen AsyncStream; EIN Task aus
     // echtem Concurrency-Kontext (startCommandLoop) konsumiert die Commands.
-    enum HotkeyCommand: Sendable { case press, release, discard, commit, handsFree, tapStopped }
+    enum HotkeyCommand: Sendable, Equatable {
+        case press, release, discard, commit, handsFree, copyLast, insertLast, tapStopped
+        case prepareModel(Locale)
+    }
+    nonisolated static let copyLastChord = HotkeyEngine.Combo(
+        keyCode: 8,
+        flags: CGEventFlags.maskControl.rawValue | CGEventFlags.maskCommand.rawValue
+    )
+    nonisolated static let insertLastChord = HotkeyEngine.Combo(
+        keyCode: 9,
+        flags: CGEventFlags.maskControl.rawValue | CGEventFlags.maskCommand.rawValue
+    )
     private let commandStream: AsyncStream<HotkeyCommand>
     private let commandContinuation: AsyncStream<HotkeyCommand>.Continuation
     private var commandLoopStarted = false
@@ -89,7 +103,10 @@ final class AppState {
                 case .discard: requestDiscard()
                 case .commit: requestCommit()
                 case .handsFree: handsFreeToggle()
+                case .copyLast: copyLast()
+                case .insertLast: insertLast()
                 case .tapStopped: tapInstalled = false
+                case .prepareModel(let locale): await prepareModel(for: locale)
                 }
             }
         }
@@ -105,6 +122,9 @@ final class AppState {
          requestMicrophone: @escaping @MainActor () async -> Bool = {
              await Permissions.requestMicrophone()
          },
+         modelInstaller: @escaping @Sendable (Locale) async throws -> Void = {
+             try await TranscriptionEngine.ensureModelInstalled(locale: $0)
+         },
          installHotkey: Bool = true,
          audioDirectory: URL? = nil) {
         self.settings = settings
@@ -113,6 +133,7 @@ final class AppState {
         self.audio = audio
         self.speechFactory = speechFactory
         self.requestMicrophone = requestMicrophone
+        self.modelInstaller = modelInstaller
         self.audioDirectory = audioDirectory ?? DictionaryStore.appSupportDirectory
             .appendingPathComponent("audio", isDirectory: true)
         (commandStream, commandContinuation) = AsyncStream.makeStream(of: HotkeyCommand.self)
@@ -144,11 +165,19 @@ final class AppState {
         }
         guard !tapInstalled else { return }
         DebugLog.log("STASI-APP: installTap – Bedienungshilfen erteilt, erstelle Session-Tap")
-        let hk = HotkeyEngine(combo: currentCombo, handsFreeEnabled: true)
+        let hk = HotkeyEngine(
+            combo: currentCombo,
+            chords: [Self.copyLastChord, Self.insertLastChord],
+            handsFreeEnabled: settings.handsFreeOn
+        )
         // Kein Task, kein Actor-Hop im Tap-Pfad – nur enqueue (thread-sicher).
         hk.onPress = { [weak self] in self?.enqueue(.press) }
         hk.onRelease = { [weak self] in self?.enqueue(.release) }
         hk.onHandsFree = { [weak self] in self?.enqueue(.handsFree) }
+        hk.onChord = { [weak self] chord in
+            guard let command = Self.hotkeyCommand(for: chord) else { return }
+            self?.enqueue(command)
+        }
         hk.onTapStopped = { [weak self] in self?.enqueue(.tapStopped) }
         if hk.start() {
             hotkey = hk
@@ -222,14 +251,69 @@ final class AppState {
 
     static let hotkeyDefaultsKey = "stasi.hotkey.combo"
 
+    nonisolated static func hotkeyCommand(for chord: HotkeyEngine.Combo) -> HotkeyCommand? {
+        switch chord {
+        case copyLastChord: .copyLast
+        case insertLastChord: .insertLast
+        default: nil
+        }
+    }
+
     func applyHotkey(_ combo: HotkeyEngine.Combo) {
         if let data = try? JSONEncoder().encode(combo) {
             UserDefaults.standard.set(data, forKey: Self.hotkeyDefaultsKey)
         }
+        reinstallHotkey()
+    }
+
+    func setHandsFreeEnabled(_ enabled: Bool) {
+        guard settings.handsFreeOn != enabled else { return }
+        settings.handsFreeOn = enabled
+        reinstallHotkey()
+    }
+
+    private func reinstallHotkey() {
         hotkey?.stop()
         hotkey = nil
         tapInstalled = false // sonst blockt der installTap-Guard den neuen Hotkey
         installTap()
+    }
+
+    // MARK: Sprachmodell-Vorbereitung
+
+    func modelReady(for locale: Locale) -> Bool {
+        modelReadyByLocale[locale.identifier] == true
+    }
+
+    var currentSessionModelReady: Bool {
+        guard let currentSession else { return true }
+        return modelReady(for: currentSession.locale)
+    }
+
+    func prepareModel(for locale: Locale) async {
+        let key = locale.identifier
+        guard modelReadyByLocale[key] != true else { return }
+
+        if let running = modelPreparationTasks[key] {
+            modelReadyByLocale[key] = await running.value
+            return
+        }
+
+        modelReadyByLocale[key] = false
+        let installer = modelInstaller
+        let task = Task.detached(priority: .utility) {
+            do {
+                try await installer(locale)
+                return true
+            } catch {
+                DebugLog.log("STASI-SPEECH: Modellvorbereitung fehlgeschlagen: \(error.localizedDescription)")
+                return false
+            }
+        }
+        modelPreparationTasks[key] = task
+        let ready = await task.value
+        modelPreparationTasks[key] = nil
+        modelReadyByLocale[key] = ready
     }
 
     var currentCombo: HotkeyEngine.Combo {
@@ -312,15 +396,26 @@ final class AppState {
                 guard microphoneGranted else {
                     DebugLog.log("STASI-APP: startDictation abgebrochen – Mikrofon-Recht fehlt")
                     self.onToast?("Mikrofon-Zugriff fehlt – in Systemeinstellungen erlauben", false)
+                    Task {
+                        try? await Task.sleep(nanoseconds: 1_500_000_000)
+                        if !Permissions.microphoneGranted {
+                            Permissions.openSystemSettings("Privacy_Microphone")
+                        }
+                    }
                     await session.teardown()
                     guard session === self.currentSession else { return }
                     self.finishAbortedSession(session)
                     return
                 }
 
+                await self.prepareModel(for: session.locale)
+                guard session === self.currentSession else { return }
+                guard session.state == .settingUp else { return }
+
                 let chunks = try await session.speech.start()
                 guard session === self.currentSession else { return }
                 guard session.state == .settingUp else { return }
+                self.modelReadyByLocale[session.locale.identifier] = true
                 let format = await session.speech.preferredInputFormat()
                 guard session === self.currentSession else { return }
                 guard session.state == .settingUp else { return }
@@ -366,7 +461,7 @@ final class AppState {
                 guard session === self.currentSession else { return }
                 await session.teardown()
                 guard session === self.currentSession else { return }
-                self.partialText = "⚠︎ \(error.localizedDescription)"
+                self.onToast?(error.localizedDescription, false)
                 self.finishAbortedSession(session)
             }
         }
@@ -475,6 +570,7 @@ final class AppState {
             }
             partialText = ""
             phase = .idle
+            onToast?(Copy.toastNothingHeard, false)
             return
         }
 
@@ -502,15 +598,16 @@ final class AppState {
             // Nur tippen, wenn ein editierbares Textfeld fokussiert ist –
             // sonst spielt macOS den Fehler-Beep (kein Textfeld im Fokus).
             let editable = TextInjector.isFocusedElementEditable()
-            await MainActor.run { [weak self] in
-                guard let self else { return }
-                // v4: Kurze Toasts – „Protokolliert" bzw. „Kopiert — ⌘V".
-                self.onToast?(editable ? Copy.toastLogged : Copy.toastCopied, true)
-            }
             if editable {
                 TextInjector.inject(trimmed)
             }
+            // Zwei Poll-Zyklen Sichtbarkeit, auch wenn das Einfügen nur einen
+            // kurzen CGEvent-Chunk benötigt.
+            try? await Task.sleep(nanoseconds: 100_000_000)
             await MainActor.run { [weak self] in
+                // Erst nach dem Einfügen toasten: `.injecting` bleibt während
+                // des tatsächlichen Tippens als Status sichtbar.
+                self?.onToast?(editable ? Copy.toastLogged : Copy.toastCopied, true)
                 self?.phase = .idle
                 self?.partialText = ""
             }
@@ -531,7 +628,29 @@ final class AppState {
         NSPasteboard.general.setString(record.correctedText, forType: .string)
     }
 
-    // MARK: Zusatz-Shortcuts (Fn-Doppeltipp)
+    // MARK: Zusatz-Shortcuts
+
+    private func copyLast() {
+        guard let record = history.records.first else { return }
+        copy(record)
+        onToast?(Copy.toastCopied, true)
+    }
+
+    private func insertLast() {
+        guard let record = history.records.first else { return }
+        let text = record.correctedText
+        copy(record)
+        Task.detached(priority: .userInitiated) { [weak self] in
+            let editable = TextInjector.isFocusedElementEditable()
+            if editable {
+                TextInjector.inject(text)
+            } else {
+                await MainActor.run {
+                    self?.onToast?(Copy.toastCopied, true)
+                }
+            }
+        }
+    }
 
     /// Fn-Doppeltipp – Hands-free: Aufnahme starten bzw. beenden (Togglen).
     func handsFreeToggle() {
@@ -571,8 +690,10 @@ final class AppState {
         elapsedTimer?.invalidate()
         // Statisch MainActor-isoliert (Timer auf Main-RunLoop) → kein Task nötig
         elapsedTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
-            guard let self, let start = self.recordStart else { return }
-            self.elapsed = Date().timeIntervalSince(start)
+            MainActor.assumeIsolated {
+                guard let self, let start = self.recordStart else { return }
+                self.elapsed = Date().timeIntervalSince(start)
+            }
         }
     }
 

@@ -70,6 +70,7 @@ final class SettingsStore {
         avatarPath = defaults.string(forKey: "stasi.avatarPath")
         if let raw = defaults.string(forKey: "stasi.hotkeyMode"),
            let m = HotkeyMode(rawValue: raw) { hotkeyMode = m }
+        handsFreeOn = defaults.object(forKey: "stasi.handsFreeOn") as? Bool ?? true
         language = defaults.string(forKey: "stasi.langChoice") ?? "auto"
         soundOn = defaults.object(forKey: "stasi.soundOn") as? Bool ?? true
         aiPostProcess = defaults.object(forKey: "stasi.aiOn") as? Bool ?? false
@@ -110,6 +111,10 @@ final class SettingsStore {
 
     var hotkeyMode: HotkeyMode = .pushToTalk {
         didSet { d.set(hotkeyMode.rawValue, forKey: "stasi.hotkeyMode") }
+    }
+
+    var handsFreeOn: Bool = true {
+        didSet { d.set(handsFreeOn, forKey: "stasi.handsFreeOn") }
     }
 
     var language: String = "auto" {   // "auto" | "de_DE" | "en_US"
@@ -235,6 +240,12 @@ enum Copy {
     static let toastLogged = "Protokolliert"
     static let toastCopied = "Kopiert — ⌘V"
     static let toastDiscarded = "Verworfen"
+    static let toastNothingHeard = "Nichts gehört"
+
+    // Phasenstatus der AppKit-Pill
+    static let pillTranscribing = "Transkribiere…"
+    static let pillInjecting = "Füge ein…"
+    static let pillModelLoading = "Modell lädt…"
 
     // Anleitungsleiste im Bericht
     static let anleitungText = "halten und sprechen."
