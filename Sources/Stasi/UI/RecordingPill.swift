@@ -209,8 +209,10 @@ final class RecordingPillView: NSView {
 
         discardButton.target = self
         discardButton.action = #selector(discardTapped)
+        discardButton.setAccessibilityLabel("Aufnahme verwerfen")
         commitButton.target = self
         commitButton.action = #selector(commitTapped)
+        commitButton.setAccessibilityLabel("Aufnahme abschließen")
 
         // Roter Pulsdot
         dotView.wantsLayer = true

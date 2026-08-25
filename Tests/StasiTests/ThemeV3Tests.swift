@@ -3,7 +3,7 @@ import SwiftUI
 @testable import Stasi
 
 // MARK: - Theme v3 Token-Vertrag
-// Alle Werte 1:1 aus Import/design_handoff_v3/DESIGN.md, Abschnitt „Design-Tokens".
+// Vertrag aus import/design_handoff_v3/DESIGN.md plus freigegebene A11y-Korrekturen.
 
 final class ThemeV3Tests: XCTestCase {
 
@@ -17,12 +17,31 @@ final class ThemeV3Tests: XCTestCase {
     func testFarbTokens() {
         XCTAssertEqual(Theme.Hex.surface, 0xFFFFFF)
         XCTAssertEqual(Theme.Hex.ink, 0x1A1917)
-        XCTAssertEqual(Theme.Hex.sub, 0x8A8780)
+        XCTAssertEqual(Theme.Hex.sub, 0x6F6C66)
         XCTAssertEqual(Theme.Hex.line, 0xECEAE4)
         XCTAssertEqual(Theme.Hex.hover, 0xF1F4F8)
         XCTAssertEqual(Theme.Hex.rec, 0xFF453A)
         XCTAssertEqual(Theme.Hex.destructive, 0xC8102E)
         XCTAssertEqual(Theme.Hex.success, 0x30A46C)
+        XCTAssertEqual(Theme.Hex.successText, 0x1F7A4D)
+        XCTAssertEqual(Theme.Hex.warning, 0x8A5500)
+    }
+
+    func testTextTokensMeetContrastOnWhite() {
+        XCTAssertGreaterThanOrEqual(
+            Theme.Contrast.ratio(foreground: Theme.Hex.sub, background: Theme.Hex.surface),
+            4.5
+        )
+        XCTAssertGreaterThanOrEqual(
+            Theme.Contrast.ratio(foreground: Theme.Hex.successText,
+                                 background: Theme.Hex.surface),
+            4.5
+        )
+        XCTAssertGreaterThanOrEqual(
+            Theme.Contrast.ratio(foreground: Theme.Hex.warning,
+                                 background: Theme.Hex.surface),
+            4.5
+        )
     }
 
     // MARK: Akzent-Presets (5, dynamisch, Standard Anthrazit)

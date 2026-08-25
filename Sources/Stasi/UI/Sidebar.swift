@@ -117,6 +117,7 @@ struct SidebarView: View {
         }
         .buttonStyle(.plain)
         .help(collapsed ? "Seitenleiste ausklappen" : "Seitenleiste einklappen")
+        .accessibilityLabel(collapsed ? "Seitenleiste ausklappen" : "Seitenleiste einklappen")
     }
 
     // MARK: Wortmarke

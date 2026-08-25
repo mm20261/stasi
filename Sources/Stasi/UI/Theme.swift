@@ -2,7 +2,7 @@ import SwiftUI
 import CoreText
 
 // MARK: - Design-System v3
-// Tokens 1:1 aus Import/design_handoff_v3/DESIGN.md übernommen.
+// Tokens aus import/design_handoff_v3/DESIGN.md, mit A11y-Kontrastkorrekturen.
 // Verlauf-Hintergrund (#F3F6FA → #F8F7F3), weiße Karten (r16, Akzent-Schatten),
 // 5 Akzent-Presets (Standard Anthrazit), gebündelt Geist / Geist Mono.
 // Kein Dark Mode. Die v4-Aliasse (papier/stempelrot/linie/…) bleiben erhalten,
@@ -44,12 +44,14 @@ enum Theme {
         static let backgroundBottom: UInt32 = 0xF8F7F3
         static let surface: UInt32 = 0xFFFFFF
         static let ink: UInt32 = 0x1A1917
-        static let sub: UInt32 = 0x8A8780
+        static let sub: UInt32 = 0x6F6C66
         static let line: UInt32 = 0xECEAE4
         static let hover: UInt32 = 0xF1F4F8
         static let rec: UInt32 = 0xFF453A
         static let destructive: UInt32 = 0xC8102E
         static let success: UInt32 = 0x30A46C
+        static let successText: UInt32 = 0x1F7A4D
+        static let warning: UInt32 = 0x8A5500
     }
 
     // MARK: Farbe (Light – v3 kennt kein Dark Mode)
@@ -68,6 +70,8 @@ enum Theme {
         static let recRed = Color(stasiHex: Hex.rec)
         static let destructive = Color(stasiHex: Hex.destructive)
         static let successColor = Color(stasiHex: Hex.success)
+        static let successText = Color(stasiHex: Hex.successText)
+        static let warning = Color(stasiHex: Hex.warning)
 
         // Der eine dynamische Akzent (Nutzer wählt aus 5 Presets).
         @MainActor static var stempelrot: Color { accent }
@@ -76,7 +80,7 @@ enum Theme {
         // Status (fest – bleiben von der Akzentwahl unberührt)
         static let archivgruen = Color(stasiHex: Hex.success)
         static let erfolgFlaeche = Color(stasiHex: Hex.success).opacity(0.14)
-        static let erfolgText = Color(stasiHex: Hex.success)
+        static let erfolgText = successText
         static let warnFlaeche = Color(stasiHex: Hex.rec).opacity(0.12)
         static let warnRand = Color(stasiHex: Hex.rec).opacity(0.30)
         static let recorderFlaeche = Color(stasiHex: Hex.rec).opacity(0.08)
@@ -98,6 +102,28 @@ enum Theme {
         static let zeileHover = hover
         static let text2 = sub
         static let text3 = sub
+    }
+
+    /// WCAG-Kontrastberechnung für den Hex-Token-Vertrag.
+    enum Contrast {
+        nonisolated static func ratio(foreground: UInt32, background: UInt32) -> Double {
+            let lighter = max(luminance(foreground), luminance(background))
+            let darker = min(luminance(foreground), luminance(background))
+            return (lighter + 0.05) / (darker + 0.05)
+        }
+
+        nonisolated private static func luminance(_ hex: UInt32) -> Double {
+            let red = linear(Double((hex >> 16) & 0xFF) / 255)
+            let green = linear(Double((hex >> 8) & 0xFF) / 255)
+            let blue = linear(Double(hex & 0xFF) / 255)
+            return 0.2126 * red + 0.7152 * green + 0.0722 * blue
+        }
+
+        nonisolated private static func linear(_ component: Double) -> Double {
+            component <= 0.04045
+                ? component / 12.92
+                : pow((component + 0.055) / 1.055, 2.4)
+        }
     }
 
     // MARK: Akzent (dynamisch, 5 Presets, Standard Anthrazit)
@@ -159,6 +185,13 @@ enum Theme {
         static func railNumber() -> Font { .custom("Geist", size: 24).weight(.bold) }
         static func nebenZahl() -> Font { .custom("Geist", size: 20).weight(.semibold) }
         static func hero() -> Font { .custom("Geist", size: 15.5) }
+        static func note() -> Font { .custom("Geist", size: 11.5) }
+        static func caption() -> Font { .custom("Geist", size: 12.5) }
+        static func input() -> Font { .custom("Geist", size: 13.5) }
+        static func emptyTitle() -> Font { .custom("Geist", size: 17).weight(.bold) }
+        static func sectionTitle() -> Font { .custom("Geist", size: 22).weight(.bold) }
+        static func onboardingTitle() -> Font { .custom("Geist", size: 26).weight(.bold) }
+        static func avatarInitial() -> Font { .custom("Geist", size: 26).weight(.bold) }
         static func body() -> Font { ui }
         static func secondary(size: CGFloat = 12) -> Font { .custom("Geist", size: size) }
         static func zeilenTitel() -> Font { .custom("Geist", size: 13).weight(.medium) }
@@ -355,7 +388,7 @@ struct StasiInputStyle: ViewModifier {
     func body(content: Content) -> some View {
         content
             .textFieldStyle(.plain)
-            .font(Font.custom("Geist", size: 13.5))
+            .font(Theme.Typo.input())
             .padding(.horizontal, 16)
             .padding(.vertical, 11)
             .background(Theme.Palette.surface)
@@ -433,7 +466,7 @@ struct StatusChip: View {
             }
             Text(text)
                 .font(Theme.Typo.secondary(size: 11.5))
-                .foregroundColor(ok ? Theme.Palette.erfolgText : Theme.Palette.recRed)
+                .foregroundColor(ok ? Theme.Palette.erfolgText : Theme.Palette.destructive)
         }
         .padding(.horizontal, 11)
         .padding(.vertical, 5)

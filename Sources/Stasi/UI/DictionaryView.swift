@@ -82,6 +82,7 @@ struct DictionaryView: View {
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                .accessibilityAddTraits(active ? .isSelected : [])
             }
             Spacer()
         }
@@ -228,7 +229,7 @@ struct DictionaryView: View {
                             }
                             .font(Theme.Typo.kicker(size: 10.5))
                             .tracking(0.8)
-                            .foregroundColor(Color(stasiHex: 0x3F3A31))
+                            .foregroundColor(Theme.Palette.ink)
                             .padding(.horizontal, 10)
                             .padding(.vertical, 6)
                             .background(RoundedRectangle(cornerRadius: 5).fill(Theme.Palette.chip))
@@ -324,8 +325,18 @@ struct RowIconButton: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .accessibilityLabel(accessibilityName)
         .onHover { hovered = $0 }
         .animation(Theme.Motion.micro, value: hovered)
+    }
+
+    private var accessibilityName: String {
+        switch symbol {
+        case "pencil": "Bearbeiten"
+        case "trash": "Löschen"
+        case "checkmark": "Änderung übernehmen"
+        default: symbol
+        }
     }
 }
 
@@ -374,7 +385,7 @@ struct EditableTermRow: View {
                 if let warns = entry.warns, !warns.isEmpty {
                     Label(warns.first ?? "", systemImage: "exclamationmark.triangle")
                         .font(.caption2)
-                        .foregroundColor(Color(stasiHex: 0xDA8B27))
+                        .foregroundColor(Theme.Palette.warning)
                 }
             }
             Spacer()
@@ -456,7 +467,7 @@ struct EditableReplacementRow: View {
                 if let warns = entry.warns, !warns.isEmpty {
                     Label(warns.first ?? "", systemImage: "exclamationmark.triangle")
                         .font(.caption2)
-                        .foregroundColor(Color(stasiHex: 0xDA8B27))
+                        .foregroundColor(Theme.Palette.warning)
                 }
             }
             Spacer()

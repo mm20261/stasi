@@ -58,7 +58,7 @@ struct AccountView: View {
                                 .fill(Theme.tint(Theme.accent))
                                 .overlay(
                                     Text(String(settings.userName.first?.uppercased() ?? "S"))
-                                        .font(.custom("Geist", size: 26).weight(.bold))
+                                        .font(Theme.Typo.avatarInitial())
                                         .foregroundStyle(Theme.accent)
                                 )
                                 .frame(width: 72, height: 72)
@@ -79,6 +79,7 @@ struct AccountView: View {
             }
             .buttonStyle(.plain)
             .help(settings.avatarPath != nil ? "Bild ändern" : "Bild wählen")
+            .accessibilityLabel(settings.avatarPath != nil ? "Profilbild ändern" : "Profilbild wählen")
 
             VStack(alignment: .leading, spacing: 0) {
                 Text("NAME")
@@ -100,7 +101,7 @@ struct AccountView: View {
                     .padding(.top, 8)
                 }
                 Text("Kein Login, keine E-Mail — alles bleibt auf diesem Mac.")
-                    .font(.custom("Geist", size: 11.5))
+                    .font(Theme.Typo.note())
                     .foregroundColor(Theme.Palette.text2)
                     .padding(.top, 8)
             }
@@ -119,7 +120,7 @@ struct AccountView: View {
                 .textCase(.uppercase)
                 .foregroundColor(Theme.Palette.dunkelText)
             Text(signatureNote)
-                .font(.custom("Geist", size: 12.5))
+                .font(Theme.Typo.caption())
                 .foregroundColor(Theme.Palette.dunkelText2)
                 .lineHeight()
                 .padding(.top, 8)
