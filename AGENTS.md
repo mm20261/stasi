@@ -17,7 +17,7 @@ App getippt. Komplett **on-device** via macOS-26-`SpeechTranscriber` (EN/DE).
 - **Echte Mac-App** (Dock-Icon, App-Menü, ⌘,-Settings im Fenster) – bewusst KEIN
   Menu-bar-Utility, aber MIT sekundärem NSStatusItem-Menü.
 - Name „Stasi" mit dezenter Ironie in der Copy („Wir hören zu.") – abschaltbar.
-- Design: **v3-Handoff** (maßgeblich: `Import/design_handoff_v3/DESIGN.md` +
+- Design: **v3-Handoff** (maßgeblich: `import/design_handoff_v3/DESIGN.md` +
   `preview.html`) – Sidebar-Layout (einklappbar 200↔64 px), Fonts **Geist + Geist Mono**
   (gebündelt), KEIN Dark Mode, **Akzent dynamisch: 5 Presets** (Anthrazit `#1A1917` *
   Standard, Blau, Orange, Grün, Violett), auswählbar in Einstellungen → DARSTELLUNG.
@@ -32,7 +32,7 @@ App getippt. Komplett **on-device** via macOS-26-`SpeechTranscriber` (EN/DE).
 > **Hinweis:** Das v4-„Registratur"-Design (Archivo, Stempelrot fest, Kopfkante-Karten)
 > wurde verworfen und der v3-Look (Geist, Verlauf, 5 Akzent-Presets) wiederhergestellt –
 > bei BEIBEHALT aller Funktionen aus dem V4-Umbau (Suche, Onboarding, Insights-V4,
-> Mikrofon-Auswahl, Update-Prüfung, Retention). `Import/design_handoff_v4/` ist gelöscht.
+> Mikrofon-Auswahl, Update-Prüfung, Retention). `import/design_handoff_v4/` ist gelöscht.
 >
 > **UI-Polish (25.08.):** App-Shell-Kopfzeile mit Avatar rechts oben (KEIN Overlay mehr –
 > kollidierte mit Filter-Chips), Mindestfenster 960×620 (`windowResizability(.contentMinSize)`),
@@ -52,21 +52,25 @@ Datumszeile, Anleitungsleiste mit Status-Chip „Bereit"/„Hotkey inaktiv", Her
 Deine-Akte), eigener **Insights**-Screen (KW-Leitzahl-Karte, App-Balken in Akzent-Stufen,
 Streak-Heatmap mit Stempel-Badge), **Protokolle** gruppiert nach Tag mit
 Aktenzeichen/WPM/Korrekturen-Badges, Aufnahme-Pill auf **Akzent-Basis** (✕/✓ nur bei PTT,
-weg bei Hands-free), **Toasts 36 px** („Protokolliert ✓" Stil), **Onboarding 4 Schritte** bei
-erstem Start + Leerzustand erster Start im Bericht.
+weg bei Hands-free), zweizeiligem Live-Transkript und sichtbarer Modell-Vorbereitung;
+separate AppKit-Status-Pills zeigen Transkription und Einfügen. **Toasts 36 px**
+(„Protokolliert ✓" Stil), **Onboarding 4 Schritte** bei erstem Start + Leerzustand erster Start
+im Bericht. Die Menüleiste verwendet pro Phase ein explizit gecachtes Symbol.
 Nach jedem Diktat landet der korrigierte Text **automatisch in der Zwischenablage**
-(⌘V zum Einfügen – wie bei Wispr). **Fn-Doppeltipp** (Hands-free Toggle) über den
-EINEN Session-Tap via `ShortcutDetector`. **Push-to-talk-Shortcut frei belegbar**
+(⌘V zum Einfügen – wie bei Wispr). **Fn-Doppeltipp** (persistierbar an/aus) sowie
+**⌃⌘C/⌃⌘V** für letztes Protokoll kopieren/einfügen laufen über den EINEN Session-Tap
+via `ShortcutDetector`. **Push-to-talk-Shortcut frei belegbar**
 (Modifier + Taste, Recorder-Feld inline mit Vorschau + Übernehmen).
 **Aus dem V4-Umbau beibehalten:** ⌘F-Suche über alle Protokolle (Trefferzähler, Filter
-ALLE/7T/30T, „Export aller Protokolle" als .md), Update-Prüfung in ÜBER (GitHub-Releases-API,
-numerischer Versionsvergleich, Statuszeile, persistiert), Mikrofon-Auswahl per Popover
+ALLE/7T/30T, „Export aller Protokolle" als .md; ⌘F wechselt global dorthin und fokussiert
+das Suchfeld), Update-Prüfung in ÜBER (GitHub-Releases-API, numerischer Versionsvergleich,
+Statuszeile und Release-URL, persistiert), Mikrofon-Auswahl per Popover
 (Transport-UID persistiert, wird pro Engine via kAudioOutputUnitProperty_CurrentDevice
 gesetzt – Systemstandard bleibt unangetastet).
 **Speicher-Sektion**: Aufbewahrungsdauer als Segmented (NIE/1T/1W/2W/1MONAT) +
 „AKTE VERNICHTEN" (Retention purged beim Start, bei Änderung und ~60s-Poll).
 
-**Test-Suite: 188 Tests, 0 Fehler** (`Tests/StasiTests/`; davon 4 Pipeline-E2E gated).
+**Test-Suite: 202 Tests, 0 Fehler** (`Tests/StasiTests/`; davon 4 Pipeline-E2E gated).
 TDD etabliert – bei Änderungen an Logik: erst Test, dann Fix.
 
 ### Bekannte Platzhalter („Bald" im UI)
@@ -75,30 +79,33 @@ TDD etabliert – bei Änderungen an Logik: erst Test, dann Fix.
 - KI-Nachbearbeitung (Toggle stored, inaktiv)
 - Sprache „Automatisch" = Systemsprache (SpeechTranscriber kann nicht pro Äußerung erkennen)
 - Mic-Popover-Pegelbalken sind kosmetisch animiert (kein echter Live-Level)
-- Onboarding-Schritt 3: Recorder zeigt Vorschau; Übernehmen setzt den Hotkey
 
 ## Architektur
 
 ```
 Sources/Stasi/
-├── MainApp.swift              StasiApp (WindowGroup + Commands), AppDelegate (Poll-Timer
-│                             20Hz UI / 1Hz Permissions + Stall-Watchdog), StatusBarController
-│                             (NSStatusItem+NSMenu – bewusst KEIN MenuBarExtra!)
+├── MainApp.swift              StasiApp (WindowGroup + globale ⌘F-Commands), AppDelegate
+│                             (Poll-Timer 20Hz UI / ≤1Hz Permissions + Stall-Watchdog),
+│                             StatusBarController (NSStatusItem+NSMenu, Phasen-Icons gecacht –
+│                             bewusst KEIN MenuBarExtra!)
 ├── Core/
 │   ├── AppState.swift         @MainActor @Observable State-Machine idle→recording→transcribing
-│   │                          →injecting; Hotkey-Modi (PTT/Umschalten), Sounds, WAV-Mitschrieb,
-│   │                          Zusatz-Shortcuts (copyLast/insertLast/handsFree), applyRetention
+│   │                          →injecting; Modellbereitschaft pro Locale, Hotkey-Modi
+│   │                          (PTT/Umschalten), Sounds, WAV-Mitschrieb, aktive Zusatz-Shortcuts
+│   │                          (copyLast/insertLast/handsFree), applyRetention
 │   ├── DictationSession.swift @MainActor Besitzer einer Diktat-Session: unveränderliche Snapshots,
 │   │                          Setup/Feed/Consume-Tasks und idempotentes Teardown
 │   ├── SettingsStore.swift    @Observable mit GESPEICHERTEN Properties + didSet-UserDefaults;
 │   │                          Retention-Enum (Nie/1Tag/1Woche/2Wochen/1Monat),
-│   │                          Akzent-Presets (accentHex, Theme.sharedSettings)
+│   │                          Akzent-Presets (accentHex, Theme.sharedSettings), handsFreeOn;
+│   │                          kein Appearance-Setting (App bleibt bewusst Light-only)
 │   ├── AudioCapture.swift     AVAudioEngine-Tap; Render-Thread NUR: lock-geschützter RMS +
 │   │                          thread-safe yield; WAV auf serialer writeQueue
 │   ├── TranscriptionEngine.swift  SpeechAnalyzer/SpeechTranscriber, Biasing via
 │   │                          AnalysisContext.contextualStrings[.general]; LIFECYCLE: NIE den
 │   │                          Ergebnis-Strom canceln (Speech-Worker trapt!), Analyzer "ruht
-│   │                          aus" in retiredAnalyzers; Session-Guard gegen Cross-Write
+│   │                          aus" in retiredAnalyzers; Session-Guard gegen Cross-Write;
+│   │                          statische Fassade zur Sprachmodell-Vorbereitung
 │   ├── CorrectionEngine.swift Garantierter Korrektur-Pass (siehe Regeln!)
 │   ├── DictionaryModel.swift  EntryType word/correction/learned + CommonWords-Warnungen
 │   ├── DictionaryStore.swift  ~/Library/Application Support/Stasi/dictionary.json + File-Watcher
@@ -110,9 +117,9 @@ Sources/Stasi/
 │   │                          Tipzeit-Schätzung)
 │   ├── ProtocolSearch.swift   Volltextsuche + Filter (ALLE/7T/30T), Tagesgruppierung,
 │   │                          FileNumber (Aktenzeichen), ProtocolExporter (alle .md)
-│   ├── PillChrome.swift       RecordingSource (pushToTalk/handsFree) → ✕/✓-Sichtbarkeit
+│   ├── PillChrome.swift       RecordingSource + Live-Text/Modellstatus → Pill-Geometrie
 │   ├── UpdateChecker.swift    Release-Fetch (GitHub-API) + numerischer Versionsvergleich
-│   │                          + Statuszeile; persistiert lastChecked/availableVersion
+│   │                          + Statuszeile; persistiert Version, Prüfzeit und Release-URL
 │   ├── MicrophoneSelection.swift  MicDevice/MicrophoneCatalog (reine Logik, getestet)
 │   │                          + MicrophoneScanner (CoreAudio: scan/defaultUID/
 │   │                          apply via kAudioOutputUnitProperty_CurrentDevice)
@@ -129,12 +136,14 @@ Sources/Stasi/
 │                              (Segmented-Tabs), SettingsWindowView (Mic-Popover,
 │                              Recorder-Feld, Akzent-Presets, Update-Zeile), AccountView
 │                              (Kreis-Avatar/Signaturkarte), OnboardingView,
-│                              RecordingPill.swift (AppKit!, Akzent-Pill), Effects.swift
-└── Support/                   Permissions.swift (Mikrofon/AX/ListenEvent!), VirtualKey.swift
+│                              RecordingPill.swift (pures AppKit: Aufnahme/Live-Text/Status/
+│                              Toast), Effects.swift
+└── Support/                   Permissions.swift (Mikrofon/AX; ListenEvent nur Diagnose),
+                               DebugLog.swift (Rotation >2 MB nach debug.log.1), VirtualKey.swift
 
-scripts/make-app.sh            → build/Stasi.app (stabil signiert, Icon aus Import/…/icons/anthrazit)
+scripts/make-app.sh            → build/Stasi.app (stabil signiert, Icon aus import/…/icons/anthrazit)
 scripts/gen_icon.swift         → Fallback-Icon-Generator
-Tests/StasiTests/              → 188 Tests (XCTest): DictationSession/HotkeyReenablePolicy/
+Tests/StasiTests/              → 202 Tests (XCTest): DictationSession/HotkeyReenablePolicy/
                                  AudioCaptureFile/DictionaryWatcher/ThemeV3/CopyV3/
                                  ProtocolSearch/PillChrome/UpdateChecker + Bestand
 ```
@@ -172,30 +181,28 @@ echter, vom Nutzer reproduzierter Bug:
    liefert. `finalizeAndFinishThroughEndOfInput` läuft in einem unstrukturierten Task aus
    dem `TranscriptionEngine`-actor; eine First-wins-`CheckedContinuation` liefert nach
    3 s den letzten Text-Stand zurück, ohne den Finalize-Task zu canceln (KEINE TaskGroup –
-   deren Scope würde auf ein nicht-kooperatives Kind warten). Analyzer, Transcriber,
    Finalize- und Ergebnis-Task werden bei Timeout/Fehler in `retiredAnalyzers` stark bis
    zu ihrem natürlichen Ende gehalten und erst danach entfernt. Session-Identität schützt
    nach jedem `await` gegen Cross-Session-Writes.
 
-6. **TCC-Preflights maximal ~1 Hz.** `AXIsProcessTrusted`/`CGPreflightListenEventAccess`
-   20×/s können die System-Dialoge einfrieren („Eingabe-erteilen-Fenster frozen").
-   Permission-Buttons lösen NUR die Apple-Dialoge aus (`CGRequestListenEventAccess` /
-   `AXIsProcessTrustedWithOptions`); als Fallback bei früher abgewiesenem Dialog öffnet
-   nach 1,5 s ohne Erfolg das passende Pane direkt (Eingabe-Überwachung ≠ Bedienungshilfen!).
+6. **TCC-Preflights maximal ~1 Hz.** `AXIsProcessTrusted`, Mikrofonstatus und das nur noch
+   diagnostische `CGPreflightListenEventAccess` dürfen nicht im 20-Hz-Poll laufen; das kann
+   Systemdialoge einfrieren. Berechtigungsaktionen öffnen ausschließlich den passenden
+   Apple-Dialog bzw. nach 1,5 s ohne Erfolg direkt das zugehörige Systemeinstellungen-Pane.
 
-7. **Zwei getrennte TCC-Berechtigungen nötig:** Bedienungshilfen (AX) UND **Eingabe-
-   Überwachung** (ListenEvent) – ohne Letztere wird der CGEventTap angelegt, liefert
-   aber NULL Events (Symptom: „Druck startet Aufnahme nicht"). `CGEvent.tapIsEnabled`
-   prüfen und re-enablen (macOS deaktiviert Taps bei Timeout) + NSEvent-Fallback-Monitor.
+7. **Für den aktuellen Session-Tap ist Bedienungshilfen-Zugriff (AX) maßgeblich.**
+   Eingabe-Überwachung (`ListenEvent`) wird nur noch diagnostisch erfasst und ist kein
+   UI-Blocker. `CGEvent.tapIsEnabled` bleibt für Timeout-/Deaktivierungsdiagnose relevant.
 
 8. **SettingsStore: nur gespeicherte `@Observable`-Properties** (computed-over-UserDefaults
    wird NICHT getrackt → Views aktualisieren nicht). Persistenz über `didSet`.
    `Theme.accent` liest über `Theme.sharedSettings` (weak) → Views tracken accentHex
    automatisch, KEIN `.id(epoch)`-Vollneubau (der crashte im Gesture-Graph!).
 
-9. **Rebuild = neue ad-hoc-Signatur = TCC-Einträge ungültig.** Nach jedem `make-app.sh`
-   müssen Eingabe-Überwachung/Bedienungshilfen neu erteilt werden. Reset-Befehle:
-   `tccutil reset ListenEvent app.stasi.macos` (auch: Accessibility, Microphone).
+9. **Signatur-Wechsel macht TCC-Einträge ungültig.** Die stabile Dev-Signatur verhindert
+   das bei normalen Builds; nach Fallback auf ad hoc oder Zertifikatswechsel Rechte neu
+   erteilen. Reset-Befehle: `tccutil reset Accessibility app.stasi.macos` (bei Bedarf auch
+   Microphone/ListenEvent).
    Bei eingefrorenen TCC-Dialogen: `killall "System Settings" UserNotificationCenter`.
 
 10. **SpeechTranscriber headless (xctest) ohne TCC-Consent: `preRunRecognition` trapt.**
@@ -234,17 +241,18 @@ echter, vom Nutzer reproduzierter Bug:
     zeigen, ohne zu gelten → `tccutil reset` + frisch über den App-Dialog erteilen.
 
 14. **Debug-Log:** `DebugLog.log()` schreibt nach
-    `~/Library/Application Support/Stasi/debug.log` (NSLog landet auf diesem
-    System nicht zuverlässig im Unified Log). Erste Anlaufstelle bei Fehlersuche.
+    `~/Library/Application Support/Stasi/debug.log` (NSLog landet auf diesem System nicht
+    zuverlässig im Unified Log). Über 2 MB wird die vorherige Datei nach `debug.log.1`
+    rotiert. Erste Anlaufstelle bei Fehlersuche.
 
 ## Tests
 
 - **`swift test` kann an der Runner-Infra hängen** – zuverlässig:
   `swift build --build-tests && xcrun xctest .build/arm64-apple-macosx/debug/StasiPackageTests.xctest`
-- Suite: CorrectionEngine (14), Stores (12), Settings/Copy/Keys/Level (28), Pipeline (4 aktiv
-  + 4 gated), DictationSession (13), HotkeyReenablePolicy (8), AudioCaptureFile (4),
-  DictionaryWatcher (2), StatsCalculator (+V4, 22), ShortcutDetector (10), ThemeV3 (7), CopyV3 (13),
-  ProtocolSearch (10), PillChrome (4), UpdateChecker (8), MicrophoneCatalog (6),
+- Suite: 202 Tests, davon Pipeline (2 aktiv + 4 gated), DictationSession (14),
+  HotkeyReenablePolicy (8), AudioCaptureFile (4), DictionaryWatcher (2),
+  ShortcutDetector (11), ThemeV3 (6), CopyV3 (14), ProtocolSearch (11),
+  PillChrome (5), UpdateChecker (11), MicrophoneCatalog (6),
   Onboarding (6). Bei Logik-Änderungen: erst Test schreiben/ändern, dann implementieren
   (TDD).
 - Diagnose-Logs laufen mit: `STASI-HK PRESS/RELEASE`, `STASI-PILL ✓/✕`, `STASI-APP …`,
@@ -267,4 +275,4 @@ Nach Rebuild: TCC neu erteilen (App zeigt Status im Bericht + Einstellungen).
 - whisper.cpp-Fallback mit echtem Initial-Prompt-Biasing (BiasProvider-Hook existiert)
 - Sprachwechsel pro Äußerung · Snippets · KI-Nachbearbeitung (Toggle vorhanden)
 - Hands-free (Fn-Doppeltipp) neu belegbar machen (aktuell fest verdrahtet)
-- Design-Feinschliff: weitere Änderungen über den `Import/design_handoff_stasi/`-Prozess
+- Design-Feinschliff: weitere Änderungen über den `import/design_handoff_stasi/`-Prozess
