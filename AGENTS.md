@@ -66,7 +66,7 @@ gesetzt – Systemstandard bleibt unangetastet).
 **Speicher-Sektion**: Aufbewahrungsdauer als Segmented (NIE/1T/1W/2W/1MONAT) +
 „AKTE VERNICHTEN" (Retention purged beim Start, bei Änderung und ~60s-Poll).
 
-**Test-Suite: 174 Tests, 0 Fehler** (`Tests/StasiTests/`; davon 4 Pipeline-E2E gated).
+**Test-Suite: 188 Tests, 0 Fehler** (`Tests/StasiTests/`; davon 4 Pipeline-E2E gated).
 TDD etabliert – bei Änderungen an Logik: erst Test, dann Fix.
 
 ### Bekannte Platzhalter („Bald" im UI)
@@ -134,9 +134,9 @@ Sources/Stasi/
 
 scripts/make-app.sh            → build/Stasi.app (stabil signiert, Icon aus Import/…/icons/anthrazit)
 scripts/gen_icon.swift         → Fallback-Icon-Generator
-Tests/StasiTests/              → 174 Tests (XCTest): DictationSession/ThemeV3/CopyV3/
-                                 ProtocolSearch/PillChrome/UpdateChecker/MicrophoneCatalog/
-                                 Onboarding + Bestand
+Tests/StasiTests/              → 188 Tests (XCTest): DictationSession/HotkeyReenablePolicy/
+                                 AudioCaptureFile/DictionaryWatcher/ThemeV3/CopyV3/
+                                 ProtocolSearch/PillChrome/UpdateChecker + Bestand
 ```
 
 ## ⚠️ HART ERARBEITETE REGELN (macOS 26.6 / Swift 6.3 – NICHT verletzen!)
@@ -201,20 +201,16 @@ echter, vom Nutzer reproduzierter Bug:
 10. **SpeechTranscriber headless (xctest) ohne TCC-Consent: `preRunRecognition` trapt.**
     Pipeline-E2E-Tests sind deshalb gated: `STASI_PIPELINE_E2E=1` in App-Kontext.
 
-11. **CGEventTap NIEMALS ohne Eingabe-Überwachungs-Recht installieren oder re-enablen.**
-    macOS deaktiviert den unberechtigten Tap; wird er trotzdem sekündlich per
-    `CGEvent.tapEnable` wieder eingeschaltet, entzieht der WindowServer dem Prozess
-    ALLE Maus-Events: Fenster rendert normal, Hotkey/Tastatur geht, aber jeder Klick
-    (auch Dock-Icon) versackt – kein Crash, kein Log. Diagnose-Weg: Mini-AppKit-App
-    bekam Klicks, Stasi nicht; `STASI_NO_TAP=1` (Debug-Env-Var in `installTap`)
-    isolierte den Tap als Ursache. Fix: `installTap`/`ensureEnabled` sind hinter
-    `listenEventGranted` gegated; nach Rechte-Erteilung installiert der Poll den Tap.
-    ABER: Die ListenEvent-Freigabe greift für den LAUFENDEN Prozess oft erst nach
-    App-Neustart – der Preflight sagt schon "erteilt", der Tap wird trotzdem
-    deaktiviert. Deshalb gibt `ensureEnabled` nach 3 Deaktivierungen auf
-    (`gaveUp`), stoppt den Tap und verlangt einen Neustart.
-    UPDATE: Der Tap ist jetzt `.cgSessionEventTap` + `.defaultTap`
-    und braucht NUR Bedienungshilfen – Eingabe-Überwachung entfällt komplett.
+11. **CGEventTap NIEMALS ohne Bedienungshilfen-Recht installieren oder re-enablen.**
+    macOS deaktiviert den unberechtigten Tap; wird er trotzdem wiederholt per
+    `CGEvent.tapEnable` eingeschaltet, entzieht der WindowServer dem Prozess ALLE
+    Maus-Events (Klick-Blackhole ohne Crash). Der Session-Tap läuft als
+    `.cgSessionEventTap` + `.defaultTap` und braucht NUR Bedienungshilfen – Eingabe-
+    Überwachung entfällt. `tapDisabledByTimeout/ByUserInput` setzt im Callback
+    ausschließlich Flag + Log und re-armt NIEMALS. Nur der AX-gegatete ~1-Hz-Poll
+    ruft `ensureEnabled()` auf; die reine Policy erlaubt maximal 3 Reaktivierungen.
+    Danach setzt sie `gaveUp`, invalidiert/stoppt den Tap und meldet über
+    `onTapStopped` „Neustart nötig". `hotkeyReady` folgt dem echten Engine-Zustand.
 
 12. **Audio/Speech-Pipeline. Drei Gesetze:**
     a) `TranscriptionEngine` ist ein **eigener actor**, NIEMALS @MainActor – die
@@ -246,7 +242,8 @@ echter, vom Nutzer reproduzierter Bug:
 - **`swift test` kann an der Runner-Infra hängen** – zuverlässig:
   `swift build --build-tests && xcrun xctest .build/arm64-apple-macosx/debug/StasiPackageTests.xctest`
 - Suite: CorrectionEngine (14), Stores (12), Settings/Copy/Keys/Level (28), Pipeline (4 aktiv
-  + 4 gated), DictationSession (13), StatsCalculator (+V4, 22), ShortcutDetector (10), ThemeV3 (7), CopyV3 (13),
+  + 4 gated), DictationSession (13), HotkeyReenablePolicy (8), AudioCaptureFile (4),
+  DictionaryWatcher (2), StatsCalculator (+V4, 22), ShortcutDetector (10), ThemeV3 (7), CopyV3 (13),
   ProtocolSearch (10), PillChrome (4), UpdateChecker (8), MicrophoneCatalog (6),
   Onboarding (6). Bei Logik-Änderungen: erst Test schreiben/ändern, dann implementieren
   (TDD).
