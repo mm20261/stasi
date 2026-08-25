@@ -14,8 +14,8 @@ final class DictionaryStore {
         .appendingPathComponent("Stasi", isDirectory: true)
 
     let fileURL: URL
+    @ObservationIgnored
     private nonisolated(unsafe) var watcher: DispatchSourceFileSystemObject?
-    private nonisolated(unsafe) var watchFD: Int32 = -1
 
     /// `directory` ist für Tests injizierbar; default = Application Support.
     init(directory: URL? = nil) {
@@ -108,8 +108,8 @@ final class DictionaryStore {
 
     private func restartWatcher() {
         watcher?.cancel()
-        if watchFD >= 0 { close(watchFD); watchFD = -1 }
-        watchFD = open(fileURL.path, O_EVTONLY)
+        watcher = nil
+        let watchFD = open(fileURL.path, O_EVTONLY)
         guard watchFD >= 0 else { return }
         let source = DispatchSource.makeFileSystemObjectSource(
             fileDescriptor: watchFD,
@@ -133,6 +133,5 @@ final class DictionaryStore {
 
     deinit {
         watcher?.cancel()
-        if watchFD >= 0 { close(watchFD) }
     }
 }
