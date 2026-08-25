@@ -53,6 +53,16 @@ enum MicrophoneScanner {
 
     private static let systemObject = AudioObjectID(kAudioObjectSystemObject)
 
+    /// UI-fertiger Katalog inklusive echtem Systemstandard-Gerät.
+    static func devices() -> [MicDevice] {
+        let defaultUID = defaultInputTransportUID()
+        return MicrophoneCatalog.catalog(from: scan().map { raw in
+            MicDevice(uid: raw.transportUID ?? raw.name,
+                      name: raw.name,
+                      isDefault: raw.transportUID != nil && raw.transportUID == defaultUID)
+        })
+    }
+
     /// Alle Hardware-Audiogeräte mit Eingangskanälen.
     static func scan() -> [RawDevice] {
         var size: UInt32 = 0

@@ -46,7 +46,10 @@ struct SettingsWindowView: View {
             .frame(maxWidth: 620 + 2 * Theme.Metrics.contentPaddingH, alignment: .leading)
         }
         .frame(maxWidth: .infinity, alignment: .center)
-        .onAppear { app.refreshPermissionState() }
+        .onAppear {
+            app.refreshPermissionState()
+            availableMics = MicrophoneScanner.devices()
+        }
         .onDisappear { cancelHotkeyRecording() }
     }
 
@@ -240,7 +243,7 @@ struct SettingsWindowView: View {
             toggleControl(isOn: Binding(
                 get: { settings.handsFreeOn },
                 set: { app.setHandsFreeEnabled($0) }
-            ))
+            ), accessibilityLabel: "Hands-free")
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 13)
@@ -310,7 +313,7 @@ struct SettingsWindowView: View {
                 Text("ERTEILT ✓")
                     .font(Theme.Typo.kicker(size: 10))
                     .tracking(0.8)
-                    .foregroundColor(Theme.Palette.archivgruen)
+                    .foregroundColor(Theme.Palette.successText)
                     .padding(.horizontal, 9)
                     .padding(.vertical, 5)
                     .overlay(RoundedRectangle(cornerRadius: 5)
@@ -349,7 +352,7 @@ struct SettingsWindowView: View {
                 Text("ERTEILT ✓")
                     .font(Theme.Typo.kicker(size: 10))
                     .tracking(0.8)
-                    .foregroundColor(Theme.Palette.archivgruen)
+                    .foregroundColor(Theme.Palette.successText)
             } else {
                 Button("FREIGEBEN") {
                     Task { @MainActor in app.requestMissingPermissions() }
@@ -383,7 +386,7 @@ struct SettingsWindowView: View {
            let device = availableMics.first(where: { $0.uid == uid }) {
             return device.name
         }
-        return "MacBook Pro Mikrofon"
+        return availableMics.first(where: \.isDefault)?.name ?? "Systemstandard"
     }
 
     private var micRow: some View {
@@ -495,13 +498,14 @@ struct SettingsWindowView: View {
                     .foregroundColor(Theme.Palette.text2)
             }
             Spacer()
-            toggleControl(isOn: isOn, disabled: disabled)
+            toggleControl(isOn: isOn, disabled: disabled, accessibilityLabel: title)
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 13)
     }
 
-    private func toggleControl(isOn: Binding<Bool>, disabled: Bool = false) -> some View {
+    private func toggleControl(isOn: Binding<Bool>, disabled: Bool = false,
+                               accessibilityLabel: String) -> some View {
         Button {
             guard !disabled else { return }
             isOn.wrappedValue.toggle()
@@ -520,6 +524,9 @@ struct SettingsWindowView: View {
         .buttonStyle(.plain)
         .opacity(disabled ? 0.45 : 1)
         .animation(reduceMotion ? nil : Theme.Motion.fast, value: isOn.wrappedValue)
+        .accessibilityLabel(accessibilityLabel)
+        .accessibilityValue(isOn.wrappedValue ? "ein" : "aus")
+        .accessibilityAddTraits(.isToggle)
     }
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -550,6 +557,8 @@ struct SettingsWindowView: View {
                     }
                     .buttonStyle(.plain)
                     .help(name)
+                    .accessibilityLabel("Akzentfarbe \(name)")
+                    .accessibilityAddTraits(active ? .isSelected : [])
                 }
                 Spacer()
                 Text(activeAccentName)
@@ -576,8 +585,8 @@ struct SettingsWindowView: View {
             rowDivider()
             deleteAllRow
         }
-        .alert("Akte vernichten?", isPresented: $showDeleteConfirm) {
-            Button("Vernichten", role: .destructive) {
+        .alert("Alles löschen?", isPresented: $showDeleteConfirm) {
+            Button("Alles löschen", role: .destructive) {
                 app.history.deleteAll()
             }
             Button("Abbrechen", role: .cancel) {}
@@ -602,15 +611,13 @@ struct SettingsWindowView: View {
             Spacer()
             Picker("", selection: Binding(get: { settings.retention },
                                           set: { settings.retention = $0 })) {
-                Text("NIE").tag(Retention.forever)
-                Text("1 T").tag(Retention.oneDay)
-                Text("1 W").tag(Retention.oneWeek)
-                Text("2 W").tag(Retention.twoWeeks)
-                Text("1 MONAT").tag(Retention.oneMonth)
+                ForEach(Retention.allCases) { retention in
+                    Text(retention.label).tag(retention)
+                }
             }
             .pickerStyle(.segmented)
             .labelsHidden()
-            .frame(width: 280)
+            .frame(width: 360)
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 13)
@@ -627,7 +634,7 @@ struct SettingsWindowView: View {
                     .foregroundColor(Theme.Palette.text2)
             }
             Spacer()
-            Button("AKTE VERNICHTEN") {
+            Button("ALLES LÖSCHEN") {
                 showDeleteConfirm = true
             }
             .font(Theme.Typo.kicker(size: 10.5))
@@ -747,7 +754,6 @@ struct MicPickerPopover: View {
     @Binding var selection: String?
     @Binding var devices: [MicDevice]
     @Environment(\.dismiss) private var dismiss
-    @State private var levelTick = 0.0
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -770,23 +776,14 @@ struct MicPickerPopover: View {
 
             Rectangle().fill(Theme.Palette.linieInnen).frame(height: Theme.Metrics.hairline)
 
-            // Fußzeile: vierbalkiger Live-Pegel (archivgruen)
-            HStack(spacing: 10) {
-                HStack(alignment: .bottom, spacing: 2.5) {
-                    ForEach(0..<4, id: \.self) { i in
-                        RoundedRectangle(cornerRadius: 1)
-                            .fill(Theme.Palette.archivgruen)
-                            .frame(width: 3, height: barHeight(i))
-                            .animation(reduceMotion ? nil :
-                                    Animation.easeInOut(duration: 0.5 + Double(i) * 0.13)
-                                    .repeatForever(autoreverses: true),
-                                       value: levelTick)
-                    }
-                }
-                Text("PEGEL WIRD GEPRÜFT")
+            HStack(spacing: 7) {
+                Circle()
+                    .fill(Theme.Palette.successColor)
+                    .frame(width: 6, height: 6)
+                Text("AUSGEWÄHLT ✓")
                     .font(Theme.Typo.kicker(size: 9.5))
                     .tracking(1)
-                    .foregroundColor(Theme.Palette.text3)
+                    .foregroundColor(Theme.Palette.successText)
                 Spacer()
             }
             .padding(.horizontal, 12)
@@ -795,25 +792,8 @@ struct MicPickerPopover: View {
         .frame(width: 270)
         .background(Theme.Palette.papier)
         .onAppear {
-            devices = Self.scanDevices()
-            levelTick = 1
+            devices = MicrophoneScanner.devices()
         }
-    }
-
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
-    private func barHeight(_ i: Int) -> CGFloat {
-        let phase = levelTick * 2 + Double(i) * 0.9
-        return 6 + CGFloat(abs(sin(phase))) * 8
-    }
-
-    private static func scanDevices() -> [MicDevice] {
-        let defaultUID = MicrophoneScanner.defaultInputTransportUID()
-        return MicrophoneCatalog.catalog(from: MicrophoneScanner.scan().map { raw in
-            MicDevice(uid: raw.transportUID ?? raw.name,
-                      name: raw.name,
-                      isDefault: raw.transportUID != nil && raw.transportUID == defaultUID)
-        })
     }
 
     private func micRow(_ device: MicDevice, isStandard: Bool, isSelected: Bool,

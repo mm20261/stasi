@@ -17,6 +17,7 @@ struct ProtocolsView: View {
     @State private var playingId: UUID?
     @State private var copiedId: UUID?
     @FocusState private var searchFocused: Bool
+    @FocusState private var focusedRecordID: UUID?
 
     @State private var player = AudioPlayerHelper()
     private var calendar: Calendar { .current }
@@ -137,6 +138,7 @@ struct ProtocolsView: View {
                         )
                 }
                 .buttonStyle(.plain)
+                .accessibilityAddTraits(active ? .isSelected : [])
             }
         }
     }
@@ -146,7 +148,7 @@ struct ProtocolsView: View {
     private var header: some View {
         HStack(alignment: .top) {
             VStack(alignment: .leading, spacing: 5) {
-                Text("PROTOKOLLE · BESTAND \(Copy.formatGermanNumber(app.history.records.count))")
+                Text("PROTOKOLLE · \(Copy.formatGermanNumber(app.history.records.count))")
                     .kicker(Theme.Palette.text3)
                 Text("Protokolle")
                     .font(Theme.Typo.h1())
@@ -185,9 +187,16 @@ struct ProtocolsView: View {
                 Text("Keine Treffer")
                     .font(Theme.Typo.body().weight(.medium))
                     .foregroundColor(Theme.Palette.ink)
-                Text("Nichts im Bestand gefunden.")
+                Text("Keine passenden Protokolle gefunden.")
                     .font(Theme.Typo.secondary())
                     .foregroundColor(Theme.Palette.text2)
+                Button(Copy.resetProtocolSearch) {
+                    selection.searchQuery = ""
+                    selection.searchFilter = .all
+                    searchFocused = true
+                }
+                .buttonStyle(GhostButtonStyle())
+                .padding(.top, 8)
             }
             .frame(maxWidth: .infinity)
             .secondaryCard()
@@ -260,13 +269,28 @@ struct ProtocolsView: View {
                     .lineLimit(isExpanded ? nil : 3)
                     .multilineTextAlignment(.leading)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .contentShape(Rectangle())
-                    .onTapGesture { toggleExpand(record.id) }
 
                 metaRow(for: record)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .layoutPriority(1) // v4: minmax(0,1fr) – Text darf schrumpfen, Ellipsis
+            .contentShape(Rectangle())
+            .onTapGesture { toggleExpand(record.id) }
+            .focusable()
+            .focused($focusedRecordID, equals: record.id)
+            .overlay(
+                RoundedRectangle(cornerRadius: Theme.Metrics.radiusControl)
+                    .strokeBorder(focusedRecordID == record.id ? Theme.accent : Color.clear,
+                                  lineWidth: 2)
+            )
+            .onKeyPress(.return) {
+                toggleExpand(record.id)
+                return .handled
+            }
+            .onKeyPress(.space) {
+                toggleExpand(record.id)
+                return .handled
+            }
 
             // Icon-Buttons
             HStack(spacing: 4) {
@@ -348,6 +372,7 @@ struct ProtocolsView: View {
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
         .frame(width: 27, height: 27)
+        .accessibilityLabel("Weitere Aktionen für Protokoll")
     }
 
     private func iconButton(_ symbol: String, active: Bool = false,
@@ -361,6 +386,17 @@ struct ProtocolsView: View {
         }
         .buttonStyle(.plain)
         .scaleOnHover()
+        .accessibilityLabel(accessibilityLabel(for: symbol))
+    }
+
+    private func accessibilityLabel(for symbol: String) -> String {
+        switch symbol {
+        case "play.fill": "Audio abspielen"
+        case "stop.fill": "Audio stoppen"
+        case "doc.on.doc": "Protokoll kopieren"
+        case "checkmark": "Protokoll kopiert"
+        default: symbol
+        }
     }
 
     // MARK: Aktionen

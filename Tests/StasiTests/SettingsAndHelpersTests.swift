@@ -102,6 +102,12 @@ final class SettingsStoreTests: XCTestCase {
         XCTAssertEqual(Retention.oneMonth.days, 30)
     }
 
+    func testRetentionUsesFullLabels() {
+        XCTAssertEqual(Retention.allCases.map(\.label), [
+            "Nie löschen", "1 Tag", "1 Woche", "2 Wochen", "1 Monat",
+        ])
+    }
+
     func testAutostartFailureResetsToggle() {
         struct RegistrationError: Error {}
         let settings = SettingsStore(defaults: defaults) { enabled in

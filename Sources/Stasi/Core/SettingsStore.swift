@@ -218,9 +218,11 @@ enum Copy {
     /// Hinweis auf der Rail-Karte „Deine Akte".
     @MainActor
     static func akteNote(_ s: SettingsStore) -> String {
-        s.ironyOn ? "Wächst mit jedem Wort. Ohne dein Zutun."
-                  : "Dein Diktier-Fortschritt diese Woche."
+        s.ironyOn ? "Lebenslang geführt. Alle 10.000 Wörter ein neuer Meilenstein."
+                  : "Alle diktierten Wörter seit deinem ersten Protokoll."
     }
+
+    static let akteMilestone = "10.000-Wörter-Meilenstein"
 
     @MainActor
     static func insightsSubtitle(_ s: SettingsStore) -> String {
@@ -255,9 +257,14 @@ enum Copy {
 
     // Leerzustand erster Start
     static let firstStartTitle = "Noch nichts protokolliert."
-    static let firstStartBody = "Setz den Cursor in ein Textfeld, halte ⌘ rechts und sprich einen Satz. Beim Loslassen steht er da."
+    static func firstStartBody(combo: HotkeyEngine.Combo) -> String {
+        "Setz den Cursor in ein Textfeld, halte \(VirtualKey.display(combo)) und sprich einen Satz. Beim Loslassen steht er da."
+    }
     static let firstStartTryButton = "Jetzt ausprobieren"
     static let firstStartChangeKeyButton = "Taste ändern"
+
+    static let insightsEmpty = "Noch nichts zu zählen – diktiere dein erstes Protokoll."
+    static let resetProtocolSearch = "Suche & Filter zurücksetzen"
 
     // Warnkarte „Berechtigung fehlt"
     static let permissionWarningTitle = "Der Hotkey funktioniert noch nicht."
