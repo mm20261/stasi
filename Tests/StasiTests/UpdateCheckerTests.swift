@@ -42,6 +42,21 @@ final class UpdateCheckerTests: XCTestCase {
         XCTAssertTrue(VersionComparator.isNewer("1.0", than: "0.9"))
     }
 
+    func testCheckerDefaultsToDisplayedBundleVersion() {
+        let fetcher = MockReleaseFetcher(result: .success(
+            ReleaseInfo(version: "v1.0", url: URL(string: "https://example.com/releases/v1.0")!)
+        ))
+        let checker = UpdateChecker(fetcher: fetcher, defaults: defaults)
+        XCTAssertEqual(checker.currentVersion, AppVersion.display)
+    }
+
+    func testGitHubPayloadDecodesHTMLURL() throws {
+        let data = Data(#"{"tag_name":"v0.10","html_url":"https://example.com/releases/v0.10"}"#.utf8)
+        let payload = try JSONDecoder().decode(GitHubReleaseFetcher.Payload.self, from: data)
+        XCTAssertEqual(payload.tagName, "v0.10")
+        XCTAssertEqual(payload.htmlURL.absoluteString, "https://example.com/releases/v0.10")
+    }
+
     // MARK: Statuszeile
 
     func testStatusTextNeverChecked() {
@@ -72,23 +87,30 @@ final class UpdateCheckerTests: XCTestCase {
     // MARK: Check-Ablauf (Mock-Fetcher)
 
     func testCheckWithNewerVersionUpdatesStateAndPersists() async {
-        let fetcher = MockReleaseFetcher(result: .success("v0.10"))
+        let releaseURL = URL(string: "https://example.com/releases/v0.10")!
+        let fetcher = MockReleaseFetcher(result: .success(
+            ReleaseInfo(version: "v0.10", url: releaseURL)
+        ))
         let checker = UpdateChecker(fetcher: fetcher, defaults: defaults,
                                     currentVersion: "0.9")
         await checker.check()
 
         XCTAssertEqual(checker.state.availableVersion, "0.10")
+        XCTAssertEqual(checker.state.releaseURL, releaseURL)
         XCTAssertNotNil(checker.state.lastChecked)
 
         // Persistenz: Neue Instanz liest denselben Stand
         let reloaded = UpdateChecker(fetcher: fetcher, defaults: defaults,
                                      currentVersion: "0.9")
         XCTAssertEqual(reloaded.state.availableVersion, "0.10")
+        XCTAssertEqual(reloaded.state.releaseURL, releaseURL)
         XCTAssertEqual(reloaded.state.lastChecked, checker.state.lastChecked)
     }
 
     func testCheckWithSameVersionLeavesNoUpdateAvailable() async {
-        let fetcher = MockReleaseFetcher(result: .success("0.9"))
+        let fetcher = MockReleaseFetcher(result: .success(
+            ReleaseInfo(version: "0.9", url: URL(string: "https://example.com/releases/v0.9")!)
+        ))
         let checker = UpdateChecker(fetcher: fetcher, defaults: defaults,
                                     currentVersion: "0.9")
         await checker.check()
@@ -97,11 +119,15 @@ final class UpdateCheckerTests: XCTestCase {
     }
 
     func testCheckFailureKeepsLastResultButStampsTime() async {
-        let ok = MockReleaseFetcher(result: .success("v0.11"))
+        let releaseURL = URL(string: "https://example.com/releases/v0.11")!
+        let ok = MockReleaseFetcher(result: .success(
+            ReleaseInfo(version: "v0.11", url: releaseURL)
+        ))
         let checker = UpdateChecker(fetcher: ok, defaults: defaults,
                                     currentVersion: "0.9")
         await checker.check()
         XCTAssertEqual(checker.state.availableVersion, "0.11")
+        XCTAssertEqual(checker.state.releaseURL, releaseURL)
         let stamp = checker.state.lastChecked
 
         let failing = FailingReleaseFetcher()
@@ -111,19 +137,20 @@ final class UpdateCheckerTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(checker.state.lastChecked!, stamp!)
         // Letztes bekanntes Ergebnis bleibt stehen
         XCTAssertEqual(checker.state.availableVersion, "0.11")
+        XCTAssertEqual(checker.state.releaseURL, releaseURL)
     }
 }
 
 // MARK: - Mocks
 
 struct MockReleaseFetcher: ReleaseFetching {
-    let result: Result<String, Error>
-    func fetchLatestVersion() async throws -> String {
+    let result: Result<ReleaseInfo, Error>
+    func fetchLatestRelease() async throws -> ReleaseInfo {
         try result.get()
     }
 }
 
 struct FailingReleaseFetcher: ReleaseFetching {
     struct Boom: Error {}
-    func fetchLatestVersion() async throws -> String { throw Boom() }
+    func fetchLatestRelease() async throws -> ReleaseInfo { throw Boom() }
 }
