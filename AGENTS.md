@@ -66,7 +66,7 @@ gesetzt – Systemstandard bleibt unangetastet).
 **Speicher-Sektion**: Aufbewahrungsdauer als Segmented (NIE/1T/1W/2W/1MONAT) +
 „AKTE VERNICHTEN" (Retention purged beim Start, bei Änderung und ~60s-Poll).
 
-**Test-Suite: 161 Tests, 0 Fehler** (`Tests/StasiTests/`; davon 4 Pipeline-E2E gated).
+**Test-Suite: 174 Tests, 0 Fehler** (`Tests/StasiTests/`; davon 4 Pipeline-E2E gated).
 TDD etabliert – bei Änderungen an Logik: erst Test, dann Fix.
 
 ### Bekannte Platzhalter („Bald" im UI)
@@ -88,6 +88,8 @@ Sources/Stasi/
 │   ├── AppState.swift         @MainActor @Observable State-Machine idle→recording→transcribing
 │   │                          →injecting; Hotkey-Modi (PTT/Umschalten), Sounds, WAV-Mitschrieb,
 │   │                          Zusatz-Shortcuts (copyLast/insertLast/handsFree), applyRetention
+│   ├── DictationSession.swift @MainActor Besitzer einer Diktat-Session: unveränderliche Snapshots,
+│   │                          Setup/Feed/Consume-Tasks und idempotentes Teardown
 │   ├── SettingsStore.swift    @Observable mit GESPEICHERTEN Properties + didSet-UserDefaults;
 │   │                          Retention-Enum (Nie/1Tag/1Woche/2Wochen/1Monat),
 │   │                          Akzent-Presets (accentHex, Theme.sharedSettings)
@@ -132,8 +134,9 @@ Sources/Stasi/
 
 scripts/make-app.sh            → build/Stasi.app (stabil signiert, Icon aus Import/…/icons/anthrazit)
 scripts/gen_icon.swift         → Fallback-Icon-Generator
-Tests/StasiTests/              → 161 Tests (XCTest): ThemeV3/CopyV3/ProtocolSearch/PillChrome/
-                                 UpdateChecker/MicrophoneCatalog/Onboarding + Bestand
+Tests/StasiTests/              → 174 Tests (XCTest): DictationSession/ThemeV3/CopyV3/
+                                 ProtocolSearch/PillChrome/UpdateChecker/MicrophoneCatalog/
+                                 Onboarding + Bestand
 ```
 
 ## ⚠️ HART ERARBEITETE REGELN (macOS 26.6 / Swift 6.3 – NICHT verletzen!)
@@ -166,9 +169,13 @@ echter, vom Nutzer reproduzierter Bug:
 
 5. **Speech-Lifecycle: Ergebnis-Strom NIEMALS canceln.** Apples `SpeechRecognizerWorker`
    trapt (EXC_BREAKPOINT in `preRunRecognition`), wenn er in einen abgebrochenen Stream
-   liefert. Nach `finalizeAndFinishThroughEndOfInput` (mit 3-s-Timeout, Analyzer-Referenz
-   VORHER lokal capturen) endet der Strom natürlich; alte Analyzer ruhen in
-   `retiredAnalyzers`. Session-Guard (`sessionID`) gegen Cross-Session-Writes.
+   liefert. `finalizeAndFinishThroughEndOfInput` läuft in einem unstrukturierten Task aus
+   dem `TranscriptionEngine`-actor; eine First-wins-`CheckedContinuation` liefert nach
+   3 s den letzten Text-Stand zurück, ohne den Finalize-Task zu canceln (KEINE TaskGroup –
+   deren Scope würde auf ein nicht-kooperatives Kind warten). Analyzer, Transcriber,
+   Finalize- und Ergebnis-Task werden bei Timeout/Fehler in `retiredAnalyzers` stark bis
+   zu ihrem natürlichen Ende gehalten und erst danach entfernt. Session-Identität schützt
+   nach jedem `await` gegen Cross-Session-Writes.
 
 6. **TCC-Preflights maximal ~1 Hz.** `AXIsProcessTrusted`/`CGPreflightListenEventAccess`
    20×/s können die System-Dialoge einfrieren („Eingabe-erteilen-Fenster frozen").
@@ -239,7 +246,7 @@ echter, vom Nutzer reproduzierter Bug:
 - **`swift test` kann an der Runner-Infra hängen** – zuverlässig:
   `swift build --build-tests && xcrun xctest .build/arm64-apple-macosx/debug/StasiPackageTests.xctest`
 - Suite: CorrectionEngine (14), Stores (12), Settings/Copy/Keys/Level (28), Pipeline (4 aktiv
-  + 4 gated), StatsCalculator (+V4, 22), ShortcutDetector (10), ThemeV3 (7), CopyV3 (13),
+  + 4 gated), DictationSession (13), StatsCalculator (+V4, 22), ShortcutDetector (10), ThemeV3 (7), CopyV3 (13),
   ProtocolSearch (10), PillChrome (4), UpdateChecker (8), MicrophoneCatalog (6),
   Onboarding (6). Bei Logik-Änderungen: erst Test schreiben/ändern, dann implementieren
   (TDD).
