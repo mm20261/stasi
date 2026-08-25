@@ -11,8 +11,9 @@ final class DictionaryStoreTests: XCTestCase {
 
     override func setUp() {
         super.setUp()
-        tempDir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("stasi-tests-\(UUID().uuidString)", isDirectory: true)
+        tempDir = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+            .appendingPathComponent(".build/test-artifacts", isDirectory: true)
+            .appendingPathComponent("StoreTests-\(UUID().uuidString)", isDirectory: true)
         store = DictionaryStore(directory: tempDir)
     }
 
@@ -93,8 +94,9 @@ final class HistoryStoreTests: XCTestCase {
 
     override func setUp() {
         super.setUp()
-        tempDir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("stasi-tests-\(UUID().uuidString)", isDirectory: true)
+        tempDir = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+            .appendingPathComponent(".build/test-artifacts", isDirectory: true)
+            .appendingPathComponent("HistoryStoreTests-\(UUID().uuidString)", isDirectory: true)
         store = HistoryStore(directory: tempDir)
     }
 
@@ -123,6 +125,22 @@ final class HistoryStoreTests: XCTestCase {
         XCTAssertEqual(reloaded.records.first?.correctedText, "Persistenz-Test")
         XCTAssertEqual(reloaded.records.first?.durationSecs ?? 0, 3.5, accuracy: 0.001)
         XCTAssertEqual(reloaded.records.first?.targetApp, "Notizen")
+    }
+
+    func testOldHistoryWithoutPolishSummaryStillLoads() throws {
+        let historyDirectory = tempDir.appendingPathComponent("legacy-history", isDirectory: true)
+        try FileManager.default.createDirectory(at: historyDirectory,
+                                                withIntermediateDirectories: true)
+        let record = makeRecord(text: "Altes Protokoll")
+        let encoded = try JSONEncoder().encode([record])
+        let json = try XCTUnwrap(JSONSerialization.jsonObject(with: encoded) as? [[String: Any]])
+        XCTAssertNil(json.first?["polish"])
+        try encoded.write(to: historyDirectory.appendingPathComponent("history.json"))
+
+        let reloaded = HistoryStore(directory: historyDirectory)
+
+        XCTAssertEqual(reloaded.records.first?.correctedText, "Altes Protokoll")
+        XCTAssertNil(reloaded.records.first?.polish)
     }
 
     func testInsertAtTop() {

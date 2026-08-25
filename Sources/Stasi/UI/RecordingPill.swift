@@ -79,6 +79,7 @@ final class PillController {
         if phaseChanged {
             switch phase {
             case .transcribing: showStatus(Copy.pillTranscribing)
+            case .polishing: showStatus(Copy.pillPolishing)
             case .injecting: showStatus(Copy.pillInjecting)
             case .idle, .recording: hideStatus()
             }

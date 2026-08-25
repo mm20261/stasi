@@ -73,7 +73,9 @@ final class SettingsStore {
         handsFreeOn = defaults.object(forKey: "stasi.handsFreeOn") as? Bool ?? true
         language = defaults.string(forKey: "stasi.langChoice") ?? "auto"
         soundOn = defaults.object(forKey: "stasi.soundOn") as? Bool ?? true
-        aiPostProcess = defaults.object(forKey: "stasi.aiOn") as? Bool ?? false
+        if let raw = defaults.string(forKey: "stasi.postProcess"),
+           let level = PolishLevel(rawValue: raw) { postProcessing = level }
+        defaults.removeObject(forKey: "stasi.aiOn")
         ironyOn = defaults.object(forKey: "stasi.ironyOn") as? Bool ?? false
         autostartOn = defaults.object(forKey: "stasi.autostartOn") as? Bool ?? false
         if let raw = defaults.string(forKey: "stasi.retention"),
@@ -125,8 +127,8 @@ final class SettingsStore {
         didSet { d.set(soundOn, forKey: "stasi.soundOn") }
     }
 
-    var aiPostProcess: Bool = false {
-        didSet { d.set(aiPostProcess, forKey: "stasi.aiOn") }
+    var postProcessing: PolishLevel = .standard {
+        didSet { d.set(postProcessing.rawValue, forKey: "stasi.postProcess") }
     }
 
     var ironyOn: Bool = false {
@@ -246,8 +248,20 @@ enum Copy {
 
     // Phasenstatus der AppKit-Pill
     static let pillTranscribing = "Transkribiere…"
+    static let pillPolishing = "Poliere…"
     static let pillInjecting = "Füge ein…"
     static let pillModelLoading = "Modell lädt…"
+
+    // Deterministische Nachbearbeitung
+    static let postProcessingTitle = "Nachbearbeitung"
+    static let postProcessingOffLabel = "AUS"
+    static let postProcessingStandardLabel = "STANDARD"
+    static func postProcessingDescription(for level: PolishLevel) -> String {
+        switch level {
+        case .off: "Nur Wörterbuch-Korrekturen; das Transkript bleibt ansonsten unverändert."
+        case .standard: "Entfernt Füllwörter und löst nur eindeutige Selbstkorrekturen."
+        }
+    }
 
     // Anleitungsleiste im Bericht
     static let anleitungText = "halten und sprechen."

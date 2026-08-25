@@ -30,6 +30,25 @@ final class SettingsStoreTests: XCTestCase {
         XCTAssertTrue(settings.soundOn)
         XCTAssertFalse(settings.ironyOn)
         XCTAssertFalse(settings.autostartOn)
+        XCTAssertEqual(settings.postProcessing, .standard)
+    }
+
+    func testPostProcessingPersists() {
+        let settings = SettingsStore(defaults: defaults)
+        settings.postProcessing = .off
+
+        let reloaded = SettingsStore(defaults: defaults)
+        XCTAssertEqual(reloaded.postProcessing, .off)
+        XCTAssertEqual(defaults.string(forKey: "stasi.postProcess"), "off")
+    }
+
+    func testLegacyAISettingIsRemovedWithoutMigration() {
+        defaults.set(true, forKey: "stasi.aiOn")
+
+        let settings = SettingsStore(defaults: defaults)
+
+        XCTAssertEqual(settings.postProcessing, .standard)
+        XCTAssertNil(defaults.object(forKey: "stasi.aiOn"))
     }
 
     func testAccentPersistenceAndThemeSync() {
@@ -144,6 +163,14 @@ final class CopyTests: XCTestCase {
     func testPrivacyFootnoteDiffers() {
         XCTAssertNotEqual(Copy.privacyFootnote(makeSettings(irony: true)),
                           Copy.privacyFootnote(makeSettings(irony: false)))
+    }
+
+    func testPostProcessingCopy() {
+        XCTAssertEqual(Copy.postProcessingTitle, "Nachbearbeitung")
+        XCTAssertEqual(Copy.postProcessingOffLabel, "AUS")
+        XCTAssertEqual(Copy.postProcessingStandardLabel, "STANDARD")
+        XCTAssertFalse(Copy.postProcessingDescription(for: .off).isEmpty)
+        XCTAssertFalse(Copy.postProcessingDescription(for: .standard).isEmpty)
     }
 }
 

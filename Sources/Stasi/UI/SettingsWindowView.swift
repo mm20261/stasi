@@ -469,10 +469,7 @@ struct SettingsWindowView: View {
                       description: "Kurzer Ton bei Start und Ende der Aufnahme.",
                       isOn: Binding(get: { settings.soundOn }, set: { settings.soundOn = $0 }))
             rowDivider()
-            toggleRow(title: "KI-Nachbearbeitung",
-                      description: "Entfernt Füllwörter — ähm, äh, quasi. (Noch nicht aktiv)",
-                      isOn: Binding(get: { settings.aiPostProcess }, set: { settings.aiPostProcess = $0 }),
-                      disabled: true)
+            postProcessingRow
             rowDivider()
             toggleRow(title: "Autostart",
                       description: "Stasi beim Anmelden starten.",
@@ -482,6 +479,30 @@ struct SettingsWindowView: View {
                       description: "„Wir hören zu.“ & Co. — abschaltbar für Ernsthaftigkeit.",
                       isOn: Binding(get: { settings.ironyOn }, set: { settings.ironyOn = $0 }))
         }
+    }
+
+    private var postProcessingRow: some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(Copy.postProcessingTitle)
+                    .font(Theme.Typo.zeilenTitel())
+                    .foregroundColor(Theme.Palette.ink)
+                Text(Copy.postProcessingDescription(for: settings.postProcessing))
+                    .font(Theme.Typo.secondary(size: 11.5))
+                    .foregroundColor(Theme.Palette.text2)
+            }
+            Spacer()
+            Picker("", selection: Binding(get: { settings.postProcessing },
+                                           set: { settings.postProcessing = $0 })) {
+                Text(Copy.postProcessingOffLabel).tag(PolishLevel.off)
+                Text(Copy.postProcessingStandardLabel).tag(PolishLevel.standard)
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .frame(width: 200)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 13)
     }
 
     /// v4-Toggle: 40 × 24, Radius 999, an = stempelrot (Knopf 18 px rechts),

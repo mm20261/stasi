@@ -78,6 +78,7 @@ final class CopyV3Tests: XCTestCase {
 
     func testPillStatusTexts() {
         XCTAssertEqual(Copy.pillTranscribing, "Transkribiere…")
+        XCTAssertEqual(Copy.pillPolishing, "Poliere…")
         XCTAssertEqual(Copy.pillInjecting, "Füge ein…")
         XCTAssertEqual(Copy.pillModelLoading, "Modell lädt…")
     }

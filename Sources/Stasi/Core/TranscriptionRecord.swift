@@ -16,6 +16,9 @@ struct TranscriptionRecord: Identifiable, Codable {
     var targetApp: String
     /// Pfad zur WAV-Aufnahme (optional)
     var audioPath: String?
+    /// Optionale Zusammenfassung der regelbasierten Nachbearbeitung.
+    /// Optional hält bestehende history.json-Dateien rückwärtskompatibel.
+    let polish: PolishSummary?
 
     var wordCount: Int {
         correctedText.split(whereSeparator: { $0.isWhitespace || $0.isNewline }).count
@@ -23,7 +26,8 @@ struct TranscriptionRecord: Identifiable, Codable {
 
     init(date: Date, localeID: String, rawText: String, correctedText: String,
          corrections: [AppliedCorrection], durationSecs: Double = 0,
-         targetApp: String = "", audioPath: String? = nil) {
+         targetApp: String = "", audioPath: String? = nil,
+         polish: PolishSummary? = nil) {
         self.id = UUID()
         self.date = date
         self.localeID = localeID
@@ -33,6 +37,7 @@ struct TranscriptionRecord: Identifiable, Codable {
         self.durationSecs = durationSecs
         self.targetApp = targetApp
         self.audioPath = audioPath
+        self.polish = polish
     }
 }
 

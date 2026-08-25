@@ -83,7 +83,7 @@ final class StatusBarController {
     /// dem Poll-Timer hatten den Main-Thread zu Boden gerissen.
     private static let iconCache: [AppState.Phase: NSImage] = {
         var cache: [AppState.Phase: NSImage] = [:]
-        for phase in [AppState.Phase.idle, .recording, .transcribing, .injecting] {
+        for phase in [AppState.Phase.idle, .recording, .transcribing, .polishing, .injecting] {
             let image: NSImage?
             switch phase {
             case .idle:
@@ -95,6 +95,9 @@ final class StatusBarController {
             case .transcribing:
                 image = NSImage(systemSymbolName: "ellipsis",
                                 accessibilityDescription: Copy.pillTranscribing)
+            case .polishing:
+                image = NSImage(systemSymbolName: "sparkles",
+                                accessibilityDescription: Copy.pillPolishing)
             case .injecting:
                 image = NSImage(systemSymbolName: "text.insert",
                                 accessibilityDescription: Copy.pillInjecting)

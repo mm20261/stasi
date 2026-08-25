@@ -4,7 +4,7 @@ import AppKit
 import AVFoundation
 
 // MARK: - AppState
-// Zentrale State-Machine: idle → recording → transcribing → injecting → idle.
+// Zentrale State-Machine: idle → recording → transcribing → polishing → injecting → idle.
 // Hotkey-Modi: Push-to-talk (halten) oder Umschalten (togglen).
 // Ton-Feedback, WAV-Mitschrieb, Ziel-App-Erfassung.
 
@@ -15,6 +15,7 @@ final class AppState {
         case idle = "BEREIT"
         case recording = "AUFNAHME"
         case transcribing = "TRANSKRIBIERE"
+        case polishing = "POLIERE"
         case injecting = "EINFÜGEN"
     }
 
@@ -518,11 +519,10 @@ final class AppState {
 
             let raw = self.partialText
             DebugLog.log("STASI-APP: Transkription fertig (\(raw.count) Zeichen)")
-            self.currentSession = nil
-            self.finishTranscription(rawText: raw,
-                                     duration: duration,
-                                     audioURL: recordedURL ?? session.audioURL,
-                                     session: session)
+            await self.finishTranscription(rawText: raw,
+                                           duration: duration,
+                                           audioURL: recordedURL ?? session.audioURL,
+                                           session: session)
         }
     }
 
@@ -556,18 +556,37 @@ final class AppState {
     private func finishTranscription(rawText: String,
                                      duration: Double,
                                      audioURL: URL?,
-                                     session: DictationSession) {
-        DebugLog.log("STASI-APP: finishTranscription (\(rawText.count) Zeichen roh)")
-        let trimmedRaw = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
+                                     session: DictationSession) async {
+        guard session === currentSession else { return }
+        phase = .polishing
 
-        // Korrektur-Pass (garantierter Pfad)
-        let (corrected, applied) = CorrectionEngine.correct(trimmedRaw, entries: session.dictionaryEntries)
-        let trimmed = corrected.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Snapshot-Grenze für Block 3C: ab hier darf kein veränderlicher
+        // Session-/Settings-Zustand mehr in die Nachbearbeitung hineinlaufen.
+        let rawSnapshot = rawText
+        let localeSnapshot = session.locale
+        let dictionarySnapshot = session.dictionaryEntries
+        let configuredLevel = settings.postProcessing
+        let levelSnapshot = TranscriptPolisher.effectiveLevel(configured: configuredLevel)
+        let targetAppSnapshot = session.targetApp
+        let audioURLSnapshot = audioURL
+        let durationSnapshot = duration
+
+        DebugLog.log("STASI-APP: finishTranscription (\(rawText.count) Zeichen roh)")
+        let outcome = TranscriptPolisher.polishSync(
+            rawSnapshot,
+            locale: localeSnapshot,
+            entries: dictionarySnapshot,
+            level: levelSnapshot
+        )
+        guard session === currentSession, phase == .polishing else { return }
+        let trimmedRaw = rawSnapshot.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmed = outcome.text
 
         guard !trimmed.isEmpty else {
-            if let audioURL {
-                try? FileManager.default.removeItem(at: audioURL)
+            if let audioURLSnapshot {
+                try? FileManager.default.removeItem(at: audioURLSnapshot)
             }
+            currentSession = nil
             partialText = ""
             phase = .idle
             onToast?(Copy.toastNothingHeard, false)
@@ -577,16 +596,18 @@ final class AppState {
         history.insert(
             TranscriptionRecord(
                 date: Date(),
-                localeID: session.locale.identifier,
+                localeID: localeSnapshot.identifier,
                 rawText: trimmedRaw,
                 correctedText: trimmed,
-                corrections: applied,
-                durationSecs: duration,
-                targetApp: session.targetApp,
-                audioPath: audioURL?.path
+                corrections: outcome.corrections,
+                durationSecs: durationSnapshot,
+                targetApp: targetAppSnapshot,
+                audioPath: audioURLSnapshot?.path,
+                polish: outcome.summary
             )
         )
 
+        currentSession = nil
         phase = .injecting
         partialText = trimmed
         // Auto-Kopieren: Das letzte Protokoll liegt immer in der Zwischenablage,

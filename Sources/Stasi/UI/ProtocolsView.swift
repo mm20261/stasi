@@ -16,6 +16,7 @@ struct ProtocolsView: View {
     @State private var expandedIds: Set<UUID> = []
     @State private var playingId: UUID?
     @State private var copiedId: UUID?
+    @State private var rawTextRecord: TranscriptionRecord?
     @FocusState private var searchFocused: Bool
     @FocusState private var focusedRecordID: UUID?
 
@@ -59,6 +60,9 @@ struct ProtocolsView: View {
             focusSearchIfRequested()
         }
         .onAppear { app.refreshPermissionState() }
+        .sheet(item: $rawTextRecord) { record in
+            RawTranscriptView(record: record, onCopy: { copyRawText(record) })
+        }
     }
 
     // MARK: Topbar (Suche)
@@ -338,6 +342,14 @@ struct ProtocolsView: View {
                     .background(RoundedRectangle(cornerRadius: 3)
                         .strokeBorder(Theme.Palette.linieSidebar, lineWidth: Theme.Metrics.hairline))
             }
+            if let polish = record.polish, polish.changedAnything {
+                Text("POLIERT · −\(polish.fillerWordsRemoved) FÜLLWÖRTER")
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 1.5)
+                    .background(RoundedRectangle(cornerRadius: 3)
+                        .strokeBorder(Theme.Palette.linieSidebar,
+                                      lineWidth: Theme.Metrics.hairline))
+            }
         }
         .font(Theme.Typo.counter(10))
         .monospacedDigit()
@@ -351,6 +363,9 @@ struct ProtocolsView: View {
 
     private func rowMenu(for record: TranscriptionRecord) -> some View {
         Menu {
+            Button("Rohtext anzeigen") { rawTextRecord = record }
+            Button("Rohtext kopieren") { copyRawText(record) }
+            Divider()
             Button("Audio extrahieren (.wav)") { extractAudio(record) }
             Button("Export als .txt") { export(record, asMarkdown: false) }
             Button("Export als .md") { export(record, asMarkdown: true) }
@@ -413,6 +428,11 @@ struct ProtocolsView: View {
         }
     }
 
+    private func copyRawText(_ record: TranscriptionRecord) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(record.rawText, forType: .string)
+    }
+
     private func togglePlay(_ record: TranscriptionRecord) {
         if playingId == record.id {
             player.stop()
@@ -455,6 +475,35 @@ struct ProtocolsView: View {
         if panel.runModal() == .OK, let url = panel.url {
             try? FileManager.default.copyItem(atPath: path, toPath: url.path)
         }
+    }
+}
+
+private struct RawTranscriptView: View {
+    let record: TranscriptionRecord
+    let onCopy: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Rohtext")
+                .font(Theme.Typo.sectionTitle())
+                .foregroundColor(Theme.Palette.ink)
+            ScrollView {
+                Text(record.rawText)
+                    .font(Theme.Typo.body())
+                    .foregroundColor(Theme.Palette.ink)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .frame(minHeight: 180)
+            HStack {
+                Spacer()
+                Button("Rohtext kopieren", action: onCopy)
+                    .buttonStyle(AccentButtonStyle())
+            }
+        }
+        .padding(24)
+        .frame(width: 520, height: 320)
+        .background(Theme.Palette.surface)
     }
 }
 
