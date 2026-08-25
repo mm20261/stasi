@@ -73,8 +73,8 @@ Engine-Fehlermeldung (im Recorder-Bereich), Dictionary-Datei korrupt.
 
 ## 4 · Token-Vertrag (die Slots, die du füllst)
 
-> Benennung fix, Werte = deine Entscheidung. Rückgabe als ausgefüllte Tabelle
-> **oder** JSON (Vorlage: `preview/token-template.json`).
+> Historischer Token-Vertrag. Maßgeblich ist die aktuelle Vorschau unter
+> `import/design_handoff_v3/preview.html`.
 
 ### Farbe (9 Slots)
 | Token | Rolle | Vorgabe |
@@ -112,7 +112,7 @@ Level-Animation (Charakter: schnellen Anschlag? weich? — Beschreibung genügt)
 
 ## 5 · Was du mir zurückgibst
 
-1. **Ausgefülltes Token-Blatt** (Tabelle oder JSON aus `preview/token-template.json`)
+1. **V3-Handoff prüfen** (`import/design_handoff_v3/preview.html`)
 2. **Screens** als Bilder/Frames: Hauptfenster (mit Historie + Dictionary gefüllt),
    Settings, FlowBar (beide Zustände), Add/Edit-Sheet, Icon
 3. Optional: Font-Datei/-Name, falls kein Systemfont
@@ -123,4 +123,4 @@ Icon-Generator + aktualisierte HTML-Vorschau zur Gegenprobe.
 ## 6 · Aktueller Stand als Referenz
 
 - Code-Tokens: `Sources/Stasi/UI/Theme.swift`
-- Vorschau v2 (zum Vergleichen): `preview/tokens.html`
+- Maßgebliche Vorschau: `import/design_handoff_v3/preview.html`

@@ -43,6 +43,10 @@ App getippt. Komplett **on-device** via macOS-26-`SpeechTranscriber` (EN/DE).
 
 ## Aktueller Stand (Stand: 26.08.2026 – v3-Look mit V4-Features)
 
+**Umgesetzte Audit-Blöcke:** 1A Session-Lifecycle · 1B Tap/WAV/Watcher ·
+1C kleine Korrektheitsfixes · 2 UX/Feedback/A11y · 3A regelbasierte
+Nachbearbeitung · 3B Auto-gelernt.
+
 **Funktioniert end-to-end:** Hotkey (rechte ⌘ halten) → Aufnahme → on-device-Transkription
 (EN/DE) → deterministische Nachbearbeitung STANDARD (Zögerlaute, Stotterer, konservative
 Selbstkorrekturen, Diskurs-Füller, Text-Hygiene) → Dictionary-Korrektur → Injection in fokussierte App → Protokoll-
@@ -80,9 +84,12 @@ unbekannte Wörter). Vorschläge lassen sich übernehmen oder dauerhaft ignorier
 **Test-Suite: 307 Tests, 0 Fehler** (`Tests/StasiTests/`; davon 4 Pipeline-E2E gated).
 TDD etabliert – bei Änderungen an Logik: erst Test, dann Fix.
 
-### Bekannte Platzhalter („Bald" im UI)
-- Nachbearbeitung STANDARD ist regelbasiert aktiv; KI-Feinschliff/REFINE folgt erst in Block 3C
+### Bekannte Grenzen / offene Punkte
+- Regelbasierte Nachbearbeitung AUS/STANDARD ist aktiv; ein optionaler Modell-Feinschliff
+  ist nicht Bestandteil des aktuellen Builds.
 - Sprache „Automatisch" = Systemsprache (SpeechTranscriber kann nicht pro Äußerung erkennen)
+- Eingabe-Überwachung entfällt als aktive Berechtigung; `ListenEvent` bleibt ausschließlich
+  diagnostisch erfasst und ist kein UI-Blocker.
 
 ## Architektur
 
@@ -288,7 +295,11 @@ Nach Rebuild: TCC neu erteilen (App zeigt Status im Bericht + Einstellungen).
 
 ## Offene Ideen / Roadmap
 
+- Block 3C – optionaler Modell-Feinschliff (FoundationModels) mit Weißlisten-Gitter,
+  bewusst verschoben: Apples On-Device-Modell invertierte im Test Selbstkorrekturen
+  („nein" → „nicht") und ließ Satzteile weg; Plan-Abschnitt 3C in
+  `~/.claude/plans/kannst-du-bitte-einmal-floating-chipmunk.md`.
 - whisper.cpp-Fallback mit echtem Initial-Prompt-Biasing (BiasProvider-Hook existiert)
-- Sprachwechsel pro Äußerung · Snippets · optionaler KI-Feinschliff (Block 3C)
+- Sprachwechsel pro Äußerung · Snippets
 - Hands-free (Fn-Doppeltipp) neu belegbar machen (aktuell fest verdrahtet)
 - Design-Feinschliff: weitere Änderungen über den `import/design_handoff_stasi/`-Prozess
