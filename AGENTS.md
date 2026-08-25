@@ -23,8 +23,9 @@ App getippt. Komplett **on-device** via macOS-26-`SpeechTranscriber` (EN/DE).
   Standard, Blau, Orange, Grün, Violett), auswählbar in Einstellungen → DARSTELLUNG.
   Tokens: Verlauf-Hintergrund `#F3F6FA → #F8F7F3` (160°), weiße Karten `surface`
   Radius 16 ohne Border + **Akzent-Schatten `0 2px 8px`** (12 %), Controls r9 / Inputs
-  r12 / Pill 999. Statusfarben fest: rec `#FF453A`, destructive `#C8102E`,
-  success `#30A46C`. Ironie-Copy standardmäßig AUS. Design-Tokens zentral in
+  r12 / Pill 999. Sekundärtext `sub #6F6C66` erfüllt ≥ 4,5:1 auf Weiß. Statusfarben
+  fest: rec `#FF453A`, destructive `#C8102E`, success `#30A46C`; kleiner grüner Text
+  nutzt `successText #1F7A4D`. Ironie-Copy standardmäßig AUS. Design-Tokens zentral in
   `Sources/Stasi/UI/Theme.swift` (Hex-Enum = Test-Vertrag in ThemeV3Tests); die
   v4-Aliasnamen (papier/stempelrot/linie/…) bleiben als Kompatibilitäts-Shim erhalten.
   Weitere Änderungen über den Handoff-Prozess.
@@ -67,10 +68,12 @@ das Suchfeld), Update-Prüfung in ÜBER (GitHub-Releases-API, numerischer Versio
 Statuszeile und Release-URL, persistiert), Mikrofon-Auswahl per Popover
 (Transport-UID persistiert, wird pro Engine via kAudioOutputUnitProperty_CurrentDevice
 gesetzt – Systemstandard bleibt unangetastet).
-**Speicher-Sektion**: Aufbewahrungsdauer als Segmented (NIE/1T/1W/2W/1MONAT) +
-„AKTE VERNICHTEN" (Retention purged beim Start, bei Änderung und ~60s-Poll).
+**Speicher-Sektion**: Aufbewahrungsdauer als Segmented mit ausgeschriebenen Labels +
+„Alles löschen" (Retention purged beim Start, bei Änderung und ~60s-Poll).
+Das Mikrofon-Popover zeigt den echten Systemstandard-Gerätenamen und den Auswahlstatus;
+der frühere kosmetische Fake-Pegel ist entfernt.
 
-**Test-Suite: 202 Tests, 0 Fehler** (`Tests/StasiTests/`; davon 4 Pipeline-E2E gated).
+**Test-Suite: 204 Tests, 0 Fehler** (`Tests/StasiTests/`; davon 4 Pipeline-E2E gated).
 TDD etabliert – bei Änderungen an Logik: erst Test, dann Fix.
 
 ### Bekannte Platzhalter („Bald" im UI)
@@ -78,7 +81,6 @@ TDD etabliert – bei Änderungen an Logik: erst Test, dann Fix.
   Begriffs-Erkennung beim Diktieren noch NICHT aktiv
 - KI-Nachbearbeitung (Toggle stored, inaktiv)
 - Sprache „Automatisch" = Systemsprache (SpeechTranscriber kann nicht pro Äußerung erkennen)
-- Mic-Popover-Pegelbalken sind kosmetisch animiert (kein echter Live-Level)
 
 ## Architektur
 
@@ -143,7 +145,7 @@ Sources/Stasi/
 
 scripts/make-app.sh            → build/Stasi.app (stabil signiert, Icon aus import/…/icons/anthrazit)
 scripts/gen_icon.swift         → Fallback-Icon-Generator
-Tests/StasiTests/              → 202 Tests (XCTest): DictationSession/HotkeyReenablePolicy/
+Tests/StasiTests/              → 204 Tests (XCTest): DictationSession/HotkeyReenablePolicy/
                                  AudioCaptureFile/DictionaryWatcher/ThemeV3/CopyV3/
                                  ProtocolSearch/PillChrome/UpdateChecker + Bestand
 ```
@@ -249,10 +251,10 @@ echter, vom Nutzer reproduzierter Bug:
 
 - **`swift test` kann an der Runner-Infra hängen** – zuverlässig:
   `swift build --build-tests && xcrun xctest .build/arm64-apple-macosx/debug/StasiPackageTests.xctest`
-- Suite: 202 Tests, davon Pipeline (2 aktiv + 4 gated), DictationSession (14),
+- Suite: 204 Tests, davon Pipeline (2 aktiv + 4 gated), DictationSession (14),
   HotkeyReenablePolicy (8), AudioCaptureFile (4), DictionaryWatcher (2),
-  ShortcutDetector (11), ThemeV3 (6), CopyV3 (14), ProtocolSearch (11),
-  PillChrome (5), UpdateChecker (11), MicrophoneCatalog (6),
+  ShortcutDetector (11), ThemeV3 (7), CopyV3 (14), ProtocolSearch (13),
+  PillChrome (4), UpdateChecker (11), MicrophoneCatalog (6),
   Onboarding (6). Bei Logik-Änderungen: erst Test schreiben/ändern, dann implementieren
   (TDD).
 - Diagnose-Logs laufen mit: `STASI-HK PRESS/RELEASE`, `STASI-PILL ✓/✕`, `STASI-APP …`,
