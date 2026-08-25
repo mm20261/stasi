@@ -19,6 +19,8 @@ final class AppState {
     }
 
     private(set) var phase: Phase = .idle
+    /// Woher kommt die laufende Aufnahme – steuert ✕/✓ in der Pill (v4).
+    private(set) var recordingSource: RecordingSource = .pushToTalk
     var partialText: String = ""
     private(set) var displayLevel: Double = 0
     private(set) var elapsed: TimeInterval = 0
@@ -246,11 +248,12 @@ final class AppState {
 
     // MARK: Aufnahme-Steuerung
 
-    func startDictation() {
+    func startDictation(source: RecordingSource = .pushToTalk) {
         guard phase == .idle else { return }
         partialText = ""
         discardRequested = false
         commitRequested = false
+        recordingSource = source
         phase = .recording
         recordStart = Date()
         elapsed = 0
@@ -298,7 +301,9 @@ final class AppState {
                 try? FileManager.default.createDirectory(at: audioDir, withIntermediateDirectories: true)
                 currentAudioURL = audioDir.appendingPathComponent("\(UUID().uuidString).wav")
 
-                try audio.start(outputFormat: format, recordTo: currentAudioURL) { chunk in
+                try audio.start(outputFormat: format,
+                                recordTo: currentAudioURL,
+                                preferredMicUID: settings.preferredMicUID) { chunk in
                     audioContinuation.yield(chunk)
                 }
                 DebugLog.log("STASI-APP: audio.start fertig – Aufnahme läuft")
@@ -391,7 +396,7 @@ final class AppState {
         consumeTask = nil
         let speech = self.speech
         self.speech = nil
-        onToast?("Aufnahme verworfen", false)
+        onToast?(Copy.toastDiscarded, false)
         Task { @MainActor in
             await speech?.finish() // Stream sauber beenden
             try? FileManager.default.removeItem(at: currentAudioURL ?? URL(fileURLWithPath: "/dev/null"))
@@ -448,9 +453,8 @@ final class AppState {
             let editable = TextInjector.isFocusedElementEditable()
             await MainActor.run { [weak self] in
                 guard let self else { return }
-                self.onToast?(editable
-                              ? "Protokolliert ✓"
-                              : "In Zwischenablage kopiert – ⌘V zum Einfügen", true)
+                // v4: Kurze Toasts – „Protokolliert" bzw. „Kopiert — ⌘V".
+                self.onToast?(editable ? Copy.toastLogged : Copy.toastCopied, true)
             }
             if editable {
                 TextInjector.inject(trimmed)
@@ -472,7 +476,7 @@ final class AppState {
     /// Fn-Doppeltipp – Hands-free: Aufnahme starten bzw. beenden (Togglen).
     func handsFreeToggle() {
         if phase == .idle {
-            startDictation()
+            startDictation(source: .handsFree)
         } else if phase == .recording {
             requestCommit()
         }

@@ -17,35 +17,65 @@ App getippt. Komplett **on-device** via macOS-26-`SpeechTranscriber` (EN/DE).
 - **Echte Mac-App** (Dock-Icon, App-Menü, ⌘,-Settings im Fenster) – bewusst KEIN
   Menu-bar-Utility, aber MIT sekundärem NSStatusItem-Menü.
 - Name „Stasi" mit dezenter Ironie in der Copy („Wir hören zu.") – abschaltbar.
-- Design: v2-Handoff (maßgeblich: `Import/design_handoff_stasi/Stasi v2.dc.html`) – Sidebar-
-  Layout (einklappbar 200↔64 px), Geist/Geist-Mono-Fonts (gebündelt), KEIN Dark Mode,
-  5 Akzentfarben (Standard Anthrazit `#1A1917`), Ironie-Copy standardmäßig AUS.
-  Design-Tokens zentral in `Sources/Stasi/UI/Theme.swift` (Gradient-bg, Karten r16 ohne
-  Border + Akzent-Schatten). Weitere Änderungen über den Handoff-Prozess (Token-Vertrag).
+- Design: **v3-Handoff** (maßgeblich: `Import/design_handoff_v3/DESIGN.md` +
+  `preview.html`) – Sidebar-Layout (einklappbar 200↔64 px), Fonts **Geist + Geist Mono**
+  (gebündelt), KEIN Dark Mode, **Akzent dynamisch: 5 Presets** (Anthrazit `#1A1917` *
+  Standard, Blau, Orange, Grün, Violett), auswählbar in Einstellungen → DARSTELLUNG.
+  Tokens: Verlauf-Hintergrund `#F3F6FA → #F8F7F3` (160°), weiße Karten `surface`
+  Radius 16 ohne Border + **Akzent-Schatten `0 2px 8px`** (12 %), Controls r9 / Inputs
+  r12 / Pill 999. Statusfarben fest: rec `#FF453A`, destructive `#C8102E`,
+  success `#30A46C`. Ironie-Copy standardmäßig AUS. Design-Tokens zentral in
+  `Sources/Stasi/UI/Theme.swift` (Hex-Enum = Test-Vertrag in ThemeV3Tests); die
+  v4-Aliasnamen (papier/stempelrot/linie/…) bleiben als Kompatibilitäts-Shim erhalten.
+  Weitere Änderungen über den Handoff-Prozess.
 
-## Aktueller Stand (Stand: 25.08.2026)
+> **Hinweis:** Das v4-„Registratur"-Design (Archivo, Stempelrot fest, Kopfkante-Karten)
+> wurde verworfen und der v3-Look (Geist, Verlauf, 5 Akzent-Presets) wiederhergestellt –
+> bei BEIBEHALT aller Funktionen aus dem V4-Umbau (Suche, Onboarding, Insights-V4,
+> Mikrofon-Auswahl, Update-Prüfung, Retention). `Import/design_handoff_v4/` ist gelöscht.
+>
+> **UI-Polish (25.08.):** App-Shell-Kopfzeile mit Avatar rechts oben (KEIN Overlay mehr –
+> kollidierte mit Filter-Chips), Mindestfenster 960×620 (`windowResizability(.contentMinSize)`),
+> Bericht/Insights/Protokolle auf ~1080 px zentriert gedeckelt, Buttons einheitlich
+> Controls-r9 (keine Capsule-Mixe), „Jetzt ausprobieren" startet echte Probaufnahme,
+> Status-Chip-Puls aktiv, Wörterbuch-Index mit 16 px Leading-Padding.
+
+## Aktueller Stand (Stand: 25.08.2026 – v3-Look mit V4-Features)
 
 **Funktioniert end-to-end:** Hotkey (rechte ⌘ halten) → Aufnahme → on-device-Transkription
 (EN/DE) → Dictionary-Biasing + Korrektur-Pass → Injection in fokussierte App → Protokoll-
-Historie (persistiert, Play/Export .txt/.md/Audio .wav/Löschen). UI im v2-Design: Sidebar
-einklappbar, „Der Bericht" (Heute-Liste + 252px-Rail), eigener **Insights**-Screen
-(Stat-Karten, Wohin-diktiert-Balken, Streak-Heatmap 16×7), Aufnahme-Pill im Mini-Format
-(26px, Timer + 14 Pegelbalken, Akzent-Farbe, Float/Puls-Animation).
+Historie (persistiert, Play/Export .txt/.md/Audio .wav/Löschen). UI im
+v3-Look (Geist, Verlauf-Hintergrund, 5 Akzent-Presets, weiße Karten r16 + Akzent-Schatten):
+Sidebar mit Icons/Akzent-Aktivzeile + Tooltips eingeklappt, „Der Bericht" (Suchfeld-Topbar,
+Datumszeile, Anleitungsleiste mit Status-Chip „Bereit"/„Hotkey inaktiv", Hero
+„Zuletzt diktiert" mit Kopieren/Anhören, „Früher heute"-Einzeiler, Rail mit Leitzahl +
+Deine-Akte), eigener **Insights**-Screen (KW-Leitzahl-Karte, App-Balken in Akzent-Stufen,
+Streak-Heatmap mit Stempel-Badge), **Protokolle** gruppiert nach Tag mit
+Aktenzeichen/WPM/Korrekturen-Badges, Aufnahme-Pill auf **Akzent-Basis** (✕/✓ nur bei PTT,
+weg bei Hands-free), **Toasts 36 px** („Protokolliert ✓" Stil), **Onboarding 4 Schritte** bei
+erstem Start + Leerzustand erster Start im Bericht.
 Nach jedem Diktat landet der korrigierte Text **automatisch in der Zwischenablage**
 (⌘V zum Einfügen – wie bei Wispr). **Fn-Doppeltipp** (Hands-free Toggle) über den
 EINEN Session-Tap via `ShortcutDetector`. **Push-to-talk-Shortcut frei belegbar**
-(Modifier + Taste) in den Einstellungen.
-**Speicher-Sektion**: Aufbewahrungsdauer (Nie/1Tag/1Woche/2Wochen/1Monat) + „Alles löschen"
-(Retention purged alte Protokolle + WAVs beim Start, bei Änderung und ~60s-Poll).
+(Modifier + Taste, Recorder-Feld inline mit Vorschau + Übernehmen).
+**Aus dem V4-Umbau beibehalten:** ⌘F-Suche über alle Protokolle (Trefferzähler, Filter
+ALLE/7T/30T, „Export aller Protokolle" als .md), Update-Prüfung in ÜBER (GitHub-Releases-API,
+numerischer Versionsvergleich, Statuszeile, persistiert), Mikrofon-Auswahl per Popover
+(Transport-UID persistiert, wird pro Engine via kAudioOutputUnitProperty_CurrentDevice
+gesetzt – Systemstandard bleibt unangetastet).
+**Speicher-Sektion**: Aufbewahrungsdauer als Segmented (NIE/1T/1W/2W/1MONAT) +
+„AKTE VERNICHTEN" (Retention purged beim Start, bei Änderung und ~60s-Poll).
 
-**Test-Suite: 92 Tests, 0 Fehler** (`Tests/StasiTests/`). 4 Pipeline-E2E-Tests sind gated
-(siehe Regeln unten). TDD etabliert – bei Änderungen an Logik: erst Test, dann Fix.
+**Test-Suite: 161 Tests, 0 Fehler** (`Tests/StasiTests/`; davon 4 Pipeline-E2E gated).
+TDD etabliert – bei Änderungen an Logik: erst Test, dann Fix.
 
 ### Bekannte Platzhalter („Bald" im UI)
 - „Auto-gelernt": UI + Store-Mechanik da (`EntryType.learned`, `promote`), aber automatische
   Begriffs-Erkennung beim Diktieren noch NICHT aktiv
-- KI-Nachbearbeitung (Toggle stored, inaktiv) · Mikrofon-Auswahl (nutzt aktives macOS-Gerät)
+- KI-Nachbearbeitung (Toggle stored, inaktiv)
 - Sprache „Automatisch" = Systemsprache (SpeechTranscriber kann nicht pro Äußerung erkennen)
+- Mic-Popover-Pegelbalken sind kosmetisch animiert (kein echter Live-Level)
+- Onboarding-Schritt 3: Recorder zeigt Vorschau; Übernehmen setzt den Hotkey
 
 ## Architektur
 
@@ -59,7 +89,8 @@ Sources/Stasi/
 │   │                          →injecting; Hotkey-Modi (PTT/Umschalten), Sounds, WAV-Mitschrieb,
 │   │                          Zusatz-Shortcuts (copyLast/insertLast/handsFree), applyRetention
 │   ├── SettingsStore.swift    @Observable mit GESPEICHERTEN Properties + didSet-UserDefaults;
-│   │                          Retention-Enum (Nie/1Tag/1Woche/2Wochen/1Monat)
+│   │                          Retention-Enum (Nie/1Tag/1Woche/2Wochen/1Monat),
+│   │                          Akzent-Presets (accentHex, Theme.sharedSettings)
 │   ├── AudioCapture.swift     AVAudioEngine-Tap; Render-Thread NUR: lock-geschützter RMS +
 │   │                          thread-safe yield; WAV auf serialer writeQueue
 │   ├── TranscriptionEngine.swift  SpeechAnalyzer/SpeechTranscriber, Biasing via
@@ -73,17 +104,36 @@ Sources/Stasi/
 │   ├── HotkeyEngine.swift     CGEventTap listen-only (Session-Tap) + ShortcutDetector
 │   │                          (⌃⌘V/⌃⌘C-Chords + Fn-Doppeltipp, pur testbar)
 │   ├── StatsCalculator.swift  Insights-/Rail-Statistik (WPM, Streaks, App-Nutzung, Zeit
-│   │                          gespart, Wochen-Delta, Heatmap, Kompaktformat)
+│   │                          gespart, Wochen-Delta, Heatmap, Kompaktformat, KW-Kicker,
+│   │                          Tipzeit-Schätzung)
+│   ├── ProtocolSearch.swift   Volltextsuche + Filter (ALLE/7T/30T), Tagesgruppierung,
+│   │                          FileNumber (Aktenzeichen), ProtocolExporter (alle .md)
+│   ├── PillChrome.swift       RecordingSource (pushToTalk/handsFree) → ✕/✓-Sichtbarkeit
+│   ├── UpdateChecker.swift    Release-Fetch (GitHub-API) + numerischer Versionsvergleich
+│   │                          + Statuszeile; persistiert lastChecked/availableVersion
+│   ├── MicrophoneSelection.swift  MicDevice/MicrophoneCatalog (reine Logik, getestet)
+│   │                          + MicrophoneScanner (CoreAudio: scan/defaultUID/
+│   │                          apply via kAudioOutputUnitProperty_CurrentDevice)
+│   ├── OnboardingModel.swift  4-Schritte-State-Maschine (Willkommen→Befugnisse→Hotkey→Probe)
 │   ├── BiasProvider.swift     Wörterbuch → kurze Kontextliste (max 12, kürzeste zuerst)
 │   └── TextInjector.swift     CGEvents mit Unicode-Chunks (24er), Thread.sleep-Gating
-├── UI/                        Theme.swift (Tokens), RootView, Sidebar, DashboardView,
-│                              InsightsView, ProtocolsView, DictionaryView, SettingsWindowView,
-│                              AccountView, RecordingPill.swift (AppKit!), Effects.swift
+├── UI/                        Theme.swift (v3-Tokens: Hex-Enum = Test-Vertrag, CardStyle
+│                              r16 + Akzent-Schatten, KeyBadge, StatusChip, reduced-motion-
+│                              Helfer, v4-Aliasse papier/stempelrot/linie/…), RootView
+│                              (+ Onboarding-Overlay erster Start), Sidebar (Icons,
+│                              Akzent-Aktivzeile, Tooltips eingeklappt), DashboardView
+│                              (Hero/Rail), ProtocolsView (Suche/AZ/Tagesgruppen),
+│                              InsightsView (Leitzahl/Akzent-Stufen/Stempel), DictionaryView
+│                              (Segmented-Tabs), SettingsWindowView (Mic-Popover,
+│                              Recorder-Feld, Akzent-Presets, Update-Zeile), AccountView
+│                              (Kreis-Avatar/Signaturkarte), OnboardingView,
+│                              RecordingPill.swift (AppKit!, Akzent-Pill), Effects.swift
 └── Support/                   Permissions.swift (Mikrofon/AX/ListenEvent!), VirtualKey.swift
 
 scripts/make-app.sh            → build/Stasi.app (stabil signiert, Icon aus Import/…/icons/anthrazit)
 scripts/gen_icon.swift         → Fallback-Icon-Generator
-Tests/StasiTests/              → 87 Tests (XCTest)
+Tests/StasiTests/              → 161 Tests (XCTest): ThemeV3/CopyV3/ProtocolSearch/PillChrome/
+                                 UpdateChecker/MicrophoneCatalog/Onboarding + Bestand
 ```
 
 ## ⚠️ HART ERARBEITETE REGELN (macOS 26.6 / Swift 6.3 – NICHT verletzen!)
@@ -188,9 +238,11 @@ echter, vom Nutzer reproduzierter Bug:
 
 - **`swift test` kann an der Runner-Infra hängen** – zuverlässig:
   `swift build --build-tests && xcrun xctest .build/arm64-apple-macosx/debug/StasiPackageTests.xctest`
-- Suite: CorrectionEngine (14), Stores (12), Settings/Copy/Keys/Level (24), Pipeline (4 aktiv
-  + 4 gated), StatsCalculator (17), ShortcutDetector (10). Bei Logik-Änderungen: erst Test
-  schreiben/ändern, dann implementieren (TDD).
+- Suite: CorrectionEngine (14), Stores (12), Settings/Copy/Keys/Level (28), Pipeline (4 aktiv
+  + 4 gated), StatsCalculator (+V4, 22), ShortcutDetector (10), ThemeV3 (7), CopyV3 (13),
+  ProtocolSearch (10), PillChrome (4), UpdateChecker (8), MicrophoneCatalog (6),
+  Onboarding (6). Bei Logik-Änderungen: erst Test schreiben/ändern, dann implementieren
+  (TDD).
 - Diagnose-Logs laufen mit: `STASI-HK PRESS/RELEASE`, `STASI-PILL ✓/✕`, `STASI-APP …`,
   `STASI-WATCH` (Main-Thread-Stalls >1 s). Lesen:
   `log show --last 30m --predicate 'eventMessage CONTAINS "STASI"' --style compact`

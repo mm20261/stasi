@@ -12,7 +12,6 @@ import SwiftUI
 final class PillModel {
     var level: Double = 0
     var secs: TimeInterval = 0
-    var accentHex: UInt32 = 0x1A1917
 }
 
 // MARK: - Panel
@@ -43,6 +42,15 @@ final class PillPanel: NSPanel {
         setFrameOrigin(NSPoint(x: screen.midX - frame.width / 2,
                                y: screen.minY + 28))
     }
+
+    /// Breite wechseln (✕/✓ ein-/ausblenden) und horizontal neu zentrieren.
+    func resize(to size: NSSize) {
+        setContentSize(size)
+        if let screen = NSScreen.main?.visibleFrame {
+            setFrameOrigin(NSPoint(x: screen.midX - size.width / 2,
+                                   y: frame.minY))
+        }
+    }
 }
 
 // MARK: - Controller
@@ -58,25 +66,31 @@ final class PillController {
     private var toastTimer: Timer?
 
     private var lastPhase: AppState.Phase = .idle
+    private var lastSource: RecordingSource = .pushToTalk
 
     func sync(phase: AppState.Phase, partialText: String, elapsed: TimeInterval,
-              level: Double, accentHex: UInt32) {
+              level: Double, source: RecordingSource) {
         guard let app else { return }
         let entered = phase == .recording && lastPhase != .recording
         let exited = phase != .recording && lastPhase == .recording
+        let sourceChanged = phase == .recording && lastSource != source
         lastPhase = phase
+        lastSource = source
         switch phase {
         case .recording:
             let view = ensurePill(app: app)
             model.level = level
             model.secs = elapsed
-            model.accentHex = accentHex
-            view.setAccent(hex: accentHex)
+            view.applyChrome(for: source)
             view.update(level: level, secs: elapsed)
-            if entered {
-                pillPanel?.positionBottomCenter()
+            if entered || sourceChanged {
+                if entered {
+                    pillPanel?.positionBottomCenter()
+                    startAnimation()
+                }
+                pillPanel?.resize(to: NSSize(width: PillChrome.pillWidth(for: source),
+                                             height: 26))
                 pillPanel?.orderFront(nil)
-                startAnimation()
             }
         default:
             if exited {
@@ -86,7 +100,7 @@ final class PillController {
         }
     }
 
-    /// Toast-Pill nach Abschluss/Verwerfen
+    /// Toast-Pill nach Abschluss/Verwerfen (v3: 36 px hoch)
     func showToast(_ message: String, success: Bool) {
         let view = ToastViewNS(text: message, success: success)
         if toastPanel == nil {
@@ -94,6 +108,7 @@ final class PillController {
         } else {
             toastPanel?.contentView = view
         }
+        toastPanel?.resize(to: NSSize(width: 260, height: 36))
         toastPanel?.positionBottomCenter()
         toastPanel?.orderFront(nil)
 
@@ -154,7 +169,7 @@ final class RecordingPillView: NSView {
         self.onCommit = onCommit
 
         wantsLayer = true
-        applyBackground(hex: 0x1A1917)
+        applyBackground()
 
         discardButton.target = self
         discardButton.action = #selector(discardTapped)
@@ -179,7 +194,7 @@ final class RecordingPillView: NSView {
         dotView.layer?.add(pulse, forKey: "pulse")
 
         // Timer
-        timerLabel.font = NSFont(name: "GeistMono", size: 9) ?? .monospacedDigitSystemFont(ofSize: 9, weight: .regular)
+        timerLabel.font = NSFont(name: "Geist Mono", size: 9) ?? .monospacedDigitSystemFont(ofSize: 9, weight: .regular)
         timerLabel.textColor = NSColor(white: 1, alpha: 0.65)
         timerLabel.isBezeled = false
         timerLabel.drawsBackground = false
@@ -210,6 +225,7 @@ final class RecordingPillView: NSView {
             main.centerYAnchor.constraint(equalTo: centerYAnchor),
             timerLabel.widthAnchor.constraint(greaterThanOrEqualToConstant: 22),
         ])
+        pillWidthConstraint = constraints.first { $0.firstAttribute == .width }
 
         // Leichtes Schweben (translateY −3px, 3 s) – reine Core Animation,
         // kein Timer, kein Executor-Kontakt.
@@ -222,9 +238,21 @@ final class RecordingPillView: NSView {
         layer?.add(float, forKey: "float")
     }
 
+    private var pillWidthConstraint: NSLayoutConstraint?
+
+    /// v4: ✕ und ✓ nur bei gehaltener Push-to-talk-Taste (Hands-free ohne).
+    func applyChrome(for source: RecordingSource) {
+        let show = PillChrome.showsButtons(for: source)
+        discardButton.isHidden = !show
+        commitButton.isHidden = !show
+        applyBackground()
+    }
+
     required init?(coder: NSCoder) { fatalError("nicht unterstützt") }
 
-    private func applyBackground(hex: UInt32) {
+    /// v3: Pill-Hintergrund = Akzent gemischt 88 % (color-mix mit Schwarz 12 %).
+    private func applyBackground() {
+        let hex = Theme.sharedSettings?.accentHex ?? 0x1A1917
         let r = CGFloat((hex >> 16) & 0xFF)
         let g = CGFloat((hex >> 8) & 0xFF)
         let b = CGFloat(hex & 0xFF)
@@ -235,14 +263,6 @@ final class RecordingPillView: NSView {
         layer?.cornerRadius = 13
         commitButton.contentTintColor = mixed
     }
-
-    /// Akzent-Farbe bei Bedarf nachziehen (über Controller gesetzt).
-    func setAccent(hex: UInt32) {
-        guard hex != lastHex else { return }
-        lastHex = hex
-        applyBackground(hex: hex)
-    }
-    private var lastHex: UInt32 = 0x1A1917
 
     @objc nonisolated private func discardTapped() {
         onDiscard?()
@@ -282,6 +302,7 @@ final class BarView: NSView {
     override init(frame frameRect: NSRect) {
         super.init(frame: NSRect(x: 0, y: 0, width: 2, height: 6))
         wantsLayer = true
+        // v3: Pegelbalken weiß 95 % auf Akzent-Pill
         layer?.backgroundColor = NSColor(white: 1, alpha: 0.95).cgColor
         layer?.cornerRadius = 1
         translatesAutoresizingMaskIntoConstraints = false
@@ -314,13 +335,15 @@ final class PillCircleButton: NSButton {
         imagePosition = .imageOnly
         wantsLayer = true
         let size: CGFloat = dark ? 17 : 16
-        layer?.backgroundColor = dark
-            ? NSColor.white.cgColor
-            : NSColor.white.withAlphaComponent(0.16).cgColor
+        if dark {
+            // ✓-Button v3: weißer Kreis, akzentfarbenes Häkchen (via applyBackground).
+            layer?.backgroundColor = NSColor.white.cgColor
+            contentTintColor = NSColor(srgbRed: 0.1, green: 0.1, blue: 0.1, alpha: 1)
+        } else {
+            layer?.backgroundColor = NSColor.white.withAlphaComponent(0.16).cgColor
+            contentTintColor = NSColor.white.withAlphaComponent(0.85)
+        }
         layer?.cornerRadius = size / 2
-        contentTintColor = dark
-            ? NSColor(srgbRed: 0.1, green: 0.1, blue: 0.1, alpha: 1)
-            : NSColor(white: 1, alpha: 0.85)
         translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([
             widthAnchor.constraint(equalToConstant: size),
@@ -335,7 +358,7 @@ final class PillCircleButton: NSButton {
     required init?(coder: NSCoder) { fatalError("nicht unterstützt") }
 }
 
-// MARK: - Toast (AppKit, 36px)
+// MARK: - Toast (AppKit, v3: 36 px, dunkle Pill, grüner Haken / rotes ✕)
 
 @MainActor
 final class ToastViewNS: NSView {

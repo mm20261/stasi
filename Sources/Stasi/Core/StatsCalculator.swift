@@ -181,4 +181,43 @@ enum StatsCalculator {
             return formatted(Double(n) / 1_000_000, suffix: "M")
         }
     }
+
+    // MARK: v4 „Registratur"
+
+    /// KW-Kicker über der Insights-Leitzahl:
+    /// „KALENDERWOCHE 35 · 24.–30. AUGUST“ (Monatswechsel: „… SEPTEMBER – 2. OKTOBER“).
+    static func weekKickerLabel(for date: Date,
+                                calendar: Calendar = .current) -> String {
+        let week = calendar.component(.weekOfYear, from: date)
+        let start = calendar.dateInterval(of: .weekOfYear, for: date)?.start
+            ?? calendar.startOfDay(for: date)
+        let end = calendar.date(byAdding: .day, value: 6, to: start)!
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "de_DE")
+        formatter.calendar = calendar
+
+        let startDay = calendar.component(.day, from: start)
+        let endDay = calendar.component(.day, from: end)
+        formatter.setLocalizedDateFormatFromTemplate("MMMM")
+        let startMonth = formatter.string(from: start).uppercased()
+        let endMonth = formatter.string(from: end).uppercased()
+
+        let range: String
+        if startMonth == endMonth {
+            range = "\(startDay).–\(endDay). \(endMonth)"
+        } else {
+            range = "\(startDay). \(startMonth) – \(endDay). \(endMonth)"
+        }
+        return "KALENDERWOCHE \(week) · \(range)"
+    }
+
+    /// Reine Tipzeit-Estimate für die Wörter dieser Woche (40 WPM-Referenz):
+    /// „Getippt hättest du dafür etwa 2:14 Stunden gebraucht.“
+    static func typingTimeThisWeek(_ records: [TranscriptionRecord],
+                                   typingWPM: Double = 40,
+                                   calendar: Calendar = .current,
+                                   today: Date = Date()) -> TimeInterval {
+        let words = weekComparison(records, calendar: calendar, today: today).thisWeek
+        return Double(words) / typingWPM * 60
+    }
 }

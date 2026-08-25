@@ -30,6 +30,7 @@ struct StasiApp: App {
                 }
         }
         .defaultSize(width: 1200, height: 780)
+        .windowResizability(.contentMinSize)
         .windowStyle(.automatic)
         .commands {
             CommandGroup(replacing: .appSettings) {
@@ -221,7 +222,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 partialText: app.partialText,
                 elapsed: app.elapsed,
                 level: app.displayLevel,
-                accentHex: app.settings.accentHex
+                source: app.recordingSource
             )
             if tickCount % 20 == 0, app.accessibilityGranted {
                 // NUR mit Eingabe-Überwachungs-Recht reaktivieren: einen von

@@ -1,7 +1,8 @@
 import SwiftUI
 
-// MARK: - Insights (v2)
-// 3 große Stat-Karten, „Wohin diktiert wird"-Balken, Streak-Heatmap (16 Wochen × 7 Tage).
+// MARK: - Insights (v3)
+// Eine Leitzahl statt drei Karten · App-Balken in einem Rotton abgestuft ·
+// Serie-Heatmap mit Stempel-Badge.
 
 struct InsightsView: View {
     @Environment(AppState.self) private var app
@@ -12,203 +13,191 @@ struct InsightsView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
+                Text(StatsCalculator.weekKickerLabel(for: Date(), calendar: calendar))
+                    .kicker(Theme.Palette.text3)
                 Text("Insights")
                     .font(Theme.Typo.h1())
-                    .tracking(-0.3)
+                    .tracking(-0.6)
                     .foregroundColor(Theme.Palette.ink)
-                Text(subtitle)
+                    .padding(.top, 4)
+                Text(Copy.insightsSubtitle(settings))
                     .font(Theme.Typo.body())
-                    .foregroundColor(Theme.Palette.sub)
+                    .foregroundColor(Theme.Palette.text2)
                     .padding(.top, 5)
 
-                bigStatsRow
+                leitzahlCard
                     .padding(.top, 22)
 
-                HStack(alignment: .top, spacing: 14) {
+                HStack(alignment: .top, spacing: Theme.Metrics.gridGap) {
                     appUsageCard
                         .frame(maxWidth: .infinity)
-                    heatmapCard
+                    streakCard
                         .frame(maxWidth: .infinity)
                 }
-                .padding(.top, 14)
+                .padding(.top, Theme.Metrics.gridGap)
             }
-            .padding(.horizontal, 32)
-            .padding(.top, 10)
+            .padding(.horizontal, Theme.Metrics.contentPaddingH)
             .padding(.bottom, 80)
+            .frame(maxWidth: 1080 + 2 * Theme.Metrics.contentPaddingH, alignment: .leading)
         }
+        .frame(maxWidth: .infinity, alignment: .center)
+        .onAppear { app.refreshPermissionState() }
     }
 
-    private var subtitle: String {
-        settings.ironyOn
-            ? "Der Überwachungsbericht. Lückenlos, versteht sich."
-            : "Deine Diktier-Statistik."
-    }
+    // MARK: Leitzahl-Karte
 
-    // MARK: Große Stat-Karten
+    private var leitzahlCard: some View {
+        let records = app.history.records
+        let comparison = StatsCalculator.weekComparison(records, calendar: calendar)
+        let typing = StatsCalculator.timeSavedText(
+            StatsCalculator.typingTimeThisWeek(records, calendar: calendar))
 
-    private var bigStatsRow: some View {
-        HStack(spacing: 14) {
-            bigStatCard(value: weekWordsValue,
-                        label: "WÖRTER / WOCHE",
-                        delta: weekDeltaText)
-            bigStatCard(value: wpmValue,
-                        label: "WÖRTER / MINUTE",
-                        delta: wpmFactorText)
-            bigStatCard(value: timeSavedValue,
-                        label: "ZEIT GESPART",
-                        delta: "diese Woche")
+        return HStack(alignment: .bottom, spacing: 30) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text(StatsCalculator.compactCount(comparison.thisWeek))
+                    .font(Theme.Typo.leitzahl())
+                    .monospacedDigit()
+                    .tracking(-1.3)
+                    .foregroundColor(Theme.Palette.ink)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.5)
+                Text("Wörter diese Woche\(deltaSuffix(comparison.deltaPercent)).")
+                    .font(.custom("Geist", size: 13.5))
+                    .foregroundColor(Theme.Palette.text2)
+                Text("Getippt hättest du dafür etwa \(typing) gebraucht.")
+                    .font(.custom("Geist", size: 12.5))
+                    .foregroundColor(Theme.Palette.text3)
+            }
+            Spacer()
+            sideValue(value: wpmText,
+                      label: "WÖRTER / MINUTE")
+            sideValue(value: "\(StatsCalculator.currentStreak(records, calendar: calendar))",
+                      label: "SERIE · TAGE")
         }
+        .card(insets: EdgeInsets(top: 22, leading: 24, bottom: 22, trailing: 24))
     }
 
-    private func bigStatCard(value: String, label: String, delta: String) -> some View {
-        VStack(alignment: .leading, spacing: 0) {
+    private func deltaSuffix(_ delta: Double?) -> String {
+        guard let delta else { return "" }
+        let rounded = Int(delta.rounded())
+        if rounded == 0 { return " – wie letzte Woche" }
+        let sign = rounded > 0 ? "+" : ""
+        return sign == "+" ? " — \(sign)\(rounded) % mehr als letzte Woche"
+                           : " — \(abs(rounded)) % weniger als letzte Woche"
+    }
+
+    private func sideValue(value: String, label: String) -> some View {
+        VStack(alignment: .trailing, spacing: 3) {
             Text(value)
-                .font(Theme.Typo.bigStat())
-                .tracking(-0.5)
+                .font(Theme.Typo.nebenZahl())
                 .monospacedDigit()
                 .foregroundColor(Theme.Palette.ink)
-                .lineLimit(1)
-                .minimumScaleFactor(0.7)
             Text(label)
-                .kicker(Theme.Palette.sub)
-                .padding(.top, 7)
-            Text(delta)
-                .font(.custom("Geist", size: 11.5))
-                .foregroundColor(Theme.accent)
-                .padding(.top, 3)
+                .kicker(Theme.Palette.text3, tracking: 1)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .card(padding: 20)
-        .liftOnHover()
     }
 
-    private var weekWordsValue: String {
-        StatsCalculator.compactCount(
-            StatsCalculator.weekComparison(app.history.records, calendar: calendar).thisWeek
-        )
-    }
-
-    private var weekDeltaText: String {
-        let cmp = StatsCalculator.weekComparison(app.history.records, calendar: calendar)
-        guard let delta = cmp.deltaPercent else { return "keine Vorwoche" }
-        let sign = delta >= 0 ? "+" : ""
-        let kw = calendar.component(.weekOfYear,
-                                    from: calendar.date(byAdding: .weekOfYear, value: -1, to: Date())!)
-        return "\(sign)\(Int(delta.rounded())) % ggü. KW \(kw)"
-    }
-
-    private var wpmValue: String {
+    private var wpmText: String {
         guard let wpm = StatsCalculator.wordsPerMinute(app.history.records) else { return "—" }
         return "\(Int(wpm.rounded()))"
     }
 
-    private var wpmFactorText: String {
-        guard let wpm = StatsCalculator.wordsPerMinute(app.history.records), wpm > 0 else {
-            return "noch keine Daten"
-        }
-        let factor = wpm / 40
-        let text = String(format: "%.1f", factor).replacingOccurrences(of: ".", with: ",")
-        return "\(text)× schneller als Tippen"
-    }
-
-    private var timeSavedValue: String {
-        StatsCalculator.timeSavedText(StatsCalculator.timeSaved(app.history.records))
-    }
-
-    // MARK: Wohin diktiert wird
+    // MARK: Wohin diktiert wird (ein Rotton, abgestuft)
 
     private var appUsageCard: some View {
-        VStack(alignment: .leading, spacing: 0) {
+        VStack(alignment: .leading, spacing: 14) {
             Text("Wohin diktiert wird")
-                .font(.custom("Geist", size: 14).weight(.semibold))
+                .font(Theme.Typo.kartentitel())
                 .foregroundColor(Theme.Palette.ink)
 
             let usage = StatsCalculator.appUsage(app.history.records)
             if usage.isEmpty {
                 Text("Noch keine Daten.")
                     .font(Theme.Typo.secondary())
-                    .foregroundColor(Theme.Palette.sub)
-                    .padding(.top, 16)
+                    .foregroundColor(Theme.Palette.text2)
             } else {
-                VStack(spacing: 10) {
-                    ForEach(usage, id: \.app) { share in
-                        appUsageRow(share)
+                ForEach(Array(usage.enumerated()), id: \.element.app) { index, share in
+                    HStack(spacing: 10) {
+                        Text(share.app)
+                            .font(Theme.Typo.secondary(size: 12))
+                            .foregroundColor(Theme.Palette.text2)
+                            .frame(width: 74, alignment: .leading)
+                            .lineLimit(1)
+                        GeometryReader { geo in
+                            ZStack(alignment: .leading) {
+                                RoundedRectangle(cornerRadius: 2).fill(Theme.Palette.linieInnen)
+                                RoundedRectangle(cornerRadius: 2)
+                                    .fill(Theme.Palette.stempelrot.opacity(Theme.appBarOpacity(rank: index)))
+                                    .frame(width: max(4, geo.size.width * share.percent / 100))
+                            }
+                        }
+                        .frame(height: 8)
+                        Text("\(Int(share.percent.rounded())) %")
+                            .font(Theme.Typo.counter(10.5))
+                            .monospacedDigit()
+                            .foregroundColor(Theme.Palette.text3)
+                            .frame(width: 36, alignment: .trailing)
                     }
                 }
-                .padding(.top, 16)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .card(padding: 20)
+        .secondaryCard(padding: 20)
     }
 
-    private func appUsageRow(_ share: StatsCalculator.AppUsageShare) -> some View {
-        HStack(spacing: 10) {
-            Text(share.app)
-                .font(.custom("Geist", size: 12))
-                .foregroundColor(Theme.Palette.sub)
-                .frame(width: 76, alignment: .leading)
-                .lineLimit(1)
-            GeometryReader { geo in
-                ZStack(alignment: .leading) {
-                    Capsule().fill(Theme.Palette.hover)
-                    Capsule().fill(Theme.accent)
-                        .frame(width: geo.size.width * share.percent / 100)
-                }
-            }
-            .frame(height: 8)
-            Text("\(Int(share.percent.rounded())) %")
-                .font(Theme.Typo.counter(10.5))
-                .foregroundColor(Theme.Palette.sub)
-                .frame(width: 34, alignment: .trailing)
-        }
-    }
+    // MARK: Serie + Heatmap
 
-    // MARK: Streak-Heatmap
-
-    private var heatmapCard: some View {
-        let streak = StatsCalculator.currentStreak(app.history.records, calendar: calendar)
-        let record = StatsCalculator.longestStreak(app.history.records, calendar: calendar)
-        let heat = StatsCalculator.heatmapWords(app.history.records, calendar: calendar)
+    private var streakCard: some View {
+        let records = app.history.records
+        let streak = StatsCalculator.currentStreak(records, calendar: calendar)
+        let record = StatsCalculator.longestStreak(records, calendar: calendar)
+        let heat = StatsCalculator.heatmapWords(records, calendar: calendar)
         let maxDay = heat.flatMap { $0 }.max() ?? 0
 
-        return VStack(alignment: .leading, spacing: 0) {
-            HStack(alignment: .firstTextBaseline) {
+        return VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .top) {
                 Text("\(streak) Tage Serie")
-                    .font(.custom("Geist", size: 14).weight(.semibold))
+                    .font(Theme.Typo.kartentitel())
                     .foregroundColor(Theme.Palette.ink)
                 Spacer()
-                Text("REKORD · \(record) TAGE")
-                    .kicker(Theme.Palette.sub)
+                stampBadge("REKORD · \(record) TAGE")
             }
 
-            let columns = Array(repeating: GridItem(.flexible(), spacing: 4), count: 16)
-            LazyVGrid(columns: columns, spacing: 4) {
+            let columns = Array(repeating: GridItem(.flexible(), spacing: 3.5), count: 16)
+            LazyVGrid(columns: columns, spacing: 3.5) {
                 ForEach(0..<112, id: \.self) { i in
                     let day = i / 16
                     let week = i % 16
                     let words = heat[day][week]
-                    RoundedRectangle(cornerRadius: 3.5)
-                        .fill(Theme.accent)
-                        .opacity(cellOpacity(words: words, maxDay: maxDay))
+                    RoundedRectangle(cornerRadius: 2)
+                        .fill(Theme.Palette.stempelrot.opacity(
+                            Theme.heatmapOpacity(words: words, maxDay: maxDay)))
                         .aspectRatio(1, contentMode: .fit)
                 }
             }
-            .padding(.top, 16)
 
             Text(streakNote(streak: streak))
-                .font(.custom("Geist", size: 11))
-                .foregroundColor(Theme.Palette.sub)
-                .padding(.top, 12)
+                .font(.custom("Geist", size: 11.5))
+                .foregroundColor(Theme.Palette.text3)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .card(padding: 20)
+        .secondaryCard(padding: 20)
     }
 
-    private func cellOpacity(words: Int, maxDay: Int) -> Double {
-        guard words > 0 else { return 0.08 }
-        let ratio = Double(words) / Double(max(maxDay, 1))
-        return 0.18 + 0.82 * ratio
+    /// Schräger Akten-Stempel: roter Rand, −2° gedreht.
+    private func stampBadge(_ text: String) -> some View {
+        Text(text)
+            .font(Theme.Typo.counter(9.5))
+            .tracking(0.8)
+            .textCase(.uppercase)
+            .foregroundColor(Theme.Palette.stempelrot)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 3)
+            .overlay(
+                RoundedRectangle(cornerRadius: 3)
+                    .strokeBorder(Theme.Palette.stempelrot, lineWidth: 1.5)
+            )
+            .rotationEffect(.degrees(-2))
     }
 
     private func streakNote(streak: Int) -> String {

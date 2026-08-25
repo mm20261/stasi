@@ -10,14 +10,39 @@ struct RootView: View {
     var body: some View {
         HStack(spacing: 0) {
             SidebarView()
-            content
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            VStack(spacing: 0) {
+                // App-Shell-Kopfzeile (v3): Avatar rechts oben, Inhalt darunter –
+                // nichts kollidiert mehr mit Screen-Topbars (z. B. Filter-Chips).
+                HStack {
+                    Spacer()
+                    avatarButton
+                }
+                .padding(.horizontal, 24)
+                .padding(.top, 12)
+                content
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .background(Theme.backgroundGradient)
-        .preferredColorScheme(.light) // v2: kein Dark Mode
-        .overlay(alignment: .topTrailing) { avatarButton.padding(.top, 12).padding(.trailing, 20) }
+        .background(Theme.background)
+        .preferredColorScheme(.light) // v3: kein Dark Mode
+        .frame(minWidth: 960, minHeight: 620)
+        // v3/V4-Feature: Vier-Schritte-Onboarding bei erstem Start
+        .overlay {
+            if !settings.onboardingDone {
+                ZStack {
+                    Theme.background.opacity(0.96).ignoresSafeArea()
+                    OnboardingView()
+                        .shadow(color: .black.opacity(0.18), radius: 24, x: 0, y: 12)
+                }
+                .transition(reduceMotion ? .opacity : .scale(scale: 0.97).combined(with: .opacity))
+            }
+        }
+        .animation(reduceMotion ? nil : Theme.Motion.panel, value: settings.onboardingDone)
         .onAppear { app.refreshPermissionState() }
     }
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     @ViewBuilder
     private var content: some View {
@@ -31,7 +56,7 @@ struct RootView: View {
         }
     }
 
-    /// Avatar-Kreis (Bild oder Initiale), Klick → Konto
+    /// Avatar-Kreis (Bild oder Initiale auf dunklem Ink), Klick → Konto
     private var avatarButton: some View {
         Button {
             selection.section = .konto
@@ -41,14 +66,14 @@ struct RootView: View {
                     Image(nsImage: img).resizable().scaledToFill()
                 } else {
                     ZStack {
-                        Circle().fill(Theme.tint(Theme.accent))
+                        Circle().fill(Theme.Palette.surface)
                         Text(initials)
-                            .font(.system(size: 12, weight: .semibold))
-                            .foregroundStyle(Theme.accent.brightenedForDarkMode())
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(Theme.Palette.sub)
                     }
                 }
             }
-            .frame(width: 34, height: 34)
+            .frame(width: 32, height: 32)
             .clipShape(Circle())
             .overlay(Circle().strokeBorder(Theme.Palette.line, lineWidth: Theme.Metrics.hairline))
         }

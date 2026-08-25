@@ -1,6 +1,6 @@
 import SwiftUI
 
-// MARK: - Wörterbuch (v2-Restyle, Tabs: Begriffe / Ersetzungen / Auto-gelernt)
+// MARK: - Wörterbuch (v3: Segmented-Tabs)
 
 struct DictionaryView: View {
     @Environment(AppState.self) private var app
@@ -15,72 +15,90 @@ struct DictionaryView: View {
         var id: String { rawValue }
         var label: String {
             switch self {
-            case .begriffe: "Begriffe"
-            case .ersetzungen: "Ersetzungen"
-            case .autoGelernt: "Auto-gelernt"
+            case .begriffe: "BEGRIFFE"
+            case .ersetzungen: "ERSETZUNGEN"
+            case .autoGelernt: "AUTO-GELERNT"
             }
         }
     }
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
-                header
+            VStack(alignment: .leading, spacing: 0) {
+                VStack(alignment: .leading, spacing: 5) {
+                    Text("SPRACHREGISTER")
+                        .kicker(Theme.Palette.text3)
+                    Text("Wörterbuch")
+                        .font(Theme.Typo.h1())
+                        .tracking(-0.6)
+                        .foregroundColor(Theme.Palette.ink)
+                    Text("Eigene Begriffe, damit Stasi sie korrekt protokolliert.")
+                        .font(Theme.Typo.body())
+                        .foregroundColor(Theme.Palette.text2)
+                }
+
                 tabs
+                    .padding(.top, 20)
                 content
+                    .padding(.top, 0)
             }
-            .padding(.horizontal, 32)
-            .padding(.vertical, 28)
-            .frame(maxWidth: 620, alignment: .leading)
+            .padding(.horizontal, Theme.Metrics.contentPaddingH)
+            .padding(.bottom, 80)
+            .frame(maxWidth: 620 + 2 * Theme.Metrics.contentPaddingH, alignment: .leading)
         }
         .frame(maxWidth: .infinity, alignment: .center)
+        .onAppear { app.refreshPermissionState() }
     }
 
-    private var header: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text("Wörterbuch")
-                .font(Theme.Typo.h1())
-                .tracking(-0.3)
-                .foregroundColor(Theme.Palette.ink)
-            Text("Eigene Begriffe, damit Stasi sie korrekt protokolliert.")
-                .font(Theme.Typo.body())
-                .foregroundColor(Theme.Palette.sub)
+    // MARK: Segmented-Tabs (v3: Akzent-Knopf auf hover-Track)
+
+    private func count(for tab: Tab) -> Int {
+        switch tab {
+        case .begriffe: app.dictionary.entries.filter { $0.type == .word }.count
+        case .ersetzungen: app.dictionary.entries.filter { $0.type == .correction }.count
+        case .autoGelernt: app.dictionary.entries.filter { $0.type == .learned }.count
         }
     }
 
-    // MARK: Segmented Tabs
-
     private var tabs: some View {
-        HStack(spacing: 3) {
+        HStack(spacing: 4) {
             ForEach(Tab.allCases) { tabItem in
+                let active = tab == tabItem
                 Button {
                     withAnimation(Theme.Motion.fast) { tab = tabItem }
                 } label: {
-                    Text(tabItem.label)
-                        .font(Theme.Typo.secondary().weight(tab == tabItem ? .semibold : .regular))
-                        .foregroundColor(tab == tabItem ? Theme.Palette.ink : Theme.Palette.sub)
-                        .padding(.horizontal, 13)
-                        .padding(.vertical, 6)
+                    Text("\(tabItem.label) · \(Copy.formatGermanNumber(count(for: tabItem)))")
+                        .font(Theme.Typo.counter(11))
+                        .monospacedDigit()
+                        .textCase(.uppercase)
+                        .tracking(0.5)
+                        .foregroundColor(active ? .white : Theme.Palette.text3)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 7)
                         .background(
-                            Capsule().fill(tab == tabItem ? Theme.Palette.surface : Color.clear)
+                            RoundedRectangle(cornerRadius: 8)
+                                .fill(active ? Theme.accent : Color.clear)
                         )
-                        .contentShape(Capsule())
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
             }
+            Spacer()
         }
         .padding(3)
-        .background(Capsule().fill(Theme.Palette.hover.opacity(0.5)))
-        .overlay(Capsule().strokeBorder(Theme.Palette.line, lineWidth: Theme.Metrics.hairline))
+        .background(Theme.Palette.hover, in: RoundedRectangle(cornerRadius: 10))
     }
 
     @ViewBuilder
     private var content: some View {
-        switch tab {
-        case .begriffe: begriffeTab
-        case .ersetzungen: ersetzungenTab
-        case .autoGelernt: autoTab
+        Group {
+            switch tab {
+            case .begriffe: begriffeTab
+            case .ersetzungen: ersetzungenTab
+            case .autoGelernt: autoTab
+            }
         }
+        .padding(.top, 16)
     }
 
     // MARK: Begriffe
@@ -91,6 +109,7 @@ struct DictionaryView: View {
                 TextField("Begriff hinzufügen — z. B. OnePage, Meta CAPI …", text: $newTerm)
                     .stasiInput()
                     .onSubmit { addTerm() }
+                    .frame(maxWidth: 380)
                 Button("Hinzufügen") { Task { @MainActor in addTerm() } }
                     .buttonStyle(AccentButtonStyle())
                     .disabled(newTerm.trimmingCharacters(in: .whitespaces).isEmpty)
@@ -125,7 +144,7 @@ struct DictionaryView: View {
                     .onSubmit { addReplacement() }
                 Image(systemName: "arrow.right")
                     .font(.system(size: 11))
-                    .foregroundColor(Theme.Palette.sub)
+                    .foregroundColor(Theme.Palette.text3)
                 TextField("Langform (geschrieben)", text: $newTo)
                     .stasiInput()
                     .onSubmit { addReplacement() }
@@ -162,20 +181,24 @@ struct DictionaryView: View {
         return VStack(alignment: .leading, spacing: 12) {
             Text("Begriffe, die Stasi beim Diktieren selbst entdeckt hat. Übernehmen oder ignorieren.")
                 .font(Theme.Typo.secondary())
-                .foregroundColor(Theme.Palette.sub)
+                .foregroundColor(Theme.Palette.text2)
 
             if learned.isEmpty {
-                VStack(spacing: 4) {
-                    Text("Alles gesichtet")
-                        .font(Theme.Typo.body().weight(.medium))
-                        .foregroundColor(Theme.Palette.ink)
-                    Text("Keine neuen Vorschläge.")
-                        .font(Theme.Typo.secondary())
-                        .foregroundColor(Theme.Palette.sub)
-                }
-                .frame(maxWidth: .infinity)
-                .card()
-                .padding(.top, 6)
+                // Leerzustand als Fußzeile: „ALLES GESICHTET"
+                Text("ALLES GESICHTET")
+                    .font(Theme.Typo.kicker(size: 10))
+                    .tracking(1.2)
+                    .foregroundColor(Theme.Palette.text3)
+                    .frame(maxWidth: .infinity, alignment: .center)
+                    .padding(.vertical, 12)
+                    .background(
+                        Rectangle()
+                            .fill(Theme.Palette.zeileHover)
+                            .overlay(alignment: .top) {
+                                Rectangle().fill(Theme.Palette.linieInnen)
+                                    .frame(height: Theme.Metrics.hairline)
+                            }
+                    )
             } else {
                 VStack(spacing: 0) {
                     ForEach(Array(learned.enumerated()), id: \.element.id) { index, entry in
@@ -183,26 +206,49 @@ struct DictionaryView: View {
                             Text(entry.value)
                                 .font(Theme.Typo.body())
                                 .foregroundColor(Theme.Palette.ink)
-                            Spacer()
                             if let note = entry.note {
                                 Text(note.uppercased())
-                                    .kicker(Theme.Palette.sub)
+                                    .font(Theme.Typo.counter(10))
+                                    .foregroundColor(Theme.Palette.text3)
                             }
-                            Button("Übernehmen") { Task { @MainActor in app.dictionary.promote(entry) } }
-                                .buttonStyle(GhostButtonStyle())
-                            Button("Ignorieren") { Task { @MainActor in app.dictionary.delete(entry) } }
-                                .buttonStyle(GhostButtonStyle())
+                            Spacer()
+                            Button("ÜBERNEHMEN") {
+                                Task { @MainActor in app.dictionary.promote(entry) }
+                            }
+                            .font(Theme.Typo.kicker(size: 10.5))
+                            .tracking(0.8)
+                            .foregroundColor(Theme.Palette.archivgruen)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 6)
+                            .overlay(RoundedRectangle(cornerRadius: 5)
+                                .strokeBorder(Theme.Palette.archivgruen, lineWidth: Theme.Metrics.hairline))
+                            .buttonStyle(.plain)
+                            Button("IGNORIEREN") {
+                                Task { @MainActor in app.dictionary.delete(entry) }
+                            }
+                            .font(Theme.Typo.kicker(size: 10.5))
+                            .tracking(0.8)
+                            .foregroundColor(Color(stasiHex: 0x3F3A31))
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 6)
+                            .background(RoundedRectangle(cornerRadius: 5).fill(Theme.Palette.chip))
+                            .overlay(RoundedRectangle(cornerRadius: 5)
+                                .strokeBorder(Theme.Palette.linieSidebar, lineWidth: Theme.Metrics.hairline))
+                            .buttonStyle(.plain)
                         }
-                        .padding(.vertical, 10)
-                        if index < learned.count - 1 { Divider().overlay(Theme.Palette.line) }
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 11)
+                        if index < learned.count - 1 {
+                            Divider().overlay(Theme.Palette.linieInnen)
+                        }
                     }
                 }
-                .card(padding: 14)
+                .card(padding: 0)
             }
         }
     }
 
-    // MARK: Gemeinsame Listen-Card
+    // MARK: Gemeinsame Listen-Karte (Hauptkarte mit Index-Spalte)
 
     private func termList(type: EntryType,
                           @ViewBuilder row: @escaping (DictionaryEntry) -> some View) -> some View {
@@ -215,13 +261,22 @@ struct DictionaryView: View {
             } else {
                 VStack(spacing: 0) {
                     ForEach(Array(filtered.enumerated()), id: \.element.id) { index, entry in
-                        row(entry)
+                        HStack(alignment: .center, spacing: 0) {
+                            Text(String(format: "%02d", index + 1))
+                                .font(Theme.Typo.counter(10))
+                                .monospacedDigit()
+                                .foregroundColor(Theme.Palette.text3.opacity(0.75))
+                                .frame(width: 26)
+                                .padding(.leading, 16)
+                            row(entry)
+                        }
                         if index < filtered.count - 1 {
-                            Divider().overlay(Theme.Palette.line)
+                            Divider().overlay(Theme.Palette.linieInnen)
+                                .padding(.leading, 42)
                         }
                     }
                 }
-                .card(padding: 6)
+                .card(padding: 0)
             }
         }
     }
@@ -232,18 +287,18 @@ struct DictionaryView: View {
         case .begriffe:
             Text("Noch keine Begriffe. Füge Namen, Jargon, Produktnamen hinzu.")
                 .font(Theme.Typo.secondary())
-                .foregroundColor(Theme.Palette.sub)
+                .foregroundColor(Theme.Palette.text2)
                 .padding(.vertical, 22)
         default:
             Text("Noch keine Ersetzungen. Beispiel: „cloud code“ → „Claude Code“.")
                 .font(Theme.Typo.secondary())
-                .foregroundColor(Theme.Palette.sub)
+                .foregroundColor(Theme.Palette.text2)
                 .padding(.vertical, 22)
         }
     }
 }
 
-// MARK: - Icon-Button (28×28, Hover: Akzent bzw. Rot für Löschen)
+// MARK: - Icon-Button (26×26; Mülleimer-Hover warnFlaeche/stempelrot)
 
 struct RowIconButton: View {
     let symbol: String
@@ -255,16 +310,16 @@ struct RowIconButton: View {
     var body: some View {
         Button(action: action) {
             Image(systemName: symbol)
-                .font(.system(size: 13))
-                .foregroundStyle(hovered
-                                 ? (destructive ? Theme.Palette.destructive : Theme.accent)
-                                 : Theme.Palette.sub)
-                .frame(width: 28, height: 28)
+                .font(.system(size: 12))
+                .foregroundStyle(hovered && destructive
+                                 ? Theme.Palette.destructive
+                                 : hovered ? Theme.Palette.ink : Theme.Palette.text3)
+                .frame(width: 26, height: 26)
                 .background(
-                    RoundedRectangle(cornerRadius: 9)
-                        .fill(hovered
-                              ? (destructive ? Theme.Palette.destructive.opacity(0.08) : Theme.tint(Theme.accent))
-                              : Color.clear)
+                    RoundedRectangle(cornerRadius: Theme.Metrics.radiusControl)
+                        .fill(hovered && destructive
+                              ? Theme.Palette.warnFlaeche
+                              : hovered ? Theme.Palette.chip : Color.clear)
                 )
                 .contentShape(Rectangle())
         }
@@ -290,23 +345,31 @@ struct EditableTermRow: View {
                 TextField("", text: $draft)
                     .textFieldStyle(.plain)
                     .font(Theme.Typo.body())
-                    .padding(.horizontal, 11)
+                    .padding(.horizontal, 10)
                     .padding(.vertical, 6)
-                    .background(Theme.Palette.backgroundTop)
-                    .cornerRadius(9)
-                    .overlay(RoundedRectangle(cornerRadius: 9)
-                        .strokeBorder(Theme.accent, lineWidth: 1))
+                    .background(Theme.Palette.zeileHover)
+                    .clipShape(RoundedRectangle(cornerRadius: Theme.Metrics.radiusInput))
+                    .overlay(RoundedRectangle(cornerRadius: Theme.Metrics.radiusInput)
+                        .strokeBorder(Theme.Palette.line, lineWidth: Theme.Metrics.hairline))
                     .onSubmit { commit() }
-                Button("Speichern") { Task { @MainActor in commit() } }
-                    .buttonStyle(AccentButtonStyle())
+                    .frame(maxWidth: 320)
+                Button("SPEICHERN") { Task { @MainActor in commit() } }
+                    .font(Theme.Typo.kicker(size: 11))
+                    .tracking(0.8)
+                    .foregroundColor(Theme.Palette.archivgruen)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .overlay(RoundedRectangle(cornerRadius: 5)
+                        .strokeBorder(Theme.Palette.archivgruen, lineWidth: Theme.Metrics.hairline))
+                    .buttonStyle(.plain)
             } else {
                 Text(entry.value)
                     .font(Theme.Typo.body())
                     .foregroundColor(Theme.Palette.ink)
                 if let note = entry.note {
                     Text(note)
-                        .font(Theme.Typo.secondary())
-                        .foregroundColor(Theme.Palette.sub)
+                        .font(Theme.Typo.secondary(size: 11.5))
+                        .foregroundColor(Theme.Palette.text2)
                 }
                 if let warns = entry.warns, !warns.isEmpty {
                     Label(warns.first ?? "", systemImage: "exclamationmark.triangle")
@@ -319,8 +382,10 @@ struct EditableTermRow: View {
                           action: editing ? { commit() } : { startEdit() })
             RowIconButton(symbol: "trash", destructive: true, action: onDelete)
         }
-        .padding(.horizontal, 12)
+        .padding(.leading, 0)
+        .padding(.trailing, 12)
         .padding(.vertical, 9)
+        .background(editing ? Theme.Palette.zeileHover : Color.clear)
     }
 
     private func startEdit() { draft = entry.value; editing = true }
@@ -348,32 +413,43 @@ struct EditableReplacementRow: View {
                 TextField("", text: $draftFrom)
                     .textFieldStyle(.plain)
                     .font(Theme.Typo.counter())
-                    .padding(.horizontal, 11)
+                    .padding(.horizontal, 10)
                     .padding(.vertical, 6)
-                    .background(Theme.Palette.backgroundTop)
-                    .cornerRadius(9)
-                    .overlay(RoundedRectangle(cornerRadius: 9)
-                        .strokeBorder(Theme.accent, lineWidth: 1))
-                Image(systemName: "arrow.right").font(.system(size: 11)).foregroundColor(Theme.Palette.sub)
+                    .background(Theme.Palette.zeileHover)
+                    .clipShape(RoundedRectangle(cornerRadius: Theme.Metrics.radiusInput))
+                    .overlay(RoundedRectangle(cornerRadius: Theme.Metrics.radiusInput)
+                        .strokeBorder(Theme.Palette.line, lineWidth: Theme.Metrics.hairline))
+                    .frame(maxWidth: 140)
+                Image(systemName: "arrow.right").font(.system(size: 11)).foregroundColor(Theme.Palette.text3)
                 TextField("", text: $draftTo)
                     .textFieldStyle(.plain)
                     .font(Theme.Typo.body())
-                    .padding(.horizontal, 11)
+                    .padding(.horizontal, 10)
                     .padding(.vertical, 6)
-                    .background(Theme.Palette.backgroundTop)
-                    .cornerRadius(9)
-                    .overlay(RoundedRectangle(cornerRadius: 9)
-                        .strokeBorder(Theme.accent, lineWidth: 1))
-                Button("Speichern") { Task { @MainActor in commit() } }
-                    .buttonStyle(AccentButtonStyle())
+                    .background(Theme.Palette.zeileHover)
+                    .clipShape(RoundedRectangle(cornerRadius: Theme.Metrics.radiusInput))
+                    .overlay(RoundedRectangle(cornerRadius: Theme.Metrics.radiusInput)
+                        .strokeBorder(Theme.Palette.line, lineWidth: Theme.Metrics.hairline))
+                    .onSubmit { commit() }
+                    .frame(maxWidth: 280)
+                Button("SPEICHERN") { Task { @MainActor in commit() } }
+                    .font(Theme.Typo.kicker(size: 11))
+                    .tracking(0.8)
+                    .foregroundColor(Theme.Palette.archivgruen)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .overlay(RoundedRectangle(cornerRadius: 5)
+                        .strokeBorder(Theme.Palette.archivgruen, lineWidth: Theme.Metrics.hairline))
+                    .buttonStyle(.plain)
             } else {
+                // Kürzel als Akzent-Tint-Chip (v3)
                 Text(entry.matchSource)
-                    .font(Theme.Typo.counter(11.5))
+                    .font(Theme.Typo.counter(11))
+                    .foregroundColor(Theme.Palette.ink)
                     .padding(.horizontal, 7)
-                    .padding(.vertical, 3)
-                    .background(Theme.Palette.hover)
-                    .cornerRadius(6)
-                Image(systemName: "arrow.right").font(.system(size: 10)).foregroundColor(Theme.Palette.sub)
+                    .padding(.vertical, 2)
+                    .background(RoundedRectangle(cornerRadius: 4).fill(Theme.tint(Theme.accent)))
+                Image(systemName: "arrow.right").font(.system(size: 10)).foregroundColor(Theme.Palette.text3)
                 Text(entry.replacementTarget)
                     .font(Theme.Typo.body())
                     .foregroundColor(Theme.Palette.ink)
@@ -388,8 +464,10 @@ struct EditableReplacementRow: View {
                           action: editing ? { commit() } : { startEdit() })
             RowIconButton(symbol: "trash", destructive: true, action: onDelete)
         }
-        .padding(.horizontal, 12)
+        .padding(.leading, 0)
+        .padding(.trailing, 12)
         .padding(.vertical, 9)
+        .background(editing ? Theme.Palette.zeileHover : Color.clear)
     }
 
     private func startEdit() { draftFrom = entry.matchSource; draftTo = entry.replacementTarget; editing = true }

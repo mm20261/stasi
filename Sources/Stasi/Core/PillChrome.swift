@@ -1,0 +1,38 @@
+import Foundation
+
+// MARK: - RecordingSource / Pill-Chrome (v4.1)
+// Woher kommt die laufende Aufnahme? Die Pill zeigt ✕/✓ IMMER an –
+// auch im gelockten Modus (Hands-free) lässt sich wie bei Wisper per Pill
+// bestätigen (✓) oder verwerfen (✕).
+
+enum RecordingSource: Equatable {
+    case pushToTalk
+    case handsFree
+}
+
+enum PillChrome {
+    /// ✕ und ✓ immer klickbar (auch gelockt – Wispr-Stil).
+    static func showsButtons(for source: RecordingSource) -> Bool {
+        true
+    }
+
+    /// Panel-Breite: Buttons sind immer da.
+    static func pillWidth(for source: RecordingSource) -> CGFloat {
+        160
+    }
+}
+
+// MARK: - Pegelbalken-Mapping (Mic-Popover, echter Live-Level)
+
+enum MicLevelBars {
+    static let minHeight: CGFloat = 2
+    static let maxHeight: CGFloat = 16
+
+    /// Level (0…1) + kleiner Balken-Jitter → Höhe 2…16 px.
+    /// Stille = flach (2 px), laut = voller Ausschlag (16 px).
+    static func height(level: Double, jitter: Double) -> CGFloat {
+        let clamped = max(0, min(level, 1))
+        let jittered = max(0, min(clamped + jitter * 0.15, 1))
+        return minHeight + CGFloat(jittered) * (maxHeight - minHeight)
+    }
+}

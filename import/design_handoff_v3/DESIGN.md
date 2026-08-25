@@ -2,7 +2,12 @@
 
 > Referenz des **aktuell implementierten** Designs für die nächste Cloud-Design-Runde.
 > Alle Tokens, Screens und Texte sind 1:1 aus dem Code (`Sources/Stasi/UI/Theme.swift` + Views).
-> Stand: 25.08.2026 · App-Version 0.9 · 94 Tests grün.
+> Stand: 25.08.2026 · App-Version 0.9 · 161 Tests grün.
+>
+> **Nachzutrag:** Nach der v3-Runde wurden Features ergänzt (Suche, Onboarding, Insights-Leitzahl,
+> Mikrofon-Auswahl, Update-Prüfung, Retention, DARSTELLUNG-Akzentkreise) — siehe Abschnitt 6.
+> Das v4-„Registratur"-Experiment (Archivo, Stempelrot fest, Kopfkante-Karten) wurde verworfen;
+> der v3-Look (Geist, Verlauf, 5 Akzent-Presets) ist mit diesen Features wieder maßgeblich.
 
 ---
 
@@ -158,3 +163,30 @@ Sektionen mit Mono-Kickern, je eine Karte:
 - App-Icon: `Import/design_handoff_stasi/icons/anthrazit/` (PNG 16–1024 + SVG).
 - Menubar-Icons: `Sources/Stasi/Resources/Assets/menubar*.png`.
 - Fonts: `Sources/Stasi/Resources/Fonts/Geist.ttf` + `GeistMono.ttf`.
+
+---
+
+## 6. Erweiterungen seit v3 (Features im v3-Look)
+
+Diese Features kamen nach dem v3-Handoff dazu und sind inzwischen fester Bestandteil.
+Alle im v3-Visual (Geist, Verlauf, weiße Karten, Akzent):
+
+- **Suche (⌘F)** über alle Protokolle: Suchfeld-Topbar im Bericht + eigener Suchbereich in
+  Protokolle; Trefferzähler, Filter-Chips ALLE/7T/30T, „Export aller Protokolle" als .md.
+- **Bericht-Feinschliff:** Datumszeile (mono, UPPERCASE), Anleitungsleiste mit Status-Chip
+  „Bereit"/„Hotkey inaktiv", Hero „Zuletzt diktiert" (Kopieren/Anhören/⋯), „Früher heute"-
+  Einzeiler mit „Alle Protokolle ansehen", Rail mit Leitzahl („Wörter insgesamt diktiert")
+  statt drei Einzelwerten + „Deine Akte"-Fortschrittsbalken. Leerzustand erster Start +
+  Warnkarte „Berechtigung fehlt".
+- **Insights:** eine große **Leitzahl-Karte** (Wörter/Woche mit Delta, Nebenwerte
+  Wörter/Minute + Serie) statt drei Big-Stat-Karten; „Wohin diktiert wird" als
+  Akzent-Stufen-Balken; Serie-Heatmap mit „REKORD"-Stempel-Badge.
+- **Protokolle:** Zeilen mit zweizeiliger Mono-Spalte (Zeit + Aktenzeichen), App-Badge,
+  WPM, Korrekturen- und Aktenzeichen-Badges, Play/Kopieren/⋯ (inkl. Audio-Export).
+- **Onboarding (4 Schritte):** Willkommen → Befugnisse → Hotkey → Probediktat; bei erstem
+  Start über dem Bericht.
+- **Mikrofon-Auswahl:** Popover in EINGABE (Geräte-Liste, STANDARD-Häkchen, Pegel-Fußzeile).
+- **Update-Prüfung:** in ÜBER („Aktuelle Version prüfen", Statuszeile, Update-Button).
+- **SPEICHER:** Aufbewahrungsdauer (Segmented NIE/1T/1W/2W/1MONAT) + „Akte vernichten".
+- **DARSTELLUNG:** 5 Akzent-Farbkreise (aktive Farbe mit 2-px-Ring) — zurück aus dem
+  v3-Urzustand, da Akzent wieder dynamisch ist.

@@ -1,7 +1,7 @@
 import SwiftUI
 import AppKit
 
-// MARK: - Konto (v2)
+// MARK: - Konto (v3: Profilkarte mit Kreis-Avatar)
 
 struct AccountView: View {
     @Environment(SettingsStore.self) private var settings
@@ -9,79 +9,99 @@ struct AccountView: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 26) {
+            VStack(alignment: .leading, spacing: 0) {
                 VStack(alignment: .leading, spacing: 5) {
+                    Text("PERSONALAKTE")
+                        .kicker(Theme.Palette.text3)
                     Text("Konto")
                         .font(Theme.Typo.h1())
-                        .tracking(-0.3)
+                        .tracking(-0.6)
                         .foregroundColor(Theme.Palette.ink)
-                    Text(kontoSubtitle)
+                    Text(Copy.accountSubtitle(settings))
                         .font(Theme.Typo.body())
-                        .foregroundColor(Theme.Palette.sub)
+                        .foregroundColor(Theme.Palette.text2)
                 }
 
                 VStack(alignment: .leading, spacing: 14) {
                     profileCard
                     signatureCard
                 }
+                .padding(.top, 22)
             }
-            .padding(.horizontal, 32)
-            .padding(.vertical, 28)
-            .frame(maxWidth: 560, alignment: .leading)
+            .padding(.horizontal, Theme.Metrics.contentPaddingH)
+            .padding(.bottom, 80)
+            .frame(maxWidth: 560 + 2 * Theme.Metrics.contentPaddingH, alignment: .leading)
         }
         .frame(maxWidth: .infinity, alignment: .center)
         .onAppear { nameDraft = settings.userName }
     }
 
-    private var kontoSubtitle: String {
-        settings.ironyOn
-            ? "Deine Akte. Ausnahmsweise führst du sie selbst."
-            : "Dein Profil — lokal gespeichert."
-    }
-
     // MARK: Profil
 
     private var profileCard: some View {
-        HStack(spacing: 20) {
+        HStack(alignment: .top, spacing: 20) {
             Button {
                 pickAvatar()
             } label: {
-                avatarOrInitials
-                    .frame(width: 72, height: 72)
-                    .contentShape(Circle())
+                // v3: Kreis-Avatar 72 px (Akzent-Tint, Akzent-Initiale),
+                // „+"-Punkt unten rechts.
+                ZStack(alignment: .bottomTrailing) {
+                    Group {
+                        if let img = settings.avatarImage {
+                            Image(nsImage: img)
+                                .resizable()
+                                .scaledToFill()
+                                .frame(width: 72, height: 72)
+                                .clipShape(Circle())
+                        } else {
+                            Circle()
+                                .fill(Theme.tint(Theme.accent))
+                                .overlay(
+                                    Text(String(settings.userName.first?.uppercased() ?? "S"))
+                                        .font(.custom("Geist", size: 26).weight(.bold))
+                                        .foregroundStyle(Theme.accent)
+                                )
+                                .frame(width: 72, height: 72)
+                        }
+                    }
+                    .overlay(
+                        Circle().strokeBorder(Theme.Palette.line, lineWidth: Theme.Metrics.hairline)
+                    )
+                    Circle()
+                        .fill(Theme.accent)
+                        .frame(width: 22, height: 22)
+                        .overlay(Text("+").font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(.white))
+                        .offset(x: 4, y: 4)
+                }
+                .frame(width: 76, height: 76)
+                .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .help(settings.avatarPath != nil ? "Bild ändern" : "Bild wählen")
 
             VStack(alignment: .leading, spacing: 0) {
                 Text("NAME")
-                    .kicker(Theme.Palette.sub)
+                    .kicker(Theme.Palette.text3)
                 TextField("Wie sollen wir dich nennen?", text: $nameDraft)
-                    .textFieldStyle(.plain)
-                    .font(.custom("Geist", size: 14))
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 9)
-                    .background(Theme.Palette.backgroundTop)
-                    .cornerRadius(10)
-                    .overlay(RoundedRectangle(cornerRadius: 10)
-                        .strokeBorder(Theme.Palette.line, lineWidth: Theme.Metrics.hairline))
+                    .stasiInput()
                     .padding(.top, 6)
                     .onSubmit { commitName() }
                     .onChange(of: nameDraft) { _, newValue in
                         settings.userName = newValue.trimmingCharacters(in: .whitespaces)
                     }
                 if settings.avatarPath != nil {
-                    Button("Bild entfernen", role: .destructive) {
+                    Button("Bild entfernen") {
                         settings.avatarPath = nil
                     }
                     .font(Theme.Typo.secondary())
                     .buttonStyle(.plain)
-                    .foregroundColor(Theme.Palette.destructive)
-                    .padding(.top, 6)
+                    .foregroundColor(Theme.Palette.stempelrot)
+                    .padding(.top, 8)
                 }
                 Text("Kein Login, keine E-Mail — alles bleibt auf diesem Mac.")
                     .font(.custom("Geist", size: 11.5))
-                    .foregroundColor(Theme.Palette.sub)
+                    .foregroundColor(Theme.Palette.text2)
                     .padding(.top, 8)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -89,52 +109,42 @@ struct AccountView: View {
         .card(padding: 20)
     }
 
-    @ViewBuilder
-    private var avatarOrInitials: some View {
-        if let img = settings.avatarImage {
-            Image(nsImage: img)
-                .resizable()
-                .scaledToFill()
-                .frame(width: 72, height: 72)
-                .clipShape(Circle())
-                .overlay(Circle().strokeBorder(Theme.Palette.line, lineWidth: Theme.Metrics.hairline))
-        } else {
-            ZStack {
-                Circle().fill(Theme.tint(Theme.accent))
-                Text(String(settings.userName.first?.uppercased() ?? "S"))
-                    .font(.system(size: 26, weight: .bold, design: .rounded))
-                    .foregroundStyle(Theme.accent)
-            }
-        }
-    }
-
-    // MARK: Signatur
+    // MARK: Signaturkarte (dunkel)
 
     private var signatureCard: some View {
         VStack(alignment: .leading, spacing: 0) {
-            Text("STASI · V 0.9 · AKTE 001")
-                .kicker(Theme.Palette.sub)
+            Text("STASI · V \(AppVersion.display) · AKTE \(AppVersion.akte)")
+                .font(Theme.Typo.counter(12).weight(.bold))
+                .tracking(1.7)
+                .textCase(.uppercase)
+                .foregroundColor(Theme.Palette.dunkelText)
             Text(signatureNote)
-                .font(.custom("Geist", size: 12))
-                .foregroundColor(Theme.Palette.sub)
+                .font(.custom("Geist", size: 12.5))
+                .foregroundColor(Theme.Palette.dunkelText2)
                 .lineHeight()
-                .padding(.top, 6)
+                .padding(.top, 8)
             Link(destination: URL(string: "https://meder.dev")!) {
-                Text("meder.dev ↗")
-                    .font(.custom("Geist", size: 12.5).weight(.semibold))
-                    .foregroundColor(Theme.accent)
+                Text("meder.dev")
+                    .font(Theme.Typo.counter(11))
+                    .foregroundColor(Theme.Palette.dunkelLink)
+                    .padding(.bottom, 1)
+                    .background(alignment: .bottom) {
+                        Rectangle().fill(Theme.Palette.dunkelLink)
+                            .frame(height: Theme.Metrics.hairline)
+                    }
             }
-            .buttonStyle(.plain)
-            .padding(.top, 8)
+            .padding(.top, 10)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .card(padding: 18)
+        .padding(20)
+        .background(
+            RoundedRectangle(cornerRadius: Theme.Metrics.radiusCard, style: .continuous)
+                .fill(Theme.Palette.dunkelGrund)
+        )
     }
 
     private var signatureNote: String {
-        settings.ironyOn
-            ? "Gebaut von meder.dev. Weitergeben erlaubt. Zuhören sowieso."
-            : "Gebaut von meder.dev."
+        "Gebaut von meder.dev in Köln. Lokal, offline, ohne Konto."
     }
 
     private func commitName() {

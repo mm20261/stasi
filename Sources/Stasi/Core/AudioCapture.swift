@@ -38,12 +38,16 @@ final class AudioCapture: @unchecked Sendable {
 
     func start(outputFormat: AVAudioFormat,
                recordTo url: URL?,
+               preferredMicUID: String? = nil,
                onBuffer: @escaping @Sendable (AudioChunk) -> Void) throws {
         guard !isRunning else { return }
         self.onBuffer = onBuffer
         self.outputFormat = outputFormat
 
         let input = engine.inputNode
+        // Wunsch-Gerät VOR dem Format-Holen setzen – andere Geräte haben
+        // andere native Formate. Schlägt es fehl, läuft das Standardgerät.
+        MicrophoneScanner.apply(preferredMicUID, to: input)
         let native = input.outputFormat(forBus: 0)
         converter = native == outputFormat ? nil : AVAudioConverter(from: native, to: outputFormat)
 

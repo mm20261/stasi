@@ -50,6 +50,11 @@ final class SettingsStoreTests: XCTestCase {
         XCTAssertEqual(settings.accentPressedColor, Color(stasiHex: 0xCCCCCC))
     }
 
+    func testAccentPresetsContainV3Colors() {
+        let hexes = SettingsStore.accentPresets.map(\.1)
+        XCTAssertEqual(hexes, [0x1A1917, 0x1D4E89, 0xD64500, 0x2D6A4F, 0x5B4A8A])
+    }
+
     func testHotkeyModePersistence() {
         let settings = SettingsStore(defaults: defaults)
         settings.hotkeyMode = .toggle

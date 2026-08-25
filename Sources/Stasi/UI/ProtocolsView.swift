@@ -2,60 +2,220 @@ import SwiftUI
 import AVFoundation
 import UniformTypeIdentifiers
 
-// MARK: - Protokolle (Transcriptions-Historie)
+// MARK: - Protokolle (v3: Vollhistorie mit Suche)
+// Topbar mit Suchfeld (⌘F, Trefferzähler) + Filter-Chips, gruppiert nach Tag,
+// Zeile: zweizeilige Mono-Spalte (HH:MM:SS + Aktenzeichen), Text (3 Zeilen,
+// Klick klappt auf), Meta mit App-Badge/Dauer/Wörter/Korrekturen, rechts
+// Play · Kopieren · ⋯-Menü.
 
 struct ProtocolsView: View {
     @Environment(AppState.self) private var app
     @Environment(SettingsStore.self) private var settings
+    @Environment(AppSelection.self) private var selection
 
     @State private var expandedIds: Set<UUID> = []
     @State private var playingId: UUID?
     @State private var copiedId: UUID?
-    @State private var menuId: UUID?
+    @FocusState private var searchFocused: Bool
 
     private var player = AudioPlayerHelper()
+    private var calendar: Calendar { .current }
+
+    // MARK: Gefilterte Daten
+
+    private var filteredRecords: [TranscriptionRecord] {
+        ProtocolSearch.filter(app.history.records,
+                              query: selection.searchQuery,
+                              filter: selection.searchFilter,
+                              calendar: calendar)
+    }
+
+    private var dayGroups: [ProtocolSearch.DayGroup] {
+        ProtocolSearch.groupByDay(filteredRecords, calendar: calendar)
+    }
+
+    private var isSearching: Bool {
+        !selection.searchQuery.trimmingCharacters(in: .whitespaces).isEmpty
+            || selection.searchFilter != .all
+    }
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
+            VStack(alignment: .leading, spacing: 0) {
+                topbar
                 header
-                listCard
+                    .padding(.top, 22)
+                listSection
+                    .padding(.top, 18)
             }
-            .padding(.horizontal, 32)
-            .padding(.vertical, 28)
+            .padding(.horizontal, Theme.Metrics.contentPaddingH)
+            .padding(.bottom, 80)
+            .frame(maxWidth: 1080 + 2 * Theme.Metrics.contentPaddingH, alignment: .leading)
+        }
+        .frame(maxWidth: .infinity, alignment: .center)
+        .overlay(alignment: .topTrailing) { searchShortcutButton.hidden() }
+        .onChange(of: selection.searchFocusRequest) { _, _ in
+            searchFocused = true
+        }
+        .onAppear { app.refreshPermissionState() }
+    }
+
+    // MARK: Topbar (Suche)
+
+    private var topbar: some View {
+        HStack(spacing: 12) {
+            searchBar
+            if isSearching {
+                Text("\(Copy.formatGermanNumber(filteredRecords.count)) TREFFER")
+                    .font(Theme.Typo.counter(10))
+                    .foregroundColor(Theme.Palette.text3)
+                    .monospacedDigit()
+            }
+            Spacer()
+            filterChips
+        }
+        .padding(.top, 14)
+    }
+
+    private var searchBar: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "magnifyingglass")
+                .font(.system(size: 13))
+                .foregroundColor(Theme.Palette.text3)
+            TextField("Aktenrecherche — Volltext, alle Protokolle",
+                      text: Binding(get: { selection.searchQuery },
+                                    set: { selection.searchQuery = $0 }))
+                .textFieldStyle(.plain)
+                .font(Theme.Typo.counter(12))
+                .foregroundColor(Theme.Palette.ink)
+                .focused($searchFocused)
+                .accessibilityLabel("Protokolle durchsuchen")
+            Text("⌘F")
+                .font(Theme.Typo.counter(10))
+                .foregroundColor(Theme.Palette.text3)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .frame(maxWidth: 420)
+        .background(
+            RoundedRectangle(cornerRadius: Theme.Metrics.radiusInput)
+                .fill(Theme.Palette.papier)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: Theme.Metrics.radiusInput)
+                .strokeBorder(searchFocused ? Theme.accent : Theme.Palette.line,
+                              lineWidth: Theme.Metrics.hairline)
+        )
+    }
+
+    /// Unsichtbarer Button, der nur den ⌘F-Shortcut trägt.
+    private var searchShortcutButton: some View {
+        Button { searchFocused = true } label: { EmptyView() }
+            .keyboardShortcut("f", modifiers: .command)
+    }
+
+    private var filterChips: some View {
+        HStack(spacing: 6) {
+            ForEach(ProtocolSearchFilter.allCases) { f in
+                let active = selection.searchFilter == f
+                Button {
+                    withAnimation(Theme.Motion.fast) { selection.searchFilter = f }
+                } label: {
+                    Text(f.label)
+                        .font(Theme.Typo.kicker(size: 10.5))
+                        .tracking(0.8)
+                        .foregroundColor(active ? .white : Theme.Palette.text3)
+                        .padding(.horizontal, 11)
+                        .padding(.vertical, 6)
+                        .background(
+                            RoundedRectangle(cornerRadius: Theme.Metrics.radiusControl)
+                                .fill(active ? Theme.accent : Color.clear)
+                        )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: Theme.Metrics.radiusControl)
+                                .strokeBorder(active ? Color.clear : Theme.Palette.line,
+                                              lineWidth: Theme.Metrics.hairline)
+                        )
+                }
+                .buttonStyle(.plain)
+            }
         }
     }
+
+    // MARK: Kopf
 
     private var header: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text("Protokolle")
-                .font(Theme.Typo.h1())
-                .tracking(-0.3)
-                .foregroundColor(Theme.Palette.ink)
-            Text(Copy.protocolsSubtitle(settings, count: app.history.records.count))
-                .font(Theme.Typo.secondary())
-                .foregroundColor(Theme.Palette.sub)
+        HStack(alignment: .top) {
+            VStack(alignment: .leading, spacing: 5) {
+                Text("PROTOKOLLE · BESTAND \(Copy.formatGermanNumber(app.history.records.count))")
+                    .kicker(Theme.Palette.text3)
+                Text("Protokolle")
+                    .font(Theme.Typo.h1())
+                    .tracking(-0.6)
+                    .foregroundColor(Theme.Palette.ink)
+                Text(Copy.protocolsSubtitle(settings, count: app.history.records.count))
+                    .font(Theme.Typo.secondary())
+                    .foregroundColor(Theme.Palette.text2)
+            }
+            Spacer()
+            Button {
+                exportAll()
+            } label: {
+                Text("EXPORT ALLER PROTOKOLLE")
+                    .font(Theme.Typo.kicker(size: 10.5))
+                    .tracking(1)
+                    .textCase(.uppercase)
+                    .foregroundColor(Theme.Palette.text2)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 7)
+                    .background(RoundedRectangle(cornerRadius: 5)
+                        .strokeBorder(Theme.Palette.linieSidebar, lineWidth: Theme.Metrics.hairline))
+            }
+            .buttonStyle(.plain)
         }
     }
 
-    // MARK: Liste
+    // MARK: Liste (nach Tag gruppiert)
 
-    private var listCard: some View {
-        VStack(spacing: 0) {
-            if app.history.records.isEmpty {
-                emptyState
-                    .padding(.vertical, 48)
-            } else {
-                ForEach(Array(app.history.records.enumerated()), id: \.element.id) { index, record in
-                    row(for: record)
-                    if index < app.history.records.count - 1 {
-                        Divider().overlay(Theme.Palette.line)
-                    }
+    @ViewBuilder
+    private var listSection: some View {
+        if app.history.records.isEmpty {
+            emptyState
+        } else if filteredRecords.isEmpty {
+            VStack(spacing: 6) {
+                Text("Keine Treffer")
+                    .font(Theme.Typo.body().weight(.medium))
+                    .foregroundColor(Theme.Palette.ink)
+                Text("Nichts im Bestand gefunden.")
+                    .font(Theme.Typo.secondary())
+                    .foregroundColor(Theme.Palette.text2)
+            }
+            .frame(maxWidth: .infinity)
+            .secondaryCard()
+            .padding(.vertical, 24)
+        } else {
+            VStack(alignment: .leading, spacing: 14) {
+                ForEach(dayGroups, id: \.day) { group in
+                    dayCard(group)
                 }
             }
         }
-        .card(padding: 0)
-        .clipShape(RoundedRectangle(cornerRadius: Theme.Metrics.radiusCard))
+    }
+
+    private func dayCard(_ group: ProtocolSearch.DayGroup) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(Copy.dateLine(group.day, calendar: calendar))
+                .kicker(Theme.Palette.text3, tracking: 1)
+            VStack(spacing: 0) {
+                ForEach(Array(group.records.enumerated()), id: \.element.id) { index, record in
+                    row(for: record)
+                    if index < group.records.count - 1 {
+                        Divider().overlay(Theme.Palette.linieInnen).padding(.leading, 16)
+                    }
+                }
+            }
+            .card(padding: 0)
+        }
     }
 
     private var emptyState: some View {
@@ -65,9 +225,11 @@ struct ProtocolsView: View {
                 .foregroundColor(Theme.Palette.ink)
             Text(Copy.emptyProtocols(settings))
                 .font(Theme.Typo.secondary())
-                .foregroundColor(Theme.Palette.sub)
+                .foregroundColor(Theme.Palette.text2)
         }
         .frame(maxWidth: .infinity)
+        .secondaryCard()
+        .padding(.vertical, 48)
     }
 
     // MARK: Zeile
@@ -77,45 +239,38 @@ struct ProtocolsView: View {
         let isPlaying = playingId == record.id
 
         return HStack(alignment: .top, spacing: 14) {
-            // Zeit-Spalte
-            Text(record.date.formatted(.dateTime.hour().minute().second()))
-                .font(Theme.Typo.counter(11))
-                .foregroundColor(Theme.Palette.sub)
-                .frame(width: 72, alignment: .leading)
-                .padding(.top, 3)
+            // Zweizeilige Mono-Spalte: Zeit + Aktenzeichen
+            VStack(alignment: .leading, spacing: 2) {
+                Text(record.date.formatted(.dateTime.hour().minute().second()))
+                    .font(Theme.Typo.counter(10.5))
+                    .monospacedDigit()
+                    .foregroundColor(Theme.Palette.text3)
+                Text(FileNumber.forRecord(id: record.id))
+                    .font(Theme.Typo.counter(9.5))
+                    .foregroundColor(Theme.Palette.text3.opacity(0.75))
+            }
+            .frame(width: 84, alignment: .leading)
+            .padding(.top, 3)
 
             // Text + Meta
-            VStack(alignment: .leading, spacing: 5) {
+            VStack(alignment: .leading, spacing: 6) {
                 Text(record.correctedText)
                     .font(Theme.Typo.body())
                     .lineHeight()
                     .foregroundColor(Theme.Palette.ink)
                     .lineLimit(isExpanded ? nil : 3)
                     .multilineTextAlignment(.leading)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                     .contentShape(Rectangle())
                     .onTapGesture { toggleExpand(record.id) }
 
-                HStack(spacing: 10) {
-                    if !record.targetApp.isEmpty {
-                        Text("→ \(record.targetApp)")
-                    }
-                    if record.durationSecs > 0 {
-                        Text(String(format: "%.0f:%02d", record.durationSecs / 60,
-                                    Int(record.durationSecs) % 60))
-                    }
-                    Text("\(record.wordCount) Wörter")
-                    ForEach(record.corrections) { c in
-                        Label(c.target, systemImage: "arrow.triangle.swap")
-                            .foregroundColor(Theme.accent.brightenedForDarkMode())
-                    }
-                }
-                .font(Theme.Typo.counter(10.5))
-                .foregroundColor(Theme.Palette.sub)
+                metaRow(for: record)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
+            .layoutPriority(1) // v4: minmax(0,1fr) – Text darf schrumpfen, Ellipsis
 
             // Icon-Buttons
-            HStack(spacing: 6) {
+            HStack(spacing: 4) {
                 if record.audioPath != nil {
                     iconButton(isPlaying ? "stop.fill" : "play.fill", active: isPlaying) {
                         Task { @MainActor in togglePlay(record) }
@@ -123,20 +278,52 @@ struct ProtocolsView: View {
                 }
                 iconButton(copiedId == record.id ? "checkmark" : "doc.on.doc",
                            active: copiedId == record.id) {
-                    Task { @MainActor in
-                        app.copy(record)
-                        copiedId = record.id
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 1.6) {
-                            if copiedId == record.id { copiedId = nil }
-                        }
-                    }
+                    Task { @MainActor in copyRecord(record) }
                 }
                 rowMenu(for: record)
             }
-            .padding(.top, 2)
         }
         .padding(.horizontal, 16)
-        .padding(.vertical, 13)
+        .padding(.vertical, 14)
+        .contentShape(Rectangle())
+        .background(Theme.Palette.papier)
+    }
+
+    private func metaRow(for record: TranscriptionRecord) -> some View {
+        HStack(spacing: 10) {
+            if !record.targetApp.isEmpty {
+                Text(record.targetApp.uppercased())
+                    .font(Theme.Typo.kicker(size: 9.5))
+                    .tracking(0.6)
+                    .foregroundColor(Theme.Palette.archivgruen)
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 2.5)
+                    .background(RoundedRectangle(cornerRadius: 3).fill(Theme.Palette.chip))
+            }
+            if record.durationSecs > 0 {
+                Text(String(format: "%.0f:%02d", record.durationSecs / 60,
+                            Int(record.durationSecs) % 60))
+                if let wpm = wordsPerMinute(record) {
+                    Text("\(wpm) WPM")
+                }
+            }
+            Text("\(record.wordCount) Wörter")
+            if !record.corrections.isEmpty {
+                Text("\(record.corrections.count) KORREKTUREN")
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 1.5)
+                    .background(RoundedRectangle(cornerRadius: 3)
+                        .strokeBorder(Theme.Palette.linieSidebar, lineWidth: Theme.Metrics.hairline))
+            }
+        }
+        .font(Theme.Typo.counter(10))
+        .monospacedDigit()
+        .foregroundColor(Theme.Palette.text3)
+    }
+
+    private func wordsPerMinute(_ record: TranscriptionRecord) -> Int? {
+        guard record.durationSecs > 1 else { return nil }
+        return Int((Double(record.wordCount) / record.durationSecs * 60).rounded())
     }
 
     private func rowMenu(for record: TranscriptionRecord) -> some View {
@@ -153,35 +340,42 @@ struct ProtocolsView: View {
             }
         } label: {
             Image(systemName: "ellipsis")
+                .font(.system(size: 12))
+                .foregroundStyle(Theme.Palette.text3)
+                .frame(width: 27, height: 27)
+                .contentShape(Rectangle())
+                .scaleOnHover()
         }
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
-        .frame(width: 30, height: 30)
-        .background(
-            RoundedRectangle(cornerRadius: 8).fill(Theme.Palette.surface)
-        )
-        .contentShape(Rectangle())
+        .frame(width: 27, height: 27)
     }
 
-    private func iconButton(_ symbol: String, active: Bool = false, action: @escaping () -> Void) -> some View {
+    private func iconButton(_ symbol: String, active: Bool = false,
+                            action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Image(systemName: symbol)
                 .font(.system(size: 12))
-                .foregroundStyle(active ? Theme.accent.brightenedForDarkMode() : Theme.Palette.sub)
-                .frame(width: 30, height: 30)
-                .background(
-                    RoundedRectangle(cornerRadius: 8)
-                        .fill(active ? Theme.tint(Theme.accent) : Color.clear)
-                )
+                .foregroundStyle(active ? Theme.Palette.stempelrot : Theme.Palette.text3)
+                .frame(width: 27, height: 27)
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .scaleOnHover()
     }
 
     // MARK: Aktionen
 
     private func toggleExpand(_ id: UUID) {
         if expandedIds.contains(id) { expandedIds.remove(id) } else { expandedIds.insert(id) }
+    }
+
+    private func copyRecord(_ record: TranscriptionRecord) {
+        app.copy(record)
+        copiedId = record.id
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.6) {
+            if copiedId == record.id { copiedId = nil }
+        }
     }
 
     private func togglePlay(_ record: TranscriptionRecord) {
@@ -194,6 +388,15 @@ struct ProtocolsView: View {
             }
             playingId = record.id
         }
+    }
+
+    private func exportAll() {
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.plainText]
+        panel.nameFieldStringValue = "stasi-protokolle.md"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        let md = ProtocolExporter.markdownAll(app.history.records, calendar: calendar)
+        try? md.write(to: url, atomically: true, encoding: .utf8)
     }
 
     private func export(_ record: TranscriptionRecord, asMarkdown: Bool) {
