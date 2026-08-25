@@ -470,7 +470,9 @@ final class AppState {
         let trimmed = corrected.trimmingCharacters(in: .whitespacesAndNewlines)
 
         guard !trimmed.isEmpty else {
-            try? FileManager.default.removeItem(at: audioURL ?? URL(fileURLWithPath: "/dev/null"))
+            if let audioURL {
+                try? FileManager.default.removeItem(at: audioURL)
+            }
             partialText = ""
             phase = .idle
             return

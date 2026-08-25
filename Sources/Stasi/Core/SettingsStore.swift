@@ -38,12 +38,6 @@ enum Retention: String, CaseIterable, Identifiable {
 @MainActor
 @Observable
 final class SettingsStore {
-    enum Appearance: String, CaseIterable, Identifiable {
-        case system, light, dark
-        var id: String { rawValue }
-        var label: String { switch self { case .system: "System"; case .light: "Hell"; case .dark: "Dunkel" } }
-    }
-
     enum HotkeyMode: String, CaseIterable, Identifiable {
         case pushToTalk, toggle
         var id: String { rawValue }
@@ -57,12 +51,20 @@ final class SettingsStore {
     ]
 
     private let d: UserDefaults
+    private let autostartHandler: (Bool) throws -> Void
+    private var isRevertingAutostart = false
 
     /// `defaults` ist für Tests injizierbar (eigene Suite).
-    init(defaults: UserDefaults = .standard) {
+    init(defaults: UserDefaults = .standard,
+         autostartHandler: @escaping (Bool) throws -> Void = { enabled in
+             if enabled {
+                 try SMAppService.mainApp.register()
+             } else {
+                 try SMAppService.mainApp.unregister()
+             }
+         }) {
         self.d = defaults
-        if let raw = defaults.string(forKey: "stasi.appearance"),
-           let a = Appearance(rawValue: raw) { appearance = a }
+        self.autostartHandler = autostartHandler
         if let n = defaults.object(forKey: "stasi.accentHex") as? Int { accentHex = UInt32(n) }
         userName = defaults.string(forKey: "stasi.userName") ?? ""
         avatarPath = defaults.string(forKey: "stasi.avatarPath")
@@ -82,10 +84,6 @@ final class SettingsStore {
     }
 
     // MARK: Gespeicherte, beobachtbare Properties
-
-    var appearance: Appearance = .system {
-        didSet { d.set(appearance.rawValue, forKey: "stasi.appearance") }
-    }
 
     /// Gewählter Akzent (Hex); v3: fünf Presets, Standard Anthrazit.
     var accentHex: UInt32 = 0x1A1917 {
@@ -126,14 +124,23 @@ final class SettingsStore {
         didSet { d.set(aiPostProcess, forKey: "stasi.aiOn") }
     }
 
-    var ironyOn: Bool = true {
+    var ironyOn: Bool = false {
         didSet { d.set(ironyOn, forKey: "stasi.ironyOn") }
     }
 
     var autostartOn: Bool = false {
         didSet {
             d.set(autostartOn, forKey: "stasi.autostartOn")
-            try? autostartOn ? SMAppService.mainApp.register() : SMAppService.mainApp.unregister()
+            guard !isRevertingAutostart else { return }
+            do {
+                try autostartHandler(autostartOn)
+            } catch {
+                DebugLog.log("STASI-APP: Autostart konnte nicht geändert werden: \(error.localizedDescription)")
+                guard autostartOn else { return }
+                isRevertingAutostart = true
+                autostartOn = false
+                isRevertingAutostart = false
+            }
         }
     }
 

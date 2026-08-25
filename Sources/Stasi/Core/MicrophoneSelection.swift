@@ -123,25 +123,6 @@ enum MicrophoneScanner {
         return true
     }
 
-    // MARK: Property-Helfer
-
-    private static func property<T>(_ selector: AudioObjectPropertySelector,
-                                    on id: AudioDeviceID,
-                                    scope: AudioObjectPropertyScope = .init(kAudioObjectPropertyScopeGlobal),
-                                    type: T.Type) -> T? {
-        var address = AudioObjectPropertyAddress(mSelector: selector,
-                                                 mScope: scope,
-                                                 mElement: kAudioObjectPropertyElementMain)
-        var value = UnsafeMutableRawPointer.allocate(byteCount: MemoryLayout<T>.size,
-                                                     alignment: MemoryLayout<T>.alignment)
-        defer { value.deallocate() }
-        var size = UInt32(MemoryLayout<T>.size)
-        guard AudioObjectGetPropertyData(id, &address, 0, nil, &size, &value) == noErr else {
-            return nil
-        }
-        return value.load(as: T.self)
-    }
-
     private static func stringProperty(_ selector: AudioObjectPropertySelector,
                                        on id: AudioDeviceID) -> String? {
         var address = AudioObjectPropertyAddress(mSelector: selector,

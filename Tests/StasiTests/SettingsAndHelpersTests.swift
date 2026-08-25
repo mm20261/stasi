@@ -24,7 +24,6 @@ final class SettingsStoreTests: XCTestCase {
 
     func testDefaultsOnFirstLaunch() {
         let settings = SettingsStore(defaults: defaults)
-        XCTAssertEqual(settings.appearance, .system)
         XCTAssertEqual(settings.accentHex, 0x1A1917)
         XCTAssertEqual(settings.hotkeyMode, .pushToTalk)
         XCTAssertTrue(settings.soundOn)
@@ -93,6 +92,18 @@ final class SettingsStoreTests: XCTestCase {
         XCTAssertEqual(Retention.oneWeek.days, 7)
         XCTAssertEqual(Retention.twoWeeks.days, 14)
         XCTAssertEqual(Retention.oneMonth.days, 30)
+    }
+
+    func testAutostartFailureResetsToggle() {
+        struct RegistrationError: Error {}
+        let settings = SettingsStore(defaults: defaults) { enabled in
+            if enabled { throw RegistrationError() }
+        }
+
+        settings.autostartOn = true
+
+        XCTAssertFalse(settings.autostartOn)
+        XCTAssertFalse(defaults.bool(forKey: "stasi.autostartOn"))
     }
 }
 
@@ -166,17 +177,37 @@ final class VirtualKeyTests: XCTestCase {
     }
 
     func testEditableRoles() {
-        XCTAssertTrue(TextInjector.isEditableRole("AXTextField"))
-        XCTAssertTrue(TextInjector.isEditableRole("AXTextArea"))
-        XCTAssertTrue(TextInjector.isEditableRole("AXWebArea"))
-        XCTAssertTrue(TextInjector.isEditableRole("AXComboBox"))
+        XCTAssertTrue(TextInjector.isEditableRole("AXTextField", valueSettable: false))
+        XCTAssertTrue(TextInjector.isEditableRole("AXTextArea", valueSettable: false))
+        XCTAssertTrue(TextInjector.isEditableRole("AXComboBox", valueSettable: false))
+        XCTAssertTrue(TextInjector.isEditableRole("AXWebArea", valueSettable: true))
+        XCTAssertFalse(TextInjector.isEditableRole("AXWebArea", valueSettable: false))
     }
 
     func testNonEditableRoles() {
-        XCTAssertFalse(TextInjector.isEditableRole("AXButton"))
-        XCTAssertFalse(TextInjector.isEditableRole("AXWindow"))
-        XCTAssertFalse(TextInjector.isEditableRole("AXGroup"))
-        XCTAssertFalse(TextInjector.isEditableRole(""))
+        XCTAssertFalse(TextInjector.isEditableRole("AXButton", valueSettable: true))
+        XCTAssertFalse(TextInjector.isEditableRole("AXWindow", valueSettable: true))
+        XCTAssertFalse(TextInjector.isEditableRole("AXGroup", valueSettable: true))
+        XCTAssertFalse(TextInjector.isEditableRole("", valueSettable: true))
+    }
+}
+
+// MARK: - DebugLog-Rotation
+
+final class DebugLogTests: XCTestCase {
+    func testOversizedLogIsRotated() throws {
+        let directory = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+            .appendingPathComponent(".build/debug-log-tests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let logURL = directory.appendingPathComponent("debug.log")
+        try Data(repeating: 0x41, count: 11).write(to: logURL)
+
+        try DebugLog.rotateIfNeeded(at: logURL, maxBytes: 10)
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: logURL.path))
+        XCTAssertEqual(try Data(contentsOf: directory.appendingPathComponent("debug.log.1")).count, 11)
     }
 }
 
