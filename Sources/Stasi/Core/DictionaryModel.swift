@@ -46,6 +46,8 @@ struct DictionaryEntry: Identifiable, Codable, Equatable, Hashable {
 
 struct DictionaryFile: Codable {
     var entries: [DictionaryEntry] = []
+    /// Optional für Rückwärtskompatibilität mit bestehenden dictionary.json-Dateien.
+    var ignoredLearned: [String]? = nil
 }
 
 // MARK: - Gebräuchliche Wörter (Warnungs-Heuristik)

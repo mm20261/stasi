@@ -225,7 +225,7 @@ struct DictionaryView: View {
                                 .strokeBorder(Theme.Palette.archivgruen, lineWidth: Theme.Metrics.hairline))
                             .buttonStyle(.plain)
                             Button("IGNORIEREN") {
-                                Task { @MainActor in app.dictionary.delete(entry) }
+                                Task { @MainActor in app.dictionary.ignoreLearned(entry) }
                             }
                             .font(Theme.Typo.kicker(size: 10.5))
                             .tracking(0.8)

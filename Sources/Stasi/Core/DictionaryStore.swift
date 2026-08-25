@@ -7,6 +7,7 @@ import Foundation
 @Observable
 final class DictionaryStore {
     private(set) var entries: [DictionaryEntry] = []
+    private(set) var ignoredLearned: [String] = []
     private(set) var lastError: String?
 
     static let appSupportDirectory = FileManager.default
@@ -37,6 +38,7 @@ final class DictionaryStore {
             let data = try Data(contentsOf: fileURL)
             let file = try JSONDecoder().decode(DictionaryFile.self, from: data)
             entries = file.entries.sorted { $0.matchSource.count > $1.matchSource.count }
+            ignoredLearned = stableUnique(file.ignoredLearned ?? [])
             lastError = nil
         } catch {
             lastError = "dictionary.json unlesbar: \(error.localizedDescription)"
@@ -47,7 +49,10 @@ final class DictionaryStore {
         do {
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-            let data = try encoder.encode(DictionaryFile(entries: entries))
+            let data = try encoder.encode(DictionaryFile(
+                entries: entries,
+                ignoredLearned: ignoredLearned
+            ))
             try data.write(to: fileURL, options: .atomic)
             lastError = nil
         } catch {
@@ -95,6 +100,59 @@ final class DictionaryStore {
         save()
     }
 
+    /// Führt einen Scout-Lauf zusammen und schreibt höchstens einmal auf die Platte.
+    func mergeLearned(_ candidates: [DictionaryEntry]) {
+        let ignored = Set(ignoredLearned.map(normalized))
+        var occupied = Set(entries.flatMap {
+            [normalized($0.matchSource), normalized($0.replacementTarget)]
+        }.filter { !$0.isEmpty })
+        var changed = false
+
+        for candidate in candidates where candidate.type == .learned {
+            let key = normalized(candidate.value)
+            guard !key.isEmpty, !ignored.contains(key) else { continue }
+
+            if let index = entries.firstIndex(where: {
+                $0.type == .learned && normalized($0.value) == key
+            }) {
+                if entries[index].note != candidate.note {
+                    entries[index].note = candidate.note
+                    changed = true
+                }
+                continue
+            }
+
+            guard !occupied.contains(key) else { continue }
+            var learned = candidate
+            learned.type = .learned
+            entries.append(learned)
+            occupied.insert(key)
+            changed = true
+        }
+
+        guard changed else { return }
+        resort()
+        save()
+    }
+
+    /// Verwirft einen Vorschlag dauerhaft, damit der Scout ihn nicht erneut anlegt.
+    func ignoreLearned(_ entry: DictionaryEntry) {
+        guard entry.type == .learned else { return }
+        let key = normalized(entry.value)
+        let oldCount = entries.count
+        entries.removeAll { $0.id == entry.id }
+        let removed = entries.count != oldCount
+        let addedToIgnoreList: Bool
+        if !key.isEmpty && !ignoredLearned.contains(where: { normalized($0) == key }) {
+            ignoredLearned.append(key)
+            addedToIgnoreList = true
+        } else {
+            addedToIgnoreList = false
+        }
+        guard removed || addedToIgnoreList else { return }
+        save()
+    }
+
     /// Längste Quellen zuerst (Match-Priorität).
     private func resort() {
         entries.sort {
@@ -102,6 +160,19 @@ final class DictionaryStore {
             ($1.type == .correction ? 1 : 0, $1.matchSource)
         }
         entries.sort { $0.matchSource.count > $1.matchSource.count }
+    }
+
+    private func stableUnique(_ values: [String]) -> [String] {
+        var seen: Set<String> = []
+        return values.compactMap { value in
+            let key = normalized(value)
+            guard !key.isEmpty, seen.insert(key).inserted else { return nil }
+            return key
+        }
+    }
+
+    private func normalized(_ value: String) -> String {
+        value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
     }
 
     // MARK: File-Watching
