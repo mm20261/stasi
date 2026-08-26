@@ -89,7 +89,7 @@ Nach jedem neuen Protokoll schlägt **Auto-gelernt** wiederholt diktierte, unbek
 Begriffe vor (DE konservativ über Großschreibung mitten im Satz, EN zusätzlich über
 unbekannte Wörter). Vorschläge lassen sich übernehmen oder dauerhaft ignorieren.
 
-**Test-Suite: 340 Tests, 0 Fehler** (`Tests/StasiTests/`; davon 4 Pipeline-E2E gated).
+**Test-Suite: 341 Tests, 0 Fehler** (`Tests/StasiTests/`; davon 4 Pipeline-E2E gated).
 TDD etabliert – bei Änderungen an Logik: erst Test, dann Fix.
 
 ### Bekannte Grenzen / offene Punkte
@@ -176,7 +176,7 @@ Sources/Stasi/
 
 scripts/make-app.sh            → build/Stasi.app (stabil signiert, Icon aus import/…/icons/anthrazit)
 scripts/gen_icon.swift         → Fallback-Icon-Generator
-Tests/StasiTests/              → 340 Tests (XCTest): AutoLearnScout/TextTidy/FillerFilter/SelfCorrectionResolver/
+Tests/StasiTests/              → 341 Tests (XCTest): AutoLearnScout/TextTidy/FillerFilter/SelfCorrectionResolver/
                                  TranscriptPolisher/DictationSession/HotkeyReenablePolicy/
                                  AudioCaptureFile/DictionaryWatcher/ThemeV3/CopyV3/
                                  ProtocolSearch/PillChrome/UpdateChecker + Bestand
@@ -276,6 +276,10 @@ echter, vom Nutzer reproduzierter Bug:
        Swift 6 einen `swift_task_isCurrentExecutor`-Check in den Realtime-Thread, der
        als `EXC_BREAKPOINT` in `dispatch_assert_queue` crasht (reproduziert am
        26.08.2026, Crash-Report `Stasi-2026-08-26-074353.ips`).
+    e) Die `AVAudioEngine` wird pro Aufnahme erzeugt und nach `stop()` freigegeben.
+       Eine dauerhaft gehaltene Engine hält das Eingabegerät belegt – bei Bluetooth-
+       Headsets bleibt macOS dann im HFP-Telefonie-Profil (Ausgabe fällt auf 24 kHz,
+       Ton klingt „unter Wasser“), reproduziert am 26.08.2026.
 
 13. **Stabile Signatur:** `make-app.sh` signiert mit dem selbstsignierten
     Zertifikat "Stasi Dev Signing" (Login-Schlüsselbund) → TCC-Rechte überleben
@@ -292,10 +296,10 @@ echter, vom Nutzer reproduzierter Bug:
 
 - **`swift test` kann an der Runner-Infra hängen** – zuverlässig:
   `swift build --build-tests && xcrun xctest .build/arm64-apple-macosx/debug/StasiPackageTests.xctest`
-- Suite: 340 Tests, davon Pipeline (2 aktiv + 4 gated), AutoLearnScout (13),
+- Suite: 341 Tests, davon Pipeline (2 aktiv + 4 gated), AutoLearnScout (13),
   TextTidy (10), FillerFilter (26), SelfCorrectionResolver (37),
   TranscriptPolisher (9), DictationSession (19),
-  HotkeyReenablePolicy (8), AudioCaptureFile (6), DictionaryWatcher (2),
+  HotkeyReenablePolicy (8), AudioCaptureFile (7), DictionaryWatcher (2),
   ShortcutDetector (14), ThemeV3 (7), CopyV3 (14), ProtocolSearch (13),
   PillChrome/MicLevelBars (17), UpdateChecker (11), MicrophoneCatalog (6),
   Onboarding (6). Bei Logik-Änderungen: erst Test schreiben/ändern, dann implementieren

@@ -59,7 +59,8 @@ final class AudioCaptureFileTests: XCTestCase {
                        beforeTap: (@Sendable () -> Void)? = nil,
                        start: @escaping () throws -> Void = {},
                        stop: @escaping () -> Void = {},
-                       removeTap: @escaping () -> Void = {}) -> AudioCapture.EngineHooks {
+                       removeTap: @escaping () -> Void = {},
+                       teardown: @escaping () -> Void = {}) -> AudioCapture.EngineHooks {
         AudioCapture.EngineHooks(
             prepareInput: { _, _ in
                 beforeTap?()
@@ -68,7 +69,8 @@ final class AudioCaptureFileTests: XCTestCase {
             prepareEngine: {},
             startEngine: start,
             stopEngine: stop,
-            removeTap: removeTap
+            removeTap: removeTap,
+            teardownEngine: teardown
         )
     }
 
@@ -102,12 +104,12 @@ final class AudioCaptureFileTests: XCTestCase {
     func testStopClosesFileAndRemovesTap() throws {
         let url = makeDirectory().appendingPathComponent("closed.wav")
         let outputFormat = format()
-        var stopCount = 0
-        var removeTapCount = 0
+        var teardownOrder: [String] = []
         let capture = AudioCapture(engineHooks: hooks(
             format: outputFormat,
-            stop: { stopCount += 1 },
-            removeTap: { removeTapCount += 1 }
+            stop: { teardownOrder.append("stop") },
+            removeTap: { teardownOrder.append("tap") },
+            teardown: { teardownOrder.append("teardown") }
         ))
         try capture.start(outputFormat: outputFormat, recordTo: url) { _ in }
 
@@ -116,20 +118,19 @@ final class AudioCaptureFileTests: XCTestCase {
         XCTAssertEqual(returnedURL, url)
         XCTAssertFalse(capture.hasOpenOutputFile)
         XCTAssertFalse(capture.isRunning)
-        XCTAssertEqual(stopCount, 1)
-        XCTAssertEqual(removeTapCount, 1)
+        XCTAssertEqual(teardownOrder, ["tap", "stop", "teardown"])
     }
 
     func testEngineStartFailureRemovesTapAndClosesFile() {
         let url = makeDirectory().appendingPathComponent("failed.wav")
         let outputFormat = format()
-        var stopCount = 0
-        var removeTapCount = 0
+        var teardownOrder: [String] = []
         let capture = AudioCapture(engineHooks: hooks(
             format: outputFormat,
             start: { throw StartError.failed },
-            stop: { stopCount += 1 },
-            removeTap: { removeTapCount += 1 }
+            stop: { teardownOrder.append("stop") },
+            removeTap: { teardownOrder.append("tap") },
+            teardown: { teardownOrder.append("teardown") }
         ))
 
         XCTAssertThrowsError(
@@ -137,8 +138,27 @@ final class AudioCaptureFileTests: XCTestCase {
         )
         XCTAssertFalse(capture.hasOpenOutputFile)
         XCTAssertFalse(capture.isRunning)
-        XCTAssertEqual(removeTapCount, 1)
-        XCTAssertEqual(stopCount, 1)
+        XCTAssertEqual(teardownOrder, ["tap", "stop", "teardown"])
+    }
+
+    func testSecondStartAfterStopCreatesFreshEngineLifecycle() throws {
+        let outputFormat = format()
+        var startCount = 0
+        var teardownCount = 0
+        let capture = AudioCapture(engineHooks: hooks(
+            format: outputFormat,
+            start: { startCount += 1 },
+            teardown: { teardownCount += 1 }
+        ))
+
+        try capture.start(outputFormat: outputFormat, recordTo: nil) { _ in }
+        _ = capture.stop()
+        try capture.start(outputFormat: outputFormat, recordTo: nil) { _ in }
+        _ = capture.stop()
+
+        XCTAssertEqual(startCount, 2)
+        XCTAssertEqual(teardownCount, 2)
+        XCTAssertFalse(capture.isRunning)
     }
 
     func testTapSinkDeliversBufferFromBackgroundThread() async throws {
@@ -153,7 +173,8 @@ final class AudioCaptureFileTests: XCTestCase {
             prepareEngine: {},
             startEngine: {},
             stopEngine: {},
-            removeTap: {}
+            removeTap: {},
+            teardownEngine: {}
         )
         let capture = AudioCapture(engineHooks: hooks)
         let buffer = try XCTUnwrap(AVAudioPCMBuffer(

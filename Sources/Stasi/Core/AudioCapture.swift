@@ -39,10 +39,15 @@ final class AudioCapture: AudioCapturing, @unchecked Sendable {
         let startEngine: () throws -> Void
         let stopEngine: () -> Void
         let removeTap: () -> Void
+        /// Entspricht `reset()` + Freigabe der pro Aufnahme erzeugten Engine.
+        let teardownEngine: () -> Void
     }
 
-    private let engine = AVAudioEngine()
+    /// Pro Aufnahme neu erzeugt, damit der InputNode nach `stop()` vollständig
+    /// deallokiert wird und insbesondere Bluetooth-Mikrofone nicht belegt bleiben.
+    private var engine: AVAudioEngine?
     private let engineHooks: EngineHooks?
+    private var inputTapInstalled = false
     private nonisolated(unsafe) var converter: AVAudioConverter?
     private nonisolated(unsafe) var outputFormat: AVAudioFormat?
     private nonisolated(unsafe) var onBuffer: (@Sendable (AudioChunk) -> Void)?
@@ -79,6 +84,9 @@ final class AudioCapture: AudioCapturing, @unchecked Sendable {
         self.outputFormat = outputFormat
 
         recordURL = url
+        if engineHooks == nil {
+            engine = AVAudioEngine()
+        }
         do {
             // Synchron VOR installTap: Der erste Tap-Puffer darf bereits in
             // eine vollständig geöffnete WAV-Datei geschrieben werden.
@@ -99,7 +107,9 @@ final class AudioCapture: AudioCapturing, @unchecked Sendable {
             let native: AVAudioFormat
             if let engineHooks {
                 native = try engineHooks.prepareInput(preferredMicUID, sink)
+                inputTapInstalled = true
             } else {
+                guard let engine else { preconditionFailure("Audio-Engine fehlt") }
                 let input = engine.inputNode
                 // Wunsch-Gerät VOR dem Format-Holen setzen – andere Geräte
                 // haben andere native Formate. Bei false läuft Standard weiter.
@@ -110,6 +120,7 @@ final class AudioCapture: AudioCapturing, @unchecked Sendable {
                 input.installTap(onBus: 0, bufferSize: 2048, format: native) { buffer, _ in
                     sink(buffer)
                 }
+                inputTapInstalled = true
             }
 
             converter = native == outputFormat ? nil : AVAudioConverter(from: native, to: outputFormat)
@@ -117,14 +128,14 @@ final class AudioCapture: AudioCapturing, @unchecked Sendable {
                 engineHooks.prepareEngine()
                 try engineHooks.startEngine()
             } else {
+                guard let engine else { preconditionFailure("Audio-Engine fehlt") }
                 engine.prepare()
                 try engine.start()
             }
             isRunning = true
             DebugLog.log("STASI-AUDIO: Capture läuft – nativ \(native.sampleRate) Hz → Engine \(outputFormat.sampleRate) Hz")
         } catch {
-            removeInputTap()
-            stopEngine()
+            teardownEngine()
             closeOutputFile()
             converter = nil
             self.outputFormat = nil
@@ -139,8 +150,7 @@ final class AudioCapture: AudioCapturing, @unchecked Sendable {
     @discardableResult
     func stop() -> URL? {
         guard isRunning else { return nil }
-        removeInputTap()
-        stopEngine()
+        teardownEngine()
         isRunning = false
         converter = nil
         outputFormat = nil
@@ -199,19 +209,24 @@ final class AudioCapture: AudioCapturing, @unchecked Sendable {
         onBuffer?(chunk)
     }
 
-    private func removeInputTap() {
-        if let engineHooks {
-            engineHooks.removeTap()
-        } else {
-            engine.inputNode.removeTap(onBus: 0)
+    /// Reihenfolge ist absichtlich strikt: Tap weg → stop → reset → Referenz nil.
+    private func teardownEngine() {
+        if inputTapInstalled {
+            if let engineHooks {
+                engineHooks.removeTap()
+            } else {
+                engine?.inputNode.removeTap(onBus: 0)
+            }
+            inputTapInstalled = false
         }
-    }
 
-    private func stopEngine() {
         if let engineHooks {
             engineHooks.stopEngine()
+            engineHooks.teardownEngine()
         } else {
-            engine.stop()
+            engine?.stop()
+            engine?.reset()
+            engine = nil
         }
     }
 
