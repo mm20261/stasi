@@ -4,7 +4,7 @@ import AppKit
 import AVFoundation
 
 // MARK: - AppState
-// Zentrale State-Machine: idle → recording → transcribing → injecting → idle.
+// Zentrale State-Machine: idle → recording → transcribing → polishing → injecting → idle.
 // Hotkey-Modi: Push-to-talk (halten) oder Umschalten (togglen).
 // Ton-Feedback, WAV-Mitschrieb, Ziel-App-Erfassung.
 
@@ -15,10 +15,20 @@ final class AppState {
         case idle = "BEREIT"
         case recording = "AUFNAHME"
         case transcribing = "TRANSKRIBIERE"
+        case polishing = "POLIERE"
         case injecting = "EINFÜGEN"
     }
 
-    private(set) var phase: Phase = .idle
+    private(set) var phase: Phase = .idle {
+        didSet {
+            guard oldValue != phase else { return }
+            let now = Date()
+            phaseEnteredAt = now
+            if phase == .transcribing { processingStartedAt = now }
+            if phase == .idle || phase == .recording { processingStartedAt = nil }
+            if phase == .idle { watchdogRecoveryQueued = false }
+        }
+    }
     /// Woher kommt die laufende Aufnahme – steuert ✕/✓ in der Pill (v4).
     private(set) var recordingSource: RecordingSource = .pushToTalk
     var partialText: String = ""
@@ -28,24 +38,31 @@ final class AppState {
     let settings: SettingsStore
     let dictionary: DictionaryStore
     let history: HistoryStore
-    let audio = AudioCapture()
-    // Pro Diktat eine frische Engine (actor, eigener Executor)
-    private var speech: TranscriptionEngine?
-    private var feedTask: Task<Void, Never>?
-    private var consumeTask: Task<Void, Never>?
-    private var audioContinuation: AsyncStream<AudioChunk>.Continuation?
+    let audio: any AudioCapturing
+    private let speechFactory: @MainActor (Locale, [String]) -> any SpeechEngining
+    private let requestMicrophone: @MainActor () async -> Bool
+    private let modelInstaller: @Sendable (Locale) async throws -> Void
+    private let spellChecker: @MainActor (String, String) -> Bool
+    private let audioDirectory: URL
+    private(set) var modelReadyByLocale: [String: Bool] = [:]
+    @ObservationIgnored private var modelPreparationTasks: [String: Task<Bool, Never>] = [:]
+    @ObservationIgnored private var knownWordCache: [String: Bool] = [:]
+    private(set) var currentSession: DictationSession?
     var hotkey: HotkeyEngine?
     /// Tap wurde angelegt (says nichts über Event-Lieferung!)
     private(set) var tapInstalled = false
     /// Bedienungshilfen erteilt + Tap installiert → Hotkey wirklich scharf
     /// (Session-Tap braucht keine Eingabe-Überwachung mehr)
-    var hotkeyReady: Bool { tapInstalled && accessibilityGranted }
+    var hotkeyReady: Bool {
+        tapInstalled && accessibilityGranted && hotkey?.isOperational == true
+    }
     var accessibilityGranted = false
     var listenEventGranted = false
 
     /// Warum der Hotkey (noch) nicht scharf ist – für die UI.
     var hotkeyBlocker: String? {
         if !accessibilityGranted { return "Bedienungshilfen" }
+        if hotkey?.gaveUp == true { return Copy.hotkeyRestartRequired }
         return nil
     }
 
@@ -57,15 +74,33 @@ final class AppState {
     var onToast: ((String, Bool) -> Void)?
 
     private var recordStart: Date?
-    private var elapsedTimer: Timer?
-    private var currentAudioURL: URL?
+    private let levelTraceEnabled: Bool
+    private let consumeTimeoutNanoseconds: UInt64
+    private let minimumPushToTalkDuration: TimeInterval
+    @ObservationIgnored private var lastLevelTraceUptime: TimeInterval = 0
+    @ObservationIgnored private var phaseEnteredAt = Date()
+    @ObservationIgnored private var processingStartedAt: Date?
+    @ObservationIgnored private var watchdogRecoveryQueued = false
+    private let permissionCheckMailbox = PermissionCheckMailbox()
 
     // MARK: Command-Channel
     // Hotkey-Tap-Callbacks und @objc-Button-Thunks dürfen KEINE Tasks spawnen
     // (macOS 26.6 korrumpiert sonst Executor-Metadaten → SwiftUI-Crashes).
     // Stattdessen: thread-sicheres yield in einen AsyncStream; EIN Task aus
     // echtem Concurrency-Kontext (startCommandLoop) konsumiert die Commands.
-    enum HotkeyCommand: Sendable { case press, release, discard, commit, handsFree }
+    enum HotkeyCommand: Sendable, Equatable {
+        case press, release, discard, commit, handsFree, copyLast, insertLast, tapStopped
+        case prepareModel(Locale)
+        case phaseWatchdog
+    }
+    nonisolated static let copyLastChord = HotkeyEngine.Combo(
+        keyCode: 8,
+        flags: CGEventFlags.maskControl.rawValue | CGEventFlags.maskCommand.rawValue
+    )
+    nonisolated static let insertLastChord = HotkeyEngine.Combo(
+        keyCode: 9,
+        flags: CGEventFlags.maskControl.rawValue | CGEventFlags.maskCommand.rawValue
+    )
     private let commandStream: AsyncStream<HotkeyCommand>
     private let commandContinuation: AsyncStream<HotkeyCommand>.Continuation
     private var commandLoopStarted = false
@@ -88,19 +123,64 @@ final class AppState {
                 case .discard: requestDiscard()
                 case .commit: requestCommit()
                 case .handsFree: handsFreeToggle()
+                case .copyLast: copyLast()
+                case .insertLast: insertLast()
+                case .tapStopped: tapInstalled = false
+                case .prepareModel(let locale): await prepareModel(for: locale)
+                case .phaseWatchdog: await recoverFromPhaseWatchdog()
                 }
             }
         }
     }
 
-    init(settings: SettingsStore) {
+    init(settings: SettingsStore,
+         dictionary: DictionaryStore? = nil,
+         history: HistoryStore? = nil,
+         audio: any AudioCapturing = AudioCapture(),
+         speechFactory: @escaping @MainActor (Locale, [String]) -> any SpeechEngining = {
+             TranscriptionEngine(locale: $0, biasWords: $1)
+         },
+         requestMicrophone: @escaping @MainActor () async -> Bool = {
+             await Permissions.requestMicrophone()
+         },
+         modelInstaller: @escaping @Sendable (Locale) async throws -> Void = {
+             try await TranscriptionEngine.ensureModelInstalled(locale: $0)
+         },
+         spellChecker: @escaping @MainActor (String, String) -> Bool = { word, language in
+             var wordCount = 0
+             let misspelling = NSSpellChecker.shared.checkSpelling(
+                 of: word,
+                 startingAt: 0,
+                 language: language,
+                 wrap: false,
+                 inSpellDocumentWithTag: 0,
+                 wordCount: &wordCount
+             )
+             return misspelling.location == NSNotFound
+         },
+         consumeTimeoutNanoseconds: UInt64 = 2_000_000_000,
+         minimumPushToTalkDuration: TimeInterval = PillChrome.presentationDelay,
+         installHotkey: Bool = true,
+         audioDirectory: URL? = nil) {
         self.settings = settings
-        self.dictionary = DictionaryStore()
-        self.history = HistoryStore()
+        self.dictionary = dictionary ?? DictionaryStore()
+        self.history = history ?? HistoryStore()
+        self.audio = audio
+        self.speechFactory = speechFactory
+        self.requestMicrophone = requestMicrophone
+        self.modelInstaller = modelInstaller
+        self.spellChecker = spellChecker
+        self.consumeTimeoutNanoseconds = consumeTimeoutNanoseconds
+        self.minimumPushToTalkDuration = minimumPushToTalkDuration
+        self.audioDirectory = audioDirectory ?? DictionaryStore.appSupportDirectory
+            .appendingPathComponent("audio", isDirectory: true)
+        levelTraceEnabled = ProcessInfo.processInfo.environment["STASI_LEVEL_TRACE"] == "1"
         (commandStream, commandContinuation) = AsyncStream.makeStream(of: HotkeyCommand.self)
         accessibilityGranted = Permissions.accessibilityGranted
         listenEventGranted = Permissions.listenEventGranted
-        installTap() // installiert nur, wenn Eingabe-Überwachung erteilt ist
+        if installHotkey {
+            installTap() // installiert nur, wenn Bedienungshilfen erteilt sind
+        }
 
         // Audio→Engine-Verdrahtung passiert pro Diktat in startDictation
         // (Stream + EIN Drain-Task, garantiert Puffer-Reihenfolge).
@@ -124,11 +204,21 @@ final class AppState {
         }
         guard !tapInstalled else { return }
         DebugLog.log("STASI-APP: installTap – Bedienungshilfen erteilt, erstelle Session-Tap")
-        let hk = HotkeyEngine(combo: currentCombo, handsFreeEnabled: true)
+        let hk = HotkeyEngine(
+            combo: currentCombo,
+            chords: [Self.copyLastChord, Self.insertLastChord],
+            handsFreeEnabled: settings.handsFreeOn,
+            handsFreeKeyCode: settings.handsFreeKeyCode
+        )
         // Kein Task, kein Actor-Hop im Tap-Pfad – nur enqueue (thread-sicher).
         hk.onPress = { [weak self] in self?.enqueue(.press) }
         hk.onRelease = { [weak self] in self?.enqueue(.release) }
         hk.onHandsFree = { [weak self] in self?.enqueue(.handsFree) }
+        hk.onChord = { [weak self] chord in
+            guard let command = Self.hotkeyCommand(for: chord) else { return }
+            self?.enqueue(command)
+        }
+        hk.onTapStopped = { [weak self] in self?.enqueue(.tapStopped) }
         if hk.start() {
             hotkey = hk
             tapInstalled = true
@@ -139,30 +229,29 @@ final class AppState {
     /// XPC-Calls – bewusst nur ~1×/s (20 Hz Preflights können die TCC-Dialoge
     /// blockieren, was der Nutzer als "eingefrorenes Fenster" erlebte).
     func refreshPermissionState() {
-        hotkey?.ensureEnabled()
+        if accessibilityGranted { hotkey?.ensureEnabled() }
         applyPermissionState(ax: Permissions.accessibilityGranted,
                              listen: Permissions.listenEventGranted)
     }
-
-    private var permissionCheckInFlight = false
 
     /// Poll-Variante: Preflights im Hintergrund. Hängt tccd (typisch direkt
     /// nach Ad-hoc-Re-Sign), blockiert sonst jeder Check den Main-Thread –
     /// das war das "Fenster tot, Klicks versacken"-Symptom.
     func refreshPermissionStateAsync() {
-        guard !permissionCheckInFlight else { return }
-        permissionCheckInFlight = true
-        DispatchQueue.global(qos: .utility).async { [weak self] in
+        guard permissionCheckMailbox.begin() else { return }
+        let mailbox = permissionCheckMailbox
+        DispatchQueue.global(qos: .utility).async {
             let ax = Permissions.accessibilityGranted
             let listen = Permissions.listenEventGranted
-            DispatchQueue.main.async {
-                MainActor.assumeIsolated {
-                    guard let self else { return }
-                    self.permissionCheckInFlight = false
-                    self.applyPermissionState(ax: ax, listen: listen)
-                }
-            }
+            mailbox.finish(ax: ax, listen: listen)
         }
+    }
+
+    /// Billiger Lock-Read aus dem bestehenden Main-Poll. Die GCD-Closure
+    /// berührt niemals MainActor-Zustand und benötigt keinen Executor-Hop.
+    func applyPendingPermissionStateFromPoll() {
+        guard let result = permissionCheckMailbox.consume() else { return }
+        applyPermissionState(ax: result.ax, listen: result.listen)
     }
 
     private func applyPermissionState(ax: Bool, listen: Bool) {
@@ -171,7 +260,7 @@ final class AppState {
         accessibilityGranted = ax
         listenEventGranted = listen
         // Session-Tap braucht Bedienungshilfen (die auch fürs Einfügen nötig sind).
-        if ax && !tapInstalled {
+        if ax && !tapInstalled && hotkey?.gaveUp != true {
             installTap()
         }
     }
@@ -201,14 +290,76 @@ final class AppState {
 
     static let hotkeyDefaultsKey = "stasi.hotkey.combo"
 
+    nonisolated static func hotkeyCommand(for chord: HotkeyEngine.Combo) -> HotkeyCommand? {
+        switch chord {
+        case copyLastChord: .copyLast
+        case insertLastChord: .insertLast
+        default: nil
+        }
+    }
+
     func applyHotkey(_ combo: HotkeyEngine.Combo) {
         if let data = try? JSONEncoder().encode(combo) {
             UserDefaults.standard.set(data, forKey: Self.hotkeyDefaultsKey)
         }
+        reinstallHotkey()
+    }
+
+    func setHandsFreeEnabled(_ enabled: Bool) {
+        guard settings.handsFreeOn != enabled else { return }
+        settings.handsFreeOn = enabled
+        reinstallHotkey()
+    }
+
+    func applyHandsFreeKeyCode(_ keyCode: UInt64) {
+        guard VirtualKey.isHandsFreeModifier(keyCode),
+              settings.handsFreeKeyCode != keyCode else { return }
+        settings.handsFreeKeyCode = keyCode
+        reinstallHotkey()
+    }
+
+    private func reinstallHotkey() {
         hotkey?.stop()
         hotkey = nil
         tapInstalled = false // sonst blockt der installTap-Guard den neuen Hotkey
         installTap()
+    }
+
+    // MARK: Sprachmodell-Vorbereitung
+
+    func modelReady(for locale: Locale) -> Bool {
+        modelReadyByLocale[locale.identifier] == true
+    }
+
+    var currentSessionModelReady: Bool {
+        guard let currentSession else { return true }
+        return modelReady(for: currentSession.locale)
+    }
+
+    func prepareModel(for locale: Locale) async {
+        let key = locale.identifier
+        guard modelReadyByLocale[key] != true else { return }
+
+        if let running = modelPreparationTasks[key] {
+            modelReadyByLocale[key] = await running.value
+            return
+        }
+
+        modelReadyByLocale[key] = false
+        let installer = modelInstaller
+        let task = Task.detached(priority: .utility) {
+            do {
+                try await installer(locale)
+                return true
+            } catch {
+                DebugLog.log("STASI-SPEECH: Modellvorbereitung fehlgeschlagen: \(error.localizedDescription)")
+                return false
+            }
+        }
+        modelPreparationTasks[key] = task
+        let ready = await task.value
+        modelPreparationTasks[key] = nil
+        modelReadyByLocale[key] = ready
     }
 
     var currentCombo: HotkeyEngine.Combo {
@@ -257,29 +408,63 @@ final class AppState {
         phase = .recording
         recordStart = Date()
         elapsed = 0
-        startElapsedTimer()
         playStartSound()
 
+        let locale = settings.transcriptionLocale
+        let dictionaryEntries = dictionary.entries
+        let biasWords = DictionaryBiaser(entries: dictionaryEntries).vocabularyContext()
+        let targetApp = NSWorkspace.shared.frontmostApplication?.localizedName ?? ""
+        try? FileManager.default.createDirectory(at: audioDirectory, withIntermediateDirectories: true)
+        let audioURL = audioDirectory.appendingPathComponent("\(UUID().uuidString).wav")
+        let session = DictationSession(
+            locale: locale,
+            dictionaryEntries: dictionaryEntries,
+            targetApp: targetApp,
+            audioURL: audioURL,
+            speech: speechFactory(locale, biasWords),
+            audio: audio
+        )
+        currentSession = session
+
         DebugLog.log("STASI-APP: startDictation → Phase recording")
-        Task { @MainActor in
+        session.setupTask = Task { @MainActor [weak self, weak session] in
+            guard let self, let session,
+                  session === self.currentSession,
+                  session.state == .settingUp else { return }
             do {
                 // Mikrofon-Recht ZUERST klären (async, blockiert nichts) –
                 // die AVAudioEngine ohne Recht anzufassen hängt sonst den
                 // Main-Thread in der synchronen TCC-Abfrage fest.
-                guard await Permissions.requestMicrophone() else {
+                let microphoneGranted = await self.requestMicrophone()
+                guard session === self.currentSession else { return }
+                guard session.state == .settingUp else { return }
+                guard microphoneGranted else {
                     DebugLog.log("STASI-APP: startDictation abgebrochen – Mikrofon-Recht fehlt")
-                    onToast?("Mikrofon-Zugriff fehlt – in Systemeinstellungen erlauben", false)
-                    phase = .idle
-                    stopElapsedTimer()
+                    self.onToast?("Mikrofon-Zugriff fehlt – in Systemeinstellungen erlauben", false)
+                    Task {
+                        try? await Task.sleep(nanoseconds: 1_500_000_000)
+                        if !Permissions.microphoneGranted {
+                            Permissions.openSystemSettings("Privacy_Microphone")
+                        }
+                    }
+                    await session.teardown()
+                    guard session === self.currentSession else { return }
+                    self.finishAbortedSession(session)
                     return
                 }
 
-                let biasWords = DictionaryBiaser(entries: dictionary.entries).vocabularyContext()
-                let speech = TranscriptionEngine(locale: settings.transcriptionLocale, biasWords: biasWords)
-                self.speech = speech
+                await self.prepareModel(for: session.locale)
+                guard session === self.currentSession else { return }
+                guard session.state == .settingUp else { return }
 
-                let chunks = try await speech.start()
-                guard let format = await speech.preferredInputFormat() else {
+                let chunks = try await session.speech.start()
+                guard session === self.currentSession else { return }
+                guard session.state == .settingUp else { return }
+                self.modelReadyByLocale[session.locale.identifier] = true
+                let format = await session.speech.preferredInputFormat()
+                guard session === self.currentSession else { return }
+                guard session.state == .settingUp else { return }
+                guard let format else {
                     throw TranscriptionError.noAudioFormat
                 }
                 DebugLog.log("STASI-APP: Engine bereit (\(format.sampleRate) Hz)")
@@ -289,53 +474,40 @@ final class AppState {
                 let (audioStream, audioContinuation) = AsyncStream<AudioChunk>.makeStream(
                     bufferingPolicy: .bufferingNewest(64)
                 )
-                self.audioContinuation = audioContinuation
-                self.feedTask = Task.detached(priority: .userInitiated) {
+                session.audioContinuation = audioContinuation
+                let speech = session.speech
+                session.feedTask = Task.detached(priority: .userInitiated) {
                     for await chunk in audioStream {
                         await speech.feed(chunk)
                     }
                 }
 
-                // WAV-Mitschrieb für Play/Export
-                let audioDir = DictionaryStore.appSupportDirectory.appendingPathComponent("audio", isDirectory: true)
-                try? FileManager.default.createDirectory(at: audioDir, withIntermediateDirectories: true)
-                currentAudioURL = audioDir.appendingPathComponent("\(UUID().uuidString).wav")
-
-                try audio.start(outputFormat: format,
-                                recordTo: currentAudioURL,
-                                preferredMicUID: settings.preferredMicUID) { chunk in
-                    audioContinuation.yield(chunk)
-                }
-                DebugLog.log("STASI-APP: audio.start fertig – Aufnahme läuft")
-
-                // Nutzer hat während des Hochfahrens schon losgelassen?
-                guard self.phase == .recording else {
-                    DebugLog.log("STASI-APP: Start abgebrochen – Phase wechselte während Setup")
-                    _ = self.audio.stop()
-                    audioContinuation.finish()
-                    self.audioContinuation = nil
-                    await self.feedTask?.value
-                    self.feedTask = nil
-                    await speech.finish()
-                    self.speech = nil
-                    return
-                }
-
-                self.consumeTask = Task { @MainActor in
+                session.consumeTask = Task { @MainActor [weak self, weak session] in
                     do {
                         for try await chunk in chunks {
+                            guard let self, let session,
+                                  session === self.currentSession else { return }
                             self.partialText = chunk.text
                         }
                     } catch {
                         DebugLog.log("STASI-APP: Transkript-Strom Fehler: \(error.localizedDescription)")
                     }
                 }
+
+                try session.audio.start(outputFormat: format,
+                                recordTo: session.audioURL,
+                                preferredMicUID: self.settings.preferredMicUID) { chunk in
+                    audioContinuation.yield(chunk)
+                }
+                session.state = .recording
+                DebugLog.log("STASI-APP: audio.start fertig – Aufnahme läuft")
             } catch {
                 DebugLog.log("STASI-APP: startDictation FEHLER: \(error.localizedDescription)")
-                partialText = "⚠︎ \(error.localizedDescription)"
-                phase = .idle
-                currentAudioURL = nil
-                self.speech = nil
+                guard session === self.currentSession else { return }
+                await session.teardown()
+                guard session === self.currentSession else { return }
+                self.onToast?(error.localizedDescription, false)
+                self.finishAbortedSession(session)
             }
         }
     }
@@ -350,61 +522,100 @@ final class AppState {
             requestDiscard()
             return
         }
+        guard let session = currentSession else { return }
+        let duration = max(
+            elapsed,
+            recordStart.map { Date().timeIntervalSince($0) } ?? 0
+        )
+        if recordingSource == .pushToTalk,
+           duration < minimumPushToTalkDuration {
+            silentlyAbortShortPushToTalk(session)
+            return
+        }
+        session.state = .stopping
         phase = .transcribing
-        stopElapsedTimer()
         playStopSound()
-        let recordedURL = audio.stop()
-        let duration = elapsed
-        let speech = self.speech
 
-        Task { @MainActor in
-            defer { resetLevel() }
+        Task { @MainActor [weak self, weak session] in
+            guard let self, let session else { return }
+            await session.setupTask?.value
+            guard session === self.currentSession else { return }
+
+            guard session.audio.isRunning else {
+                DebugLog.log("STASI-APP: Kurz-Tipp während Setup")
+                await session.teardown()
+                guard session === self.currentSession else { return }
+                self.finishAbortedSession(session)
+                return
+            }
+
+            let recordedURL = session.audio.stop()
             // Erst alle gepufferten Chunks in die Engine drainen, DANN
             // finalisieren – sonst fehlt das Satzende.
-            audioContinuation?.finish()
-            audioContinuation = nil
-            await feedTask?.value
-            feedTask = nil
+            session.audioContinuation?.finish()
+            session.audioContinuation = nil
+            await session.feedTask?.value
+            guard session === self.currentSession else { return }
+            session.feedTask = nil
             DebugLog.log("STASI-APP: Audio gedraint, finalisiere…")
-            await speech?.finish()
-            await consumeTask?.value
-            consumeTask = nil
-            self.speech = nil
+            await session.speech.finish()
+            guard session === self.currentSession else { return }
+            if let consumeTask = session.consumeTask {
+                let completed = await TranscriptionEngine.waitForFinalize(
+                    consumeTask,
+                    timeoutNanoseconds: self.consumeTimeoutNanoseconds
+                )
+                if !completed {
+                    DebugLog.log("STASI-APP: Consumer-Timeout – nutze letzten Text-Stand")
+                }
+            }
+            guard session === self.currentSession else { return }
+            session.consumeTask = nil
+            session.setupTask = nil
+            session.state = .finished
+            self.resetLevel()
 
-            let raw = partialText
+            let raw = self.partialText
             DebugLog.log("STASI-APP: Transkription fertig (\(raw.count) Zeichen)")
-            finishTranscription(rawText: raw,
-                                duration: duration,
-                                audioURL: recordedURL ?? currentAudioURL)
-            currentAudioURL = nil
+            await self.finishTranscription(rawText: raw,
+                                           duration: duration,
+                                           audioURL: recordedURL ?? session.audioURL,
+                                           session: session)
         }
     }
 
     /// Pill-Aktionen
     func requestDiscard() {
         guard phase == .recording else { return }
+        guard let session = currentSession else { return }
         DebugLog.log("STASI-APP: requestDiscard")
         discardRequested = true
-        stopElapsedTimer()
+        session.state = .stopping
+        phase = .transcribing
         playStopSound()
-        _ = audio.stop()
-        audioContinuation?.finish()
-        audioContinuation = nil
-        feedTask?.cancel()
-        feedTask = nil
-        consumeTask?.cancel()
-        consumeTask = nil
-        let speech = self.speech
-        self.speech = nil
-        onToast?(Copy.toastDiscarded, false)
-        Task { @MainActor in
-            await speech?.finish() // Stream sauber beenden
-            try? FileManager.default.removeItem(at: currentAudioURL ?? URL(fileURLWithPath: "/dev/null"))
-            currentAudioURL = nil
-            resetLevel()
-            partialText = ""
-            phase = .idle
+        Task { @MainActor [weak self, weak session] in
+            guard let self, let session else { return }
+            await session.setupTask?.value
+            guard session === self.currentSession else { return }
+            await session.teardown()
+            guard session === self.currentSession else { return }
+            self.finishAbortedSession(session)
         }
+    }
+
+    /// Ein versehentlicher PTT-Tipp wird sofort aus der sichtbaren
+    /// Zustandsmaschine entfernt. Das Setup/Capture räumt im Hintergrund auf,
+    /// ohne Status-Pill, Toast oder Historieneintrag zu erzeugen.
+    private func silentlyAbortShortPushToTalk(_ session: DictationSession) {
+        DebugLog.log("STASI-APP: PTT-Kurztipp <250 ms – still verworfen")
+        session.state = .stopping
+        currentSession = nil
+        resetLevel()
+        partialText = ""
+        elapsed = 0
+        recordStart = nil
+        phase = .idle
+        Task { await session.teardown() }
     }
 
     func requestCommit() {
@@ -412,34 +623,102 @@ final class AppState {
         stopDictation(commit: true)
     }
 
-    private func finishTranscription(rawText: String, duration: Double, audioURL: URL?) {
-        DebugLog.log("STASI-APP: finishTranscription (\(rawText.count) Zeichen roh)")
-        let trimmedRaw = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
+    /// Wird direkt aus dem bestehenden 20-Hz-Main-RunLoop-Poll gerufen.
+    /// Nur ein thread-sicheres Enqueue; kein Task entsteht im Timer-Callback.
+    func checkPhaseWatchdog(now: Date = Date(), timeout: TimeInterval = 15) {
+        guard phase == .transcribing || phase == .polishing else { return }
+        guard !watchdogRecoveryQueued,
+              now.timeIntervalSince(phaseEnteredAt) >= timeout else { return }
+        watchdogRecoveryQueued = true
+        DebugLog.log("STASI-WATCH: Phase \(phase.rawValue) hängt seit ≥15 s – Recovery")
+        enqueue(.phaseWatchdog)
+    }
 
-        // Korrektur-Pass (garantierter Pfad)
-        let (corrected, applied) = CorrectionEngine.correct(trimmedRaw, entries: dictionary.entries)
-        let trimmed = corrected.trimmingCharacters(in: .whitespacesAndNewlines)
+    private func recoverFromPhaseWatchdog() async {
+        guard phase == .transcribing || phase == .polishing else {
+            watchdogRecoveryQueued = false
+            return
+        }
+        let session = currentSession
+        currentSession = nil
+        resetLevel()
+        partialText = ""
+        phase = .idle
+        onToast?(Copy.toastTranscriptionAborted, false)
+        if let session {
+            await session.teardown()
+        }
+        DebugLog.log("STASI-WATCH: Zustandsmaschine auf BEREIT zurückgesetzt")
+    }
+
+    private func finishTranscription(rawText: String,
+                                     duration: Double,
+                                     audioURL: URL?,
+                                     session: DictationSession) async {
+        guard session === currentSession else { return }
+        phase = .polishing
+
+        // Snapshot-Grenze für Block 3C: ab hier darf kein veränderlicher
+        // Session-/Settings-Zustand mehr in die Nachbearbeitung hineinlaufen.
+        let rawSnapshot = rawText
+        let localeSnapshot = session.locale
+        let dictionarySnapshot = session.dictionaryEntries
+        let configuredLevel = settings.postProcessing
+        let levelSnapshot = TranscriptPolisher.effectiveLevel(configured: configuredLevel)
+        let targetAppSnapshot = session.targetApp
+        let audioURLSnapshot = audioURL
+        let durationSnapshot = duration
+
+        DebugLog.log("STASI-APP: finishTranscription (\(rawText.count) Zeichen roh)")
+        let outcome = TranscriptPolisher.polishSync(
+            rawSnapshot,
+            locale: localeSnapshot,
+            entries: dictionarySnapshot,
+            level: levelSnapshot
+        )
+        guard session === currentSession, phase == .polishing else { return }
+        let trimmedRaw = rawSnapshot.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmed = outcome.text
 
         guard !trimmed.isEmpty else {
-            try? FileManager.default.removeItem(at: audioURL ?? URL(fileURLWithPath: "/dev/null"))
+            if let audioURLSnapshot {
+                try? FileManager.default.removeItem(at: audioURLSnapshot)
+            }
+            currentSession = nil
             partialText = ""
             phase = .idle
+            onToast?(Copy.toastNothingHeard, false)
             return
         }
 
-        history.insert(
-            TranscriptionRecord(
-                date: Date(),
-                localeID: settings.transcriptionLocale.identifier,
-                rawText: trimmedRaw,
-                correctedText: trimmed,
-                corrections: applied,
-                durationSecs: duration,
-                targetApp: NSWorkspace.shared.frontmostApplication?.localizedName ?? "",
-                audioPath: audioURL?.path
-            )
+        let newRecord = TranscriptionRecord(
+            date: Date(),
+            localeID: localeSnapshot.identifier,
+            rawText: trimmedRaw,
+            correctedText: trimmed,
+            corrections: outcome.corrections,
+            durationSecs: durationSnapshot,
+            targetApp: targetAppSnapshot,
+            audioPath: audioURLSnapshot?.path,
+            polish: outcome.summary
         )
+        history.insert(newRecord)
 
+        let historicalRecords = history.records.filter { $0.id != newRecord.id }
+        let learned = AutoLearnScout.candidates(
+            newRecord: newRecord,
+            historyExcludingNew: historicalRecords,
+            dictionary: dictionary.entries,
+            ignored: dictionary.ignoredLearned,
+            locale: localeSnapshot,
+            isKnownWord: { [self] word in
+                isKnownWord(word, locale: localeSnapshot)
+            },
+            options: .init()
+        )
+        dictionary.mergeLearned(learned)
+
+        currentSession = nil
         phase = .injecting
         partialText = trimmed
         // Auto-Kopieren: Das letzte Protokoll liegt immer in der Zwischenablage,
@@ -451,14 +730,13 @@ final class AppState {
             // Nur tippen, wenn ein editierbares Textfeld fokussiert ist –
             // sonst spielt macOS den Fehler-Beep (kein Textfeld im Fokus).
             let editable = TextInjector.isFocusedElementEditable()
-            await MainActor.run { [weak self] in
-                guard let self else { return }
-                // v4: Kurze Toasts – „Protokolliert" bzw. „Kopiert — ⌘V".
-                self.onToast?(editable ? Copy.toastLogged : Copy.toastCopied, true)
-            }
             if editable {
                 TextInjector.inject(trimmed)
             }
+            // Zwei Poll-Zyklen Sichtbarkeit, auch wenn das Einfügen nur einen
+            // kurzen CGEvent-Chunk benötigt. Der verzögerte Spinner bleibt bei
+            // insgesamt schneller Verarbeitung trotzdem unsichtbar.
+            try? await Task.sleep(nanoseconds: 100_000_000)
             await MainActor.run { [weak self] in
                 self?.phase = .idle
                 self?.partialText = ""
@@ -466,14 +744,54 @@ final class AppState {
         }
     }
 
+    private func finishAbortedSession(_ session: DictationSession) {
+        guard session === currentSession else { return }
+        currentSession = nil
+        resetLevel()
+        partialText = ""
+        phase = .idle
+        recordStart = nil
+    }
+
+    private func isKnownWord(_ word: String, locale: Locale) -> Bool {
+        let polishLocale = PolishLocale(locale: locale)
+        let language: String
+        switch polishLocale {
+        case .de: language = "de"
+        case .en: language = "en"
+        case .other: return true
+        }
+        let key = "\(language):\(word.lowercased())"
+        if let cached = knownWordCache[key] { return cached }
+        let known = spellChecker(word, language)
+        knownWordCache[key] = known
+        return known
+    }
+
     func copy(_ record: TranscriptionRecord) {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(record.correctedText, forType: .string)
     }
 
-    // MARK: Zusatz-Shortcuts (Fn-Doppeltipp)
+    // MARK: Zusatz-Shortcuts
 
-    /// Fn-Doppeltipp – Hands-free: Aufnahme starten bzw. beenden (Togglen).
+    private func copyLast() {
+        guard let record = history.records.first else { return }
+        copy(record)
+    }
+
+    private func insertLast() {
+        guard let record = history.records.first else { return }
+        let text = record.correctedText
+        copy(record)
+        Task.detached(priority: .userInitiated) {
+            if TextInjector.isFocusedElementEditable() {
+                TextInjector.inject(text)
+            }
+        }
+    }
+
+    /// Modifier-Doppeltipp – Hands-free: Aufnahme starten bzw. beenden (Togglen).
     func handsFreeToggle() {
         if phase == .idle {
             startDictation(source: .handsFree)
@@ -501,23 +819,69 @@ final class AppState {
         let raw = audio.latestLevel
         let clamped = min(max(raw, 0), 1)
         displayLevel = clamped > displayLevel ? clamped : max(clamped, displayLevel * 0.88)
+        if levelTraceEnabled {
+            let now = ProcessInfo.processInfo.systemUptime
+            if now - lastLevelTraceUptime >= 1 {
+                lastLevelTraceUptime = now
+                DebugLog.log(String(format: "STASI-LEVEL: raw=%.3f display=%.3f",
+                                    raw, displayLevel))
+            }
+        }
     }
 
     private func resetLevel() {
         displayLevel = 0
     }
 
-    private func startElapsedTimer() {
-        elapsedTimer?.invalidate()
-        // Statisch MainActor-isoliert (Timer auf Main-RunLoop) → kein Task nötig
-        elapsedTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
-            guard let self, let start = self.recordStart else { return }
-            self.elapsed = Date().timeIntervalSince(start)
-        }
+    /// Der bestehende 20-Hz-App-Poll aktualisiert zugleich die Aufnahmedauer;
+    /// dadurch braucht die Pill keinen eigenen Einblende-Timer.
+    func updateElapsedFromPoll(now: Date = Date()) {
+        guard phase == .recording,
+              let start = recordStart else { return }
+        elapsed = max(0, now.timeIntervalSince(start))
     }
 
-    private func stopElapsedTimer() {
-        elapsedTimer?.invalidate()
-        elapsedTimer = nil
+    /// Durchgehende Dauer ab Loslassen über Transkription, Nachbearbeitung
+    /// und Einfügen. Der bestehende Main-Poll liest sie ohne zusätzlichen Timer.
+    func processingElapsed(now: Date = Date()) -> TimeInterval {
+        guard let start = processingStartedAt,
+              phase == .transcribing || phase == .polishing || phase == .injecting else {
+            return 0
+        }
+        return max(0, now.timeIntervalSince(start))
+    }
+}
+
+private final class PermissionCheckMailbox: @unchecked Sendable {
+    struct Result: Sendable {
+        let ax: Bool
+        let listen: Bool
+    }
+
+    private let lock = NSLock()
+    private var checking = false
+    private var pending: Result?
+
+    func begin() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !checking else { return false }
+        checking = true
+        return true
+    }
+
+    func finish(ax: Bool, listen: Bool) {
+        lock.lock()
+        pending = Result(ax: ax, listen: listen)
+        lock.unlock()
+    }
+
+    func consume() -> Result? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let pending else { return nil }
+        self.pending = nil
+        checking = false
+        return pending
     }
 }

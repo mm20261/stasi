@@ -110,9 +110,9 @@
 
 ### 2.6 Einstellungen (max 620 px)
 Sektionen mit Mono-Kickern, je eine Karte:
-1. **AUFNAHME**: Shortcut-Zeilen — Push-to-talk (Badge + „Ändern" → Recorder, erfasst Modifier), Hands-free „fn ×2" (aktiv). Modus-Zeile (Segmented Push-to-talk/Umschalten). Berechtigungs-Zeilen (Eingabe-Überwachung + Bedienungshilfen, „Erteilt ✓" / „Freigeben").
+1. **AUFNAHME**: Shortcut-Zeilen — Push-to-talk (Badge + „Ändern" → Recorder, erfasst Modifier), Hands-free „fn ×2" (aktiv). Modus-Zeile (Segmented Push-to-talk/Umschalten). Berechtigungs-Zeilen (Mikrofon + Bedienungshilfen, „Erteilt ✓" / „Freigeben").
 2. **EINGABE**: Mikrofon (Systemstandard-Hinweis) + Sprache (Automatisch/Deutsch/Englisch).
-3. **VERHALTEN**: Ton-Feedback · KI-Nachbearbeitung (inaktiv) · Autostart · Ironische Texte.
+3. **VERHALTEN**: Ton-Feedback · regelbasierte Nachbearbeitung (AUS/STANDARD) · Autostart · Ironische Texte.
 4. **DARSTELLUNG**: 5 Akzent-Farbkreise (aktive Farbe mit 2-px-Ring).
 5. **SPEICHER**: „Aufnahmen aufbewahren" (Nie/1 Tag/1 Woche/2 Wochen/1 Monat) + „Alles löschen" (Bestätigungsdialog).
 6. **ÜBER**: Version „V 0.9 · AKTE 001", „Auf GitHub prüfen"-Link, Privacy-Fußnote.
@@ -160,7 +160,7 @@ Sektionen mit Mono-Kickern, je eine Karte:
 
 ## 5. Assets
 
-- App-Icon: `Import/design_handoff_stasi/icons/anthrazit/` (PNG 16–1024 + SVG).
+- App-Icon: `import/design_handoff_stasi/icons/anthrazit/` (PNG 16–1024 + SVG).
 - Menubar-Icons: `Sources/Stasi/Resources/Assets/menubar*.png`.
 - Fonts: `Sources/Stasi/Resources/Fonts/Geist.ttf` + `GeistMono.ttf`.
 

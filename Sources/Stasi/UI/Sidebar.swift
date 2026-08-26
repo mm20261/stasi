@@ -13,10 +13,18 @@ final class AppSelection {
     var searchFilter: ProtocolSearchFilter = .all
     /// Inkrement, das ProtocolsView auffordert, das Suchfeld zu fokussieren.
     var searchFocusRequest = UUID()
+    private var searchFocusPending = false
 
     func beginSearchFromBericht() {
+        searchFocusPending = true
         section = .protokolle
         searchFocusRequest = UUID()
+    }
+
+    func consumeSearchFocusRequest() -> Bool {
+        guard searchFocusPending else { return false }
+        searchFocusPending = false
+        return true
     }
 
     enum Section: String, CaseIterable, Identifiable {
@@ -109,6 +117,7 @@ struct SidebarView: View {
         }
         .buttonStyle(.plain)
         .help(collapsed ? "Seitenleiste ausklappen" : "Seitenleiste einklappen")
+        .accessibilityLabel(collapsed ? "Seitenleiste ausklappen" : "Seitenleiste einklappen")
     }
 
     // MARK: Wortmarke

@@ -43,6 +43,12 @@ struct StasiApp: App {
                 }
                 .keyboardShortcut(",")
             }
+            CommandGroup(after: .textEditing) {
+                Button("Protokolle durchsuchen") {
+                    selection.beginSearchFromBericht()
+                }
+                .keyboardShortcut("f", modifiers: .command)
+            }
         }
     }
 }
@@ -68,8 +74,8 @@ final class StatusBarController {
 
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         item.button?.image = Self.icon(forPhase: .idle)
-        rebuildMenu()
         statusItem = item
+        rebuildMenu()
     }
 
     private var lastPhase: AppState.Phase = .idle
@@ -77,10 +83,26 @@ final class StatusBarController {
     /// dem Poll-Timer hatten den Main-Thread zu Boden gerissen.
     private static let iconCache: [AppState.Phase: NSImage] = {
         var cache: [AppState.Phase: NSImage] = [:]
-        for phase in [AppState.Phase.idle, .recording, .transcribing, .injecting] {
-            let name = phase == .recording ? "menubar-recording" : "menubar"
-            if let url = Bundle.module.url(forResource: name, withExtension: "png"),
-               let image = NSImage(contentsOf: url) {
+        for phase in [AppState.Phase.idle, .recording, .transcribing, .polishing, .injecting] {
+            let image: NSImage?
+            switch phase {
+            case .idle:
+                image = Bundle.module.url(forResource: "menubar", withExtension: "png")
+                    .flatMap(NSImage.init(contentsOf:))
+            case .recording:
+                image = Bundle.module.url(forResource: "menubar-recording", withExtension: "png")
+                    .flatMap(NSImage.init(contentsOf:))
+            case .transcribing:
+                image = NSImage(systemSymbolName: "ellipsis",
+                                accessibilityDescription: "Transkription")
+            case .polishing:
+                image = NSImage(systemSymbolName: "sparkles",
+                                accessibilityDescription: "Nachbearbeitung")
+            case .injecting:
+                image = NSImage(systemSymbolName: "text.insert",
+                                accessibilityDescription: "Text einfügen")
+            }
+            if let image {
                 image.isTemplate = phase != .recording
                 image.size = NSSize(width: 18, height: 18)
                 cache[phase] = image
@@ -150,6 +172,9 @@ final class StatusBarController {
 
     @objc private func changeLanguage(_ sender: NSMenuItem) {
         settings?.language = sender.representedObject as? String ?? "auto"
+        if let locale = settings?.transcriptionLocale {
+            app?.enqueue(.prepareModel(locale))
+        }
         syncLanguageChecks()
     }
 
@@ -180,6 +205,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let statusBar = StatusBarController()
     private weak var settingsRef: SettingsStore?
     private weak var selectionRef: AppSelection?
+    private var pollTickCount = 0
+    private var lastPollFire = Date()
+    private var pollTimer: Timer?
 
     func wireUp(app: AppState, settings: SettingsStore, selection: AppSelection) {
         guard self.app == nil else { return } // nur beim ersten Erscheinen verdrahten
@@ -188,6 +216,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         self.selectionRef = selection
 
         app.startCommandLoop()
+        Task { await app.prepareModel(for: settings.transcriptionLocale) }
         app.onToast = { message, success in
             PillController.shared.showToast(message, success: success)
         }
@@ -199,43 +228,56 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Sync: Statusbar-Icon/-Status und Pill folgen Phase/Level/Timer.
     private func poll() {
-        // Timer-Block erbt MainActor-Isolation statisch → direkter Aufruf,
-        // KEIN Task { @MainActor } (Task-Churn aus GCD-Kontext korruptiert
-        // unter macOS 26.6 die Executor-Metadaten → SwiftUI-Crashes).
-        var tickCount = 0
-        var lastFire = Date()
-        Timer.scheduledTimer(withTimeInterval: 1 / 20, repeats: true) { [weak self] _ in
-            // Stall-Watchdog: main thread hängt? → logarithmisch sichtbar machen
-            let now = Date()
-            let gap = now.timeIntervalSince(lastFire)
-            lastFire = now
-            if gap > 1.0 {
-                NSLog("STASI-WATCH: Main-Thread-Stall %.2fs", gap)
-            }
+        let timer = Timer(timeInterval: 1 / 20,
+                          target: self,
+                          selector: #selector(pollTimerFired(_:)),
+                          userInfo: nil,
+                          repeats: true)
+        pollTimer = timer
+        RunLoop.main.add(timer, forMode: .common)
+    }
 
-            guard let self, let app = self.app else { return }
-            tickCount += 1
-            app.ingestLevelFromPoll()
-            statusBar.refresh()
-            PillController.shared.sync(
-                phase: app.phase,
-                partialText: app.partialText,
-                elapsed: app.elapsed,
-                level: app.displayLevel,
-                source: app.recordingSource
-            )
-            if tickCount % 20 == 0, app.accessibilityGranted {
-                // NUR mit Eingabe-Überwachungs-Recht reaktivieren: einen von
-                // TCC deaktivierten Tap wieder einzuschalten kostet den
-                // Prozess sämtliche Maus-Events (Klick-Blackhole).
-                app.hotkey?.ensureEnabled()
-            }
-            if tickCount % 40 == 0 {
-                app.refreshPermissionStateAsync() // alle 2 s, TCC-XPC im Hintergrund
-            }
-            if tickCount % 1200 == 0 {
-                app.applyRetention() // Retention alle ~60 s prüfen
-            }
+    /// ObjC-Target-Dispatch auf dem Main-RunLoop: kein Swift-Executor-Check.
+    @objc private func pollTimerFired(_ timer: Timer) {
+        pollTick()
+    }
+
+    private func pollTick() {
+        // Stall-Watchdog: main thread hängt? → logarithmisch sichtbar machen
+        let now = Date()
+        let gap = now.timeIntervalSince(lastPollFire)
+        lastPollFire = now
+        if gap > 1.0 {
+            NSLog("STASI-WATCH: Main-Thread-Stall %.2fs", gap)
+        }
+
+        guard let app else { return }
+        pollTickCount += 1
+        app.applyPendingPermissionStateFromPoll()
+        app.checkPhaseWatchdog(now: now)
+        app.updateElapsedFromPoll(now: now)
+        app.ingestLevelFromPoll()
+        statusBar.refresh()
+        PillController.shared.sync(
+            phase: app.phase,
+            partialText: app.partialText,
+            elapsed: app.elapsed,
+            processingElapsed: app.processingElapsed(now: now),
+            level: app.displayLevel,
+            source: app.recordingSource,
+            modelReady: app.currentSessionModelReady
+        )
+        if pollTickCount % 20 == 0, app.accessibilityGranted {
+            // NUR mit Bedienungshilfen-Recht und ausschließlich hier
+            // gezählt reaktivieren – nie direkt aus dem Tap-Callback.
+            app.hotkey?.ensureEnabled()
+        }
+        if pollTickCount % 40 == 0 {
+            // Alle 2 s: TCC-Preflights bleiben sicher unter dem 1-Hz-Limit.
+            app.refreshPermissionStateAsync()
+        }
+        if pollTickCount % 1200 == 0 {
+            app.applyRetention() // Retention alle ~60 s prüfen
         }
     }
 

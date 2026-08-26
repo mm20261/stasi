@@ -16,9 +16,11 @@ struct ProtocolsView: View {
     @State private var expandedIds: Set<UUID> = []
     @State private var playingId: UUID?
     @State private var copiedId: UUID?
+    @State private var rawTextRecord: TranscriptionRecord?
     @FocusState private var searchFocused: Bool
+    @FocusState private var focusedRecordID: UUID?
 
-    private var player = AudioPlayerHelper()
+    @State private var player = AudioPlayerHelper()
     private var calendar: Calendar { .current }
 
     // MARK: Gefilterte Daten
@@ -53,11 +55,14 @@ struct ProtocolsView: View {
             .frame(maxWidth: 1080 + 2 * Theme.Metrics.contentPaddingH, alignment: .leading)
         }
         .frame(maxWidth: .infinity, alignment: .center)
-        .overlay(alignment: .topTrailing) { searchShortcutButton.hidden() }
+        .onAppear { focusSearchIfRequested() }
         .onChange(of: selection.searchFocusRequest) { _, _ in
-            searchFocused = true
+            focusSearchIfRequested()
         }
         .onAppear { app.refreshPermissionState() }
+        .sheet(item: $rawTextRecord) { record in
+            RawTranscriptView(record: record, onCopy: { copyRawText(record) })
+        }
     }
 
     // MARK: Topbar (Suche)
@@ -108,10 +113,9 @@ struct ProtocolsView: View {
         )
     }
 
-    /// Unsichtbarer Button, der nur den ⌘F-Shortcut trägt.
-    private var searchShortcutButton: some View {
-        Button { searchFocused = true } label: { EmptyView() }
-            .keyboardShortcut("f", modifiers: .command)
+    private func focusSearchIfRequested() {
+        guard selection.consumeSearchFocusRequest() else { return }
+        searchFocused = true
     }
 
     private var filterChips: some View {
@@ -138,6 +142,7 @@ struct ProtocolsView: View {
                         )
                 }
                 .buttonStyle(.plain)
+                .accessibilityAddTraits(active ? .isSelected : [])
             }
         }
     }
@@ -147,7 +152,7 @@ struct ProtocolsView: View {
     private var header: some View {
         HStack(alignment: .top) {
             VStack(alignment: .leading, spacing: 5) {
-                Text("PROTOKOLLE · BESTAND \(Copy.formatGermanNumber(app.history.records.count))")
+                Text("PROTOKOLLE · \(Copy.formatGermanNumber(app.history.records.count))")
                     .kicker(Theme.Palette.text3)
                 Text("Protokolle")
                     .font(Theme.Typo.h1())
@@ -186,9 +191,16 @@ struct ProtocolsView: View {
                 Text("Keine Treffer")
                     .font(Theme.Typo.body().weight(.medium))
                     .foregroundColor(Theme.Palette.ink)
-                Text("Nichts im Bestand gefunden.")
+                Text("Keine passenden Protokolle gefunden.")
                     .font(Theme.Typo.secondary())
                     .foregroundColor(Theme.Palette.text2)
+                Button(Copy.resetProtocolSearch) {
+                    selection.searchQuery = ""
+                    selection.searchFilter = .all
+                    searchFocused = true
+                }
+                .buttonStyle(GhostButtonStyle())
+                .padding(.top, 8)
             }
             .frame(maxWidth: .infinity)
             .secondaryCard()
@@ -261,13 +273,28 @@ struct ProtocolsView: View {
                     .lineLimit(isExpanded ? nil : 3)
                     .multilineTextAlignment(.leading)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .contentShape(Rectangle())
-                    .onTapGesture { toggleExpand(record.id) }
 
                 metaRow(for: record)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .layoutPriority(1) // v4: minmax(0,1fr) – Text darf schrumpfen, Ellipsis
+            .contentShape(Rectangle())
+            .onTapGesture { toggleExpand(record.id) }
+            .focusable()
+            .focused($focusedRecordID, equals: record.id)
+            .overlay(
+                RoundedRectangle(cornerRadius: Theme.Metrics.radiusControl)
+                    .strokeBorder(focusedRecordID == record.id ? Theme.accent : Color.clear,
+                                  lineWidth: 2)
+            )
+            .onKeyPress(.return) {
+                toggleExpand(record.id)
+                return .handled
+            }
+            .onKeyPress(.space) {
+                toggleExpand(record.id)
+                return .handled
+            }
 
             // Icon-Buttons
             HStack(spacing: 4) {
@@ -296,6 +323,10 @@ struct ProtocolsView: View {
                     .font(Theme.Typo.kicker(size: 9.5))
                     .tracking(0.6)
                     .foregroundColor(Theme.Palette.archivgruen)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: 150)
                     .padding(.horizontal, 7)
                     .padding(.vertical, 2.5)
                     .background(RoundedRectangle(cornerRadius: 3).fill(Theme.Palette.chip))
@@ -315,10 +346,14 @@ struct ProtocolsView: View {
                     .background(RoundedRectangle(cornerRadius: 3)
                         .strokeBorder(Theme.Palette.linieSidebar, lineWidth: Theme.Metrics.hairline))
             }
+            PolishBadge(record: record)
         }
         .font(Theme.Typo.counter(10))
         .monospacedDigit()
         .foregroundColor(Theme.Palette.text3)
+        .lineLimit(1)
+        .truncationMode(.tail)
+        .fixedSize(horizontal: false, vertical: true)
     }
 
     private func wordsPerMinute(_ record: TranscriptionRecord) -> Int? {
@@ -328,6 +363,9 @@ struct ProtocolsView: View {
 
     private func rowMenu(for record: TranscriptionRecord) -> some View {
         Menu {
+            Button("Rohtext anzeigen") { rawTextRecord = record }
+            Button("Rohtext kopieren") { copyRawText(record) }
+            Divider()
             Button("Audio extrahieren (.wav)") { extractAudio(record) }
             Button("Export als .txt") { export(record, asMarkdown: false) }
             Button("Export als .md") { export(record, asMarkdown: true) }
@@ -349,6 +387,7 @@ struct ProtocolsView: View {
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
         .frame(width: 27, height: 27)
+        .accessibilityLabel("Weitere Aktionen für Protokoll")
     }
 
     private func iconButton(_ symbol: String, active: Bool = false,
@@ -362,6 +401,17 @@ struct ProtocolsView: View {
         }
         .buttonStyle(.plain)
         .scaleOnHover()
+        .accessibilityLabel(accessibilityLabel(for: symbol))
+    }
+
+    private func accessibilityLabel(for symbol: String) -> String {
+        switch symbol {
+        case "play.fill": "Audio abspielen"
+        case "stop.fill": "Audio stoppen"
+        case "doc.on.doc": "Protokoll kopieren"
+        case "checkmark": "Protokoll kopiert"
+        default: symbol
+        }
     }
 
     // MARK: Aktionen
@@ -376,6 +426,11 @@ struct ProtocolsView: View {
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.6) {
             if copiedId == record.id { copiedId = nil }
         }
+    }
+
+    private func copyRawText(_ record: TranscriptionRecord) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(record.rawText, forType: .string)
     }
 
     private func togglePlay(_ record: TranscriptionRecord) {
@@ -420,6 +475,35 @@ struct ProtocolsView: View {
         if panel.runModal() == .OK, let url = panel.url {
             try? FileManager.default.copyItem(atPath: path, toPath: url.path)
         }
+    }
+}
+
+struct RawTranscriptView: View {
+    let record: TranscriptionRecord
+    let onCopy: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Rohtext")
+                .font(Theme.Typo.sectionTitle())
+                .foregroundColor(Theme.Palette.ink)
+            ScrollView {
+                Text(record.rawText)
+                    .font(Theme.Typo.body())
+                    .foregroundColor(Theme.Palette.ink)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .frame(minHeight: 180)
+            HStack {
+                Spacer()
+                Button("Rohtext kopieren", action: onCopy)
+                    .buttonStyle(AccentButtonStyle())
+            }
+        }
+        .padding(24)
+        .frame(width: 520, height: 320)
+        .background(Theme.Palette.surface)
     }
 }
 

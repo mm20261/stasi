@@ -2,10 +2,26 @@ import Foundation
 import CoreGraphics
 
 enum VirtualKey {
+    /// Hands-free darf nur Modifier verwenden: Ein Doppeltipp schreibt dann
+    /// kein normales Zeichen in die gerade fokussierte App.
+    nonisolated static let handsFreeModifierKeyCodes: [UInt64] = [
+        63, 55, 54, 58, 61, 59, 62, 56, 60,
+    ]
+
+    nonisolated static func isHandsFreeModifier(_ code: UInt64) -> Bool {
+        handsFreeModifierKeyCodes.contains(code)
+    }
+
     static func name(for code: Int) -> String {
         switch code {
         case 54: return "Rechte ⌘ halten"
         case 55: return "Linke ⌘ halten"
+        case 56: return "Linke ⇧ halten"
+        case 60: return "Rechte ⇧ halten"
+        case 58: return "Linke ⌥ halten"
+        case 61: return "Rechte ⌥ halten"
+        case 59: return "Linke ⌃ halten"
+        case 62: return "Rechte ⌃ halten"
         case 63: return "Fn halten"
         case 49: return "Space halten"
         default:
@@ -35,7 +51,8 @@ enum VirtualKey {
         case 60: return "⇧ Rechts"
         case 58: return "⌥ Links"
         case 61: return "⌥ Rechts"
-        case 59: return "⌃"
+        case 59: return "⌃ Links"
+        case 62: return "⌃ Rechts"
         case 63: return "fn"
         case 57: return "⇪"
         case 49: return "Leertaste"

@@ -4,11 +4,11 @@ import ApplicationServices
 import CoreGraphics
 
 // MARK: - Permissions
-// Drei getrennte Berechtigungen:
+// Zwei Berechtigungen tragen den Produktionspfad:
 //   · Mikrofon            – Aufnahme
-//   · Bedienungshilfen    – AXIsProcessTrusted (Text-Einfügen, PostEvent)
-//   · Eingabe-Überwachung – CGEventTap listen-only (GlobalHotkey, ListenEvent)!
-//     Ohne sie wird der Tap angelegt, aber ES KOMMEN KEINE EVENTS an.
+//   · Bedienungshilfen    – Session-Tap und Text-Einfügen
+// Der ListenEvent-Preflight bleibt nur als Bestands-/Diagnoseanzeige; der
+// Session-Tap wird ausschließlich über Bedienungshilfen gegatet.
 
 enum Permissions {
     static var microphoneGranted: Bool {
@@ -28,24 +28,14 @@ enum Permissions {
         _ = AXIsProcessTrustedWithOptions(options)
     }
 
-    /// Eingabe-Überwachung (für den globalen Hotkey-Tap) – der entscheidende,
-    /// oft übersehene zweite Schalter.
+    /// Bestands-/Diagnosewert; der Session-Tap hängt nicht davon ab.
     static var listenEventGranted: Bool {
         CGPreflightListenEventAccess()
-    }
-
-    /// Fordert Eingabe-Überwachung an (löst beim Fehlen den Systemdialog aus).
-    static func requestListenEvent() {
-        CGRequestListenEventAccess()
     }
 
     static func openSystemSettings(_ path: String) {
         if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?\(path)") {
             NSWorkspace.shared.open(url)
         }
-    }
-
-    static func openInputMonitoring() {
-        openSystemSettings("Privacy_ListenEvent")
     }
 }

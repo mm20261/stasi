@@ -1,12 +1,47 @@
 import AppKit
 import CoreGraphics
 
+// MARK: - Tap-Reaktivierungsrichtlinie
+
+/// Reine Zähl-/Aufgabe-Logik. Der Aufrufer injiziert die Abfrage des echten
+/// Tap-Zustands; nur `HotkeyEngine.ensureEnabled()` führt die Reaktivierung aus.
+struct HotkeyReenablePolicy {
+    enum Action: Equatable {
+        case none
+        case reenable(attempt: Int)
+        case giveUp
+    }
+
+    let maxReenableAttempts: Int
+    private(set) var reenableCount = 0
+    private(set) var gaveUp = false
+
+    init(maxReenableAttempts: Int = 3) {
+        self.maxReenableAttempts = maxReenableAttempts
+    }
+
+    mutating func evaluate(isTapEnabled: () -> Bool) -> Action {
+        guard !gaveUp else { return .none }
+        guard !isTapEnabled() else {
+            reenableCount = 0
+            return .none
+        }
+
+        reenableCount += 1
+        guard reenableCount <= maxReenableAttempts else {
+            gaveUp = true
+            return .giveUp
+        }
+        return .reenable(attempt: reenableCount)
+    }
+}
+
 // MARK: - HotkeyEngine
 // Globaler Push-to-Talk-Hotkey via CGEventTap (listen-only).
 // Standard: Rechte Command-Taste HALTEN = aufnehmen, loslassen = stoppen.
 
 final class HotkeyEngine: @unchecked Sendable {
-    struct Combo: Codable, Equatable {
+    struct Combo: Codable, Equatable, Sendable {
         var keyCode: UInt64      // CGEvent-KeyCode
         var flags: UInt64        // erforderliche Modifier-Maske (CGEventFlags.rawValue)
 
@@ -17,18 +52,28 @@ final class HotkeyEngine: @unchecked Sendable {
     var onRelease: (() -> Void)?
     var onChord: ((Combo) -> Void)?
     var onHandsFree: (() -> Void)?
+    var onTapStopped: (() -> Void)?
 
     private let combo: Combo
     private var tap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
     private(set) var isDown = false
-    private var shortcut = ShortcutDetector()
+    private(set) var isOperational = false
+    private var tapWasDisabled = false
+    private var shortcut: ShortcutDetector
+    private var reenablePolicy: HotkeyReenablePolicy
 
-    init(combo: Combo, chords: [Combo] = [], handsFreeEnabled: Bool = false) {
+    init(combo: Combo, chords: [Combo] = [], handsFreeEnabled: Bool = false,
+         handsFreeKeyCode: UInt64 = ShortcutDetector.fnKeyCode,
+         reenablePolicy: HotkeyReenablePolicy = HotkeyReenablePolicy()) {
         self.combo = combo
+        self.reenablePolicy = reenablePolicy
+        self.shortcut = ShortcutDetector(handsFreeKeyCode: handsFreeKeyCode)
         self.shortcut.chords = chords
         self.shortcut.handsFreeEnabled = handsFreeEnabled
     }
+
+    var gaveUp: Bool { reenablePolicy.gaveUp }
 
     @discardableResult
     func start() -> Bool {
@@ -43,7 +88,8 @@ final class HotkeyEngine: @unchecked Sendable {
         // · .cgSessionEventTap + .defaultTap braucht NUR Bedienungshilfen,
         //   nicht die zickige Eingabe-Überwachung (deren Grant nach jedem
         //   Re-Sign kaputt war und deren Tauziehen Maus-Events schluckte).
-        // · tapDisabled-Events werden direkt im Callback re-armed.
+        // · tapDisabled-Events markieren nur den Zustand. Reaktivierung
+        //   passiert ausschließlich gezählt in ensureEnabled().
         // Events werden IMMER unverändert durchgereicht (kein Konsumieren).
         guard let port = CGEvent.tapCreate(
             tap: .cgSessionEventTap,
@@ -54,10 +100,9 @@ final class HotkeyEngine: @unchecked Sendable {
                 guard let refcon else { return Unmanaged.passUnretained(event) }
                 let engine = Unmanaged<HotkeyEngine>.fromOpaque(refcon).takeUnretainedValue()
                 if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
-                    if let tap = engine.tap {
-                        NSLog("STASI-HK: Tap deaktiviert (%d) – re-arm im Callback", type.rawValue)
-                        CGEvent.tapEnable(tap: tap, enable: true)
-                    }
+                    engine.tapWasDisabled = true
+                    engine.isOperational = false
+                    NSLog("STASI-HK: Tap deaktiviert (%d) – Reaktivierung nur im Poll", type.rawValue)
                     return Unmanaged.passUnretained(event)
                 }
                 engine.handle(type: type, event: event)
@@ -74,6 +119,8 @@ final class HotkeyEngine: @unchecked Sendable {
         CGEvent.tapEnable(tap: port, enable: true)
         tap = port
         runLoopSource = source
+        isOperational = CGEvent.tapIsEnabled(tap: port)
+        tapWasDisabled = !isOperational
 
         // KEIN NSEvent-Global-Monitor mehr: Der braucht Eingabe-Überwachung
         // (die wir nicht mehr anfordern) – ein unberechtigter Keyboard-Monitor
@@ -84,40 +131,40 @@ final class HotkeyEngine: @unchecked Sendable {
         return true
     }
 
-    private var reenableCount = 0
-    /// System deaktiviert den Tap wiederholt (TCC greift erst nach Neustart) –
-    /// dann NICHT weiterkämpfen, sonst entzieht macOS dem Prozess alle Maus-Events.
-    private(set) var gaveUp = false
-
     /// Reaktiviert den Tap, falls macOS ihn wegen Timeout deaktiviert hat.
     /// Nach 3 Deaktivierungen: aufgeben und Tap stoppen (App-Neustart nötig).
     func ensureEnabled() {
-        guard let tap, !gaveUp else { return }
-        if !CGEvent.tapIsEnabled(tap: tap) {
-            reenableCount += 1
-            if reenableCount > 3 {
-                DebugLog.log("STASI-HK: Tap wird wiederholt vom System deaktiviert – gebe auf. App-Neustart nötig, damit die Freigabe greift.")
-                gaveUp = true
-                stop()
-                return
-            }
-            DebugLog.log("STASI-HK: Tap war deaktiviert – reaktiviere (\(reenableCount)/3)")
+        guard let tap, !reenablePolicy.gaveUp else { return }
+        switch reenablePolicy.evaluate(isTapEnabled: { CGEvent.tapIsEnabled(tap: tap) }) {
+        case .none:
+            isOperational = true
+            tapWasDisabled = false
+        case .reenable(let attempt):
+            DebugLog.log("STASI-HK: Tap war deaktiviert – reaktiviere (\(attempt)/\(reenablePolicy.maxReenableAttempts))")
             CGEvent.tapEnable(tap: tap, enable: true)
-        } else {
-            reenableCount = 0
+            isOperational = CGEvent.tapIsEnabled(tap: tap)
+            tapWasDisabled = !isOperational
+        case .giveUp:
+            DebugLog.log("STASI-HK: Tap wird wiederholt vom System deaktiviert – gebe auf. App-Neustart nötig, damit die Freigabe greift.")
+            isOperational = false
+            tapWasDisabled = true
+            stop()
+            onTapStopped?()
         }
     }
 
     func stop() {
         if let tap {
             CGEvent.tapEnable(tap: tap, enable: false)
-            if let runLoopSource {
-                CFRunLoopRemoveSource(CFRunLoopGetMain(), runLoopSource, .commonModes)
-            }
+            CFMachPortInvalidate(tap)
+        }
+        if let runLoopSource {
+            CFRunLoopRemoveSource(CFRunLoopGetMain(), runLoopSource, .commonModes)
         }
         tap = nil
         runLoopSource = nil
         isDown = false
+        isOperational = false
     }
 
     deinit { stop() }
@@ -150,7 +197,7 @@ final class HotkeyEngine: @unchecked Sendable {
             break
         }
 
-        // Zusatz-Shortcuts (Fn-Doppeltipp)
+        // Zusatz-Shortcuts (konfigurierter Modifier-Doppeltipp)
         let kind: ShortcutDetector.Kind
         switch type {
         case .keyDown: kind = .keyDown
@@ -174,7 +221,7 @@ final class HotkeyEngine: @unchecked Sendable {
         case 54, 55: return .maskCommand
         case 56, 60: return .maskShift
         case 58, 61: return .maskAlternate
-        case 59: return .maskControl
+        case 59, 62: return .maskControl
         case 63: return .maskSecondaryFn
         case 57: return .maskAlphaShift
         default: return nil
@@ -192,7 +239,7 @@ final class HotkeyEngine: @unchecked Sendable {
 
 // MARK: - ShortcutDetector
 // Reiner, zustandsbehafteter Detektor für Zusatz-Shortcuts: Chord-Aktionen
-// und Fn-Doppeltipp (Hands-free). Kein CGEvent nötig → testbar.
+// und konfigurierter Modifier-Doppeltipp (Hands-free). Kein CGEvent nötig → testbar.
 
 struct ShortcutDetector {
     enum Kind: Equatable {
@@ -209,10 +256,20 @@ struct ShortcutDetector {
 
     var chords: [HotkeyEngine.Combo] = []
     var handsFreeEnabled = false
+    var handsFreeKeyCode: UInt64
     var doubleTapWindow: TimeInterval = 0.35
 
-    private var fnWasDown = false
-    private var lastFnDownAt: Date?
+    private var modifierWasDown = false
+    private var lastModifierDownAt: Date?
+
+    init(chords: [HotkeyEngine.Combo] = [], handsFreeEnabled: Bool = false,
+         handsFreeKeyCode: UInt64 = Self.fnKeyCode,
+         doubleTapWindow: TimeInterval = 0.35) {
+        self.chords = chords
+        self.handsFreeEnabled = handsFreeEnabled
+        self.handsFreeKeyCode = handsFreeKeyCode
+        self.doubleTapWindow = doubleTapWindow
+    }
 
     mutating func process(kind: Kind, keyCode: UInt64, flags: UInt64,
                           isRepeat: Bool = false, now: Date = Date()) -> [Event] {
@@ -225,19 +282,32 @@ struct ShortcutDetector {
             }
         }
 
-        if handsFreeEnabled, kind == .flagsChanged, keyCode == Self.fnKeyCode {
-            let down = (flags & Self.secondaryFn) != 0
-            if down && !fnWasDown {
-                if let last = lastFnDownAt, now.timeIntervalSince(last) <= doubleTapWindow {
+        if handsFreeEnabled, kind == .flagsChanged, keyCode == handsFreeKeyCode,
+           let modifierMask = Self.modifierMask(for: handsFreeKeyCode) {
+            let down = (flags & modifierMask) != 0
+            if down && !modifierWasDown {
+                if let last = lastModifierDownAt,
+                   now.timeIntervalSince(last) <= doubleTapWindow {
                     events.append(.handsFreeTap)
-                    lastFnDownAt = nil
+                    lastModifierDownAt = nil
                 } else {
-                    lastFnDownAt = now
+                    lastModifierDownAt = now
                 }
             }
-            fnWasDown = down
+            modifierWasDown = down
         }
 
         return events
+    }
+
+    private static func modifierMask(for keyCode: UInt64) -> UInt64? {
+        switch keyCode {
+        case 54, 55: CGEventFlags.maskCommand.rawValue
+        case 56, 60: CGEventFlags.maskShift.rawValue
+        case 58, 61: CGEventFlags.maskAlternate.rawValue
+        case 59, 62: CGEventFlags.maskControl.rawValue
+        case 63: secondaryFn
+        default: nil
+        }
     }
 }

@@ -1,18 +1,10 @@
 import AppKit
-import SwiftUI
 
-// MARK: - Aufnahme-Pill (v2 Mini-Pill, unten mittig, 26px hoch)
-// ✕ · roter Pulsdot · 14 Pegelbalken · Timer · ✓
+// MARK: - Aufnahme-Pill (AppKit, unten mittig)
+// ✕ · roter Pulsdot · 14 Pegelbalken · Timer/Modellstatus · ✓
+// Bei Live-Text wächst sie auf 320 px und zeigt die letzten zwei Zeilen.
 // Bewusst KOMPLETT in AppKit: SwiftUI-Interaktion in manuell verwalteten
 // NSPanels crasht unter macOS 26.6 (Button-Gesture/Executor-Bug).
-
-// MARK: - Modell (einfache Felder, vom Controller gesetzt)
-
-@MainActor
-final class PillModel {
-    var level: Double = 0
-    var secs: TimeInterval = 0
-}
 
 // MARK: - Panel
 
@@ -58,49 +50,102 @@ final class PillPanel: NSPanel {
 @MainActor
 final class PillController {
     static let shared = PillController()
-    let model = PillModel()
     var app: AppState?
     private var pillPanel: PillPanel?
     private var pillView: RecordingPillView?
     private var toastPanel: PillPanel?
     private var toastTimer: Timer?
+    private var spinnerPanel: PillPanel?
+    private var spinnerView: SpinnerViewNS?
 
     private var lastPhase: AppState.Phase = .idle
     private var lastSource: RecordingSource = .pushToTalk
+    private var lastHadPartialText = false
+    private var lastModelReady = true
+    private var recordingPillVisible = false
+    private var spinnerVisible = false
 
     func sync(phase: AppState.Phase, partialText: String, elapsed: TimeInterval,
-              level: Double, source: RecordingSource) {
+              processingElapsed: TimeInterval, level: Double,
+              source: RecordingSource, modelReady: Bool) {
         guard let app else { return }
         let entered = phase == .recording && lastPhase != .recording
         let exited = phase != .recording && lastPhase == .recording
         let sourceChanged = phase == .recording && lastSource != source
+        let hasPartialText = !partialText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let layoutChanged = hasPartialText != lastHadPartialText || modelReady != lastModelReady
         lastPhase = phase
         lastSource = source
+        lastHadPartialText = hasPartialText
+        lastModelReady = modelReady
+
+        if PillChrome.shouldShowSpinner(
+            phase: phase,
+            processingElapsed: processingElapsed
+        ) {
+            showSpinner()
+        } else {
+            hideSpinner()
+        }
+
         switch phase {
         case .recording:
+            guard PillChrome.shouldShowRecording(source: source, elapsed: elapsed) else {
+                return
+            }
             let view = ensurePill(app: app)
-            model.level = level
-            model.secs = elapsed
             view.applyChrome(for: source)
-            view.update(level: level, secs: elapsed)
-            if entered || sourceChanged {
-                if entered {
+            view.update(level: level, secs: elapsed,
+                        partialText: partialText, modelReady: modelReady)
+            let newlyVisible = !recordingPillVisible
+            if newlyVisible || entered || sourceChanged || layoutChanged {
+                if newlyVisible {
+                    recordingPillVisible = true
+                    view.resetWaveform()
                     pillPanel?.positionBottomCenter()
                     startAnimation()
                 }
-                pillPanel?.resize(to: NSSize(width: PillChrome.pillWidth(for: source),
-                                             height: 26))
+                pillPanel?.resize(to: NSSize(
+                    width: PillChrome.pillWidth(for: source,
+                                                hasPartialText: hasPartialText,
+                                                modelReady: modelReady),
+                    height: PillChrome.pillHeight(hasPartialText: hasPartialText)
+                ))
                 pillPanel?.orderFront(nil)
             }
         default:
-            if exited {
+            if exited || recordingPillVisible {
                 pillPanel?.orderOut(nil)
                 stopAnimation()
+                recordingPillVisible = false
             }
         }
     }
 
-    /// Toast-Pill nach Abschluss/Verwerfen (v3: 36 px hoch)
+    private func showSpinner() {
+        guard !spinnerVisible else { return }
+        let view: SpinnerViewNS
+        if let spinnerView {
+            view = spinnerView
+        } else {
+            view = SpinnerViewNS()
+            spinnerView = view
+            spinnerPanel = PillPanel(content: view, size: NSSize(width: 36, height: 36))
+        }
+        spinnerVisible = true
+        view.startAnimating()
+        spinnerPanel?.positionBottomCenter()
+        spinnerPanel?.orderFront(nil)
+    }
+
+    private func hideSpinner() {
+        guard spinnerVisible else { return }
+        spinnerVisible = false
+        spinnerView?.stopAnimating()
+        spinnerPanel?.orderOut(nil)
+    }
+
+    /// Fehler-/Warn-Toast (v3: 36 px hoch)
     func showToast(_ message: String, success: Bool) {
         let view = ToastViewNS(text: message, success: success)
         if toastPanel == nil {
@@ -113,9 +158,18 @@ final class PillController {
         toastPanel?.orderFront(nil)
 
         toastTimer?.invalidate()
-        toastTimer = Timer.scheduledTimer(withTimeInterval: 2.6, repeats: false) { [weak self] _ in
-            self?.toastPanel?.orderOut(nil)
-        }
+        let timer = Timer(timeInterval: 2.6,
+                          target: self,
+                          selector: #selector(toastTimerFired(_:)),
+                          userInfo: nil,
+                          repeats: false)
+        toastTimer = timer
+        RunLoop.main.add(timer, forMode: .common)
+    }
+
+    @objc private func toastTimerFired(_ timer: Timer) {
+        toastPanel?.orderOut(nil)
+        if toastTimer === timer { toastTimer = nil }
     }
 
     // MARK: Intern
@@ -127,8 +181,7 @@ final class PillController {
             onCommit: { [weak app] in app?.enqueue(.commit) }
         )
         pillView = view
-        pillPanel = PillPanel(content: view, size: NSSize(width: 160, height: 26))
-        startAnimation()
+        pillPanel = PillPanel(content: view, size: NSSize(width: 140, height: 24))
         return view
     }
 
@@ -136,9 +189,17 @@ final class PillController {
 
     private func startAnimation() {
         guard animationTimer == nil else { return }
-        animationTimer = Timer.scheduledTimer(withTimeInterval: 1 / 30, repeats: true) { [weak self] _ in
-            self?.pillView?.tick()
-        }
+        let timer = Timer(timeInterval: 1 / 30,
+                          target: self,
+                          selector: #selector(animationTimerFired(_:)),
+                          userInfo: nil,
+                          repeats: true)
+        animationTimer = timer
+        RunLoop.main.add(timer, forMode: .common)
+    }
+
+    @objc private func animationTimerFired(_ timer: Timer) {
+        pillView?.tick()
     }
 
     private func stopAnimation() {
@@ -158,13 +219,17 @@ final class RecordingPillView: NSView {
     private let commitButton = PillCircleButton(symbol: "checkmark", dark: true)
     private let dotView = NSView()
     private let timerLabel = NSTextField(labelWithString: "0:00")
-    private var bars: [BarView] = []
+    private let transcriptLabel = NSTextField(labelWithString: "")
+    private let waveformView = PillWaveformView()
+    private var widthConstraint: NSLayoutConstraint!
+    private var heightConstraint: NSLayoutConstraint!
+    private let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
 
     private var t: Double = 0
     private var currentLevel: Double = 0
 
     init(onDiscard: @escaping () -> Void, onCommit: @escaping () -> Void) {
-        super.init(frame: NSRect(x: 0, y: 0, width: 160, height: 26))
+        super.init(frame: NSRect(x: 0, y: 0, width: 140, height: 24))
         self.onDiscard = onDiscard
         self.onCommit = onCommit
 
@@ -173,8 +238,10 @@ final class RecordingPillView: NSView {
 
         discardButton.target = self
         discardButton.action = #selector(discardTapped)
+        discardButton.setAccessibilityLabel("Aufnahme verwerfen")
         commitButton.target = self
         commitButton.action = #selector(commitTapped)
+        commitButton.setAccessibilityLabel("Aufnahme abschließen")
 
         // Roter Pulsdot
         dotView.wantsLayer = true
@@ -185,13 +252,15 @@ final class RecordingPillView: NSView {
             dotView.widthAnchor.constraint(equalToConstant: 5),
             dotView.heightAnchor.constraint(equalToConstant: 5),
         ])
-        let pulse = CABasicAnimation(keyPath: "opacity")
-        pulse.fromValue = 1.0
-        pulse.toValue = 0.35
-        pulse.duration = 1.1
-        pulse.autoreverses = true
-        pulse.repeatCount = .infinity
-        dotView.layer?.add(pulse, forKey: "pulse")
+        if !reduceMotion {
+            let pulse = CABasicAnimation(keyPath: "opacity")
+            pulse.fromValue = 1.0
+            pulse.toValue = 0.35
+            pulse.duration = 1.1
+            pulse.autoreverses = true
+            pulse.repeatCount = .infinity
+            dotView.layer?.add(pulse, forKey: "pulse")
+        }
 
         // Timer
         timerLabel.font = NSFont(name: "Geist Mono", size: 9) ?? .monospacedDigitSystemFont(ofSize: 9, weight: .regular)
@@ -200,47 +269,60 @@ final class RecordingPillView: NSView {
         timerLabel.drawsBackground = false
         timerLabel.alignment = .right
 
-        // Mini-Waveform: 14 Pegelbalken (2px breit)
-        let barsStack = NSStackView(views: [])
-        barsStack.orientation = .horizontal
-        barsStack.spacing = 2
-        for _ in 0..<14 {
-            let bar = BarView()
-            bars.append(bar)
-            barsStack.addArrangedSubview(bar)
-        }
-        barsStack.alignment = .centerY
+        transcriptLabel.font = NSFont(name: "Geist", size: 11)
+            ?? .systemFont(ofSize: 11, weight: .regular)
+        transcriptLabel.textColor = NSColor.white.withAlphaComponent(0.78)
+        transcriptLabel.isBezeled = false
+        transcriptLabel.drawsBackground = false
+        transcriptLabel.maximumNumberOfLines = 2
+        transcriptLabel.lineBreakMode = .byTruncatingHead
+        transcriptLabel.cell?.truncatesLastVisibleLine = true
+        transcriptLabel.alignment = .left
+        transcriptLabel.isHidden = true
+        transcriptLabel.translatesAutoresizingMaskIntoConstraints = false
 
-        let main = NSStackView(views: [discardButton, dotView, barsStack, timerLabel, commitButton])
+        // Mini-Waveform: eine Zeichenfläche statt 14 Layout-Constraints.
+        // Der 30-Hz-Tick invalidiert nur den kleinen Zeichenbereich.
+        waveformView.translatesAutoresizingMaskIntoConstraints = false
+
+        let main = NSStackView(views: [discardButton, dotView, waveformView, timerLabel, commitButton])
         main.orientation = .horizontal
-        main.spacing = 6
+        main.spacing = 5
         main.alignment = .centerY
         main.translatesAutoresizingMaskIntoConstraints = false
         addSubview(main)
+        addSubview(transcriptLabel)
+
+        widthConstraint = widthAnchor.constraint(equalToConstant: 140)
+        heightConstraint = heightAnchor.constraint(equalToConstant: 24)
 
         NSLayoutConstraint.activate([
-            widthAnchor.constraint(equalToConstant: 160),
-            heightAnchor.constraint(equalToConstant: 26),
+            widthConstraint,
+            heightConstraint,
             main.centerXAnchor.constraint(equalTo: centerXAnchor),
-            main.centerYAnchor.constraint(equalTo: centerYAnchor),
+            main.topAnchor.constraint(equalTo: topAnchor, constant: 2.5),
+            waveformView.widthAnchor.constraint(equalToConstant: 54),
+            waveformView.heightAnchor.constraint(equalToConstant: MicLevelBars.maxHeight),
             timerLabel.widthAnchor.constraint(greaterThanOrEqualToConstant: 22),
+            transcriptLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 18),
+            transcriptLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -18),
+            transcriptLabel.topAnchor.constraint(equalTo: main.bottomAnchor, constant: 2),
+            transcriptLabel.bottomAnchor.constraint(lessThanOrEqualTo: bottomAnchor, constant: -3),
         ])
-        pillWidthConstraint = constraints.first { $0.firstAttribute == .width }
-
         // Leichtes Schweben (translateY −3px, 3 s) – reine Core Animation,
         // kein Timer, kein Executor-Kontakt.
-        let float = CABasicAnimation(keyPath: "transform.translation.y")
-        float.fromValue = 0
-        float.toValue = -3
-        float.duration = 3
-        float.autoreverses = true
-        float.repeatCount = .infinity
-        layer?.add(float, forKey: "float")
+        if !reduceMotion {
+            let float = CABasicAnimation(keyPath: "transform.translation.y")
+            float.fromValue = 0
+            float.toValue = -3
+            float.duration = 3
+            float.autoreverses = true
+            float.repeatCount = .infinity
+            layer?.add(float, forKey: "float")
+        }
     }
 
-    private var pillWidthConstraint: NSLayoutConstraint?
-
-    /// v4: ✕ und ✓ nur bei gehaltener Push-to-talk-Taste (Hands-free ohne).
+    /// ✕ und ✓ sind in beiden Aufnahmemodi sichtbar.
     func applyChrome(for source: RecordingSource) {
         let show = PillChrome.showsButtons(for: source)
         discardButton.isHidden = !show
@@ -250,18 +332,12 @@ final class RecordingPillView: NSView {
 
     required init?(coder: NSCoder) { fatalError("nicht unterstützt") }
 
-    /// v3: Pill-Hintergrund = Akzent gemischt 88 % (color-mix mit Schwarz 12 %).
+    /// Aufnahme bleibt unabhängig vom gewählten Akzent auf dem dunklen Ink-Token.
     private func applyBackground() {
-        let hex = Theme.sharedSettings?.accentHex ?? 0x1A1917
-        let r = CGFloat((hex >> 16) & 0xFF)
-        let g = CGFloat((hex >> 8) & 0xFF)
-        let b = CGFloat(hex & 0xFF)
-        let mixed = NSColor(srgbRed: (r * 0.88) / 255,
-                            green: (g * 0.88) / 255,
-                            blue: (b * 0.88) / 255, alpha: 1)
-        layer?.backgroundColor = mixed.cgColor
-        layer?.cornerRadius = 13
-        commitButton.contentTintColor = mixed
+        let ink = NSColor(Theme.Palette.ink)
+        layer?.backgroundColor = ink.cgColor
+        layer?.cornerRadius = 12
+        commitButton.contentTintColor = ink
     }
 
     @objc nonisolated private func discardTapped() {
@@ -272,52 +348,166 @@ final class RecordingPillView: NSView {
         onCommit?()
     }
 
-    func update(level: Double, secs: TimeInterval) {
+    func update(level: Double, secs: TimeInterval, partialText: String, modelReady: Bool) {
         currentLevel = level
         let total = Int(secs)
-        timerLabel.stringValue = String(format: "%d:%02d", total / 60, total % 60)
+        timerLabel.stringValue = modelReady
+            ? String(format: "%d:%02d", total / 60, total % 60)
+            : Copy.pillModelLoading
+        let trimmed = partialText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let hasPartialText = !trimmed.isEmpty
+        if transcriptLabel.stringValue != trimmed {
+            transcriptLabel.stringValue = trimmed
+        }
+        transcriptLabel.isHidden = !hasPartialText
+        widthConstraint.constant = PillChrome.pillWidth(
+            for: .pushToTalk,
+            hasPartialText: hasPartialText,
+            modelReady: modelReady
+        )
+        heightConstraint.constant = PillChrome.pillHeight(hasPartialText: hasPartialText)
     }
 
-    /// 30 Hz: Waveform-Ballistik. Silenz = komplett flach (2 px, statisch),
-    /// Lautstärke spreizt die Balken deutlich bis ~16 px – man sieht klar,
+    /// 30 Hz: Waveform-Ballistik. Stille = flach (4 px, statisch),
+    /// Lautstärke spreizt die Balken symmetrisch bis 20 px – man sieht klar,
     /// dass wirklich aufgenommen wird.
     func tick() {
         t += 1.0 / 30.0
-        let l = currentLevel
-        for (i, bar) in bars.enumerated() {
-            let p = t * (2.4 + Double(i % 4) * 0.55) + Double(i) * 0.9
-            // Mehrkomponenten-Sinus → unregelmäßigere, „echtere" Waveform.
-            let jagged = abs(sin(p) * 0.6 + sin(p * 2.1) * 0.4)
-            bar.setLevel(l * (0.15 + 0.85 * jagged))
-        }
+        waveformView.update(level: currentLevel, time: t, reduceMotion: reduceMotion)
     }
+
+    /// Test-Naht: exakt die Höhen, die `PillWaveformView.draw(_:)` verwendet.
+    var waveformHeightsForTesting: [CGFloat] { waveformView.barHeights }
+
+    func resetWaveform() {
+        t = 0
+        waveformView.reset()
+    }
+}
+
+// MARK: - Textloser Verarbeitungsstatus (AppKit)
+
+@MainActor
+final class SpinnerViewNS: NSView {
+    private let spinner = NSProgressIndicator()
+    private let staticDot = NSView()
+    private let reduceMotion: Bool
+
+    var rotatesForTesting: Bool { !reduceMotion }
+
+    init(reduceMotion: Bool = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion) {
+        self.reduceMotion = reduceMotion
+        super.init(frame: NSRect(x: 0, y: 0, width: 36, height: 36))
+        wantsLayer = true
+        layer?.backgroundColor = NSColor(Theme.Palette.ink).cgColor
+        layer?.cornerRadius = 18
+
+        spinner.style = .spinning
+        spinner.controlSize = .small
+        spinner.appearance = NSAppearance(named: .darkAqua)
+        spinner.isDisplayedWhenStopped = false
+        spinner.isHidden = reduceMotion
+        spinner.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(spinner)
+
+        staticDot.wantsLayer = true
+        staticDot.layer?.backgroundColor = NSColor.white.withAlphaComponent(0.9).cgColor
+        staticDot.layer?.cornerRadius = 3
+        staticDot.isHidden = !reduceMotion
+        staticDot.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(staticDot)
+
+        setAccessibilityElement(true)
+        setAccessibilityRole(.progressIndicator)
+        setAccessibilityLabel("Diktat wird verarbeitet")
+
+        NSLayoutConstraint.activate([
+            widthAnchor.constraint(equalToConstant: 36),
+            heightAnchor.constraint(equalToConstant: 36),
+            spinner.centerXAnchor.constraint(equalTo: centerXAnchor),
+            spinner.centerYAnchor.constraint(equalTo: centerYAnchor),
+            spinner.widthAnchor.constraint(equalToConstant: 18),
+            spinner.heightAnchor.constraint(equalToConstant: 18),
+            staticDot.centerXAnchor.constraint(equalTo: centerXAnchor),
+            staticDot.centerYAnchor.constraint(equalTo: centerYAnchor),
+            staticDot.widthAnchor.constraint(equalToConstant: 6),
+            staticDot.heightAnchor.constraint(equalToConstant: 6),
+        ])
+    }
+
+    func startAnimating() {
+        guard !reduceMotion else { return }
+        spinner.startAnimation(nil)
+    }
+
+    func stopAnimating() {
+        spinner.stopAnimation(nil)
+    }
+
+    required init?(coder: NSCoder) { fatalError("nicht unterstützt") }
 }
 
 // MARK: - Bauteile
 
 @MainActor
-final class BarView: NSView {
-    private var heightConstraint: NSLayoutConstraint!
+final class PillWaveformView: NSView {
+    static let barCount = 14
+    static let barWidth: CGFloat = 2
+    static let spacing: CGFloat = 2
+
+    private(set) var barHeights = Array(
+        repeating: MicLevelBars.minHeight,
+        count: barCount
+    )
+    private var peakHoldUntil = Array(repeating: TimeInterval.zero, count: barCount)
 
     override init(frame frameRect: NSRect) {
-        super.init(frame: NSRect(x: 0, y: 0, width: 2, height: 6))
-        wantsLayer = true
-        // v3: Pegelbalken weiß 95 % auf Akzent-Pill
-        layer?.backgroundColor = NSColor(white: 1, alpha: 0.95).cgColor
-        layer?.cornerRadius = 1
-        translatesAutoresizingMaskIntoConstraints = false
-        widthAnchor.constraint(equalToConstant: 2).isActive = true
-        heightConstraint = heightAnchor.constraint(equalToConstant: 6)
-        heightConstraint.isActive = true
+        super.init(frame: frameRect)
+    }
+
+    func update(level: Double, time: Double, reduceMotion: Bool) {
+        for index in 0..<Self.barCount {
+            let modulatedLevel: Double
+            if reduceMotion {
+                modulatedLevel = level
+            } else {
+                let phase = time * (2.4 + Double(index % 4) * 0.55) + Double(index) * 0.9
+                let jagged = abs(sin(phase) * 0.6 + sin(phase * 2.1) * 0.4)
+                modulatedLevel = level * (0.55 + 0.45 * jagged)
+            }
+            let target = MicLevelBars.height(level: modulatedLevel, jitter: 0)
+            let peak = MicLevelBars.nextPeak(
+                current: barHeights[index],
+                target: target,
+                holdUntil: peakHoldUntil[index],
+                now: time
+            )
+            barHeights[index] = peak.height
+            peakHoldUntil[index] = peak.holdUntil
+        }
+        needsDisplay = true
+    }
+
+    func reset() {
+        barHeights = Array(repeating: MicLevelBars.minHeight, count: Self.barCount)
+        peakHoldUntil = Array(repeating: 0, count: Self.barCount)
+        needsDisplay = true
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+        for (index, height) in barHeights.enumerated() {
+            let x = CGFloat(index) * (Self.barWidth + Self.spacing)
+            // Mittelpunkt bleibt fest: der Ausschlag wächst symmetrisch nach
+            // oben und unten, ohne die 24-px-Pill zu vergrößern.
+            let rect = NSRect(x: x, y: bounds.midY - height / 2,
+                              width: Self.barWidth, height: height)
+            NSColor(white: 1, alpha: MicLevelBars.opacity(forHeight: height)).setFill()
+            NSBezierPath(roundedRect: rect, xRadius: 1, yRadius: 1).fill()
+        }
     }
 
     required init?(coder: NSCoder) { fatalError() }
-
-    /// Höhe 2…16px; `l` ist der 0…1-Spitzenpegel.
-    func setLevel(_ l: CGFloat) {
-        let clamped = max(0, min(l, 1))
-        heightConstraint.constant = 2 + clamped * 14
-    }
 }
 
 @MainActor
@@ -336,7 +526,7 @@ final class PillCircleButton: NSButton {
         wantsLayer = true
         let size: CGFloat = dark ? 17 : 16
         if dark {
-            // ✓-Button v3: weißer Kreis, akzentfarbenes Häkchen (via applyBackground).
+            // ✓-Button: weißer Kreis, Häkchen im festen Ink-Ton.
             layer?.backgroundColor = NSColor.white.cgColor
             contentTintColor = NSColor(srgbRed: 0.1, green: 0.1, blue: 0.1, alpha: 1)
         } else {
@@ -358,7 +548,7 @@ final class PillCircleButton: NSButton {
     required init?(coder: NSCoder) { fatalError("nicht unterstützt") }
 }
 
-// MARK: - Toast (AppKit, v3: 36 px, dunkle Pill, grüner Haken / rotes ✕)
+// MARK: - Toast (AppKit, v3: 36 px, dunkle Pill)
 
 @MainActor
 final class ToastViewNS: NSView {

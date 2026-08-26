@@ -14,8 +14,9 @@ struct DashboardView: View {
 
     @State private var playingId: UUID?
     @State private var heroCopied = false
+    @State private var rawTextRecord: TranscriptionRecord?
 
-    private let player = AudioPlayerHelper()
+    @State private var player = AudioPlayerHelper()
     private var calendar: Calendar { .current }
 
     // MARK: Daten
@@ -38,8 +39,10 @@ struct DashboardView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
                 topbar
-                dateLine
+                screenTitle
                     .padding(.top, 18)
+                dateLine
+                    .padding(.top, 10)
                 headline
                     .padding(.top, 4)
                 instructionBar
@@ -59,6 +62,9 @@ struct DashboardView: View {
         }
         .frame(maxWidth: .infinity, alignment: .center)
         .onAppear { app.refreshPermissionState() }
+        .sheet(item: $rawTextRecord) { record in
+            RawTranscriptView(record: record, onCopy: { copyRawText(record) })
+        }
     }
 
     // MARK: Topbar (Suche)
@@ -101,6 +107,13 @@ struct DashboardView: View {
 
     // MARK: Kopf
 
+    private var screenTitle: some View {
+        Text("Der Bericht")
+            .font(Theme.Typo.h1())
+            .tracking(-0.6)
+            .foregroundColor(Theme.Palette.ink)
+    }
+
     private var dateLine: some View {
         Text(Copy.dateLine(Date(), calendar: calendar))
             .font(Theme.Typo.counter(10.5))
@@ -111,7 +124,7 @@ struct DashboardView: View {
 
     private var headline: some View {
         Text(greeting)
-            .font(Theme.Typo.h1())
+            .font(Theme.Typo.sectionTitle())
             .tracking(-0.6)
             .foregroundColor(Theme.Palette.ink)
             .lineLimit(1)
@@ -225,10 +238,16 @@ struct DashboardView: View {
                     .buttonStyle(.plain)
                 }
 
-                Text(heroMeta(record))
-                    .font(Theme.Typo.counter(10.5))
-                    .monospacedDigit()
-                    .foregroundColor(Theme.Palette.text3)
+                HStack(spacing: 8) {
+                    Text(heroMeta(record))
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                        .fixedSize(horizontal: false, vertical: true)
+                    PolishBadge(record: record)
+                }
+                .font(Theme.Typo.counter(10.5))
+                .monospacedDigit()
+                .foregroundColor(Theme.Palette.text3)
 
                 Spacer()
 
@@ -248,6 +267,9 @@ struct DashboardView: View {
 
     private func heroMenu(_ record: TranscriptionRecord) -> some View {
         Menu {
+            Button("Rohtext anzeigen") { rawTextRecord = record }
+            Button("Rohtext kopieren") { copyRawText(record) }
+            Divider()
             Button("Audio extrahieren (.wav)") { extractAudio(record) }
             Button("Export als .txt") { export(record, asMarkdown: false) }
             Button("Export als .md") { export(record, asMarkdown: true) }
@@ -268,6 +290,7 @@ struct DashboardView: View {
         }
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
+        .accessibilityLabel("Weitere Aktionen für Protokoll")
     }
 
     // MARK: „Früher heute"
@@ -319,7 +342,7 @@ struct DashboardView: View {
 
     private var rail: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("BESTAND")
+            Text("PROTOKOLLE")
                 .kicker(Theme.Palette.text3)
                 .padding(.horizontal, 2)
             railStatsCard
@@ -380,8 +403,6 @@ struct DashboardView: View {
         let total = StatsCalculator.totalWords(app.history.records)
         let remainder = total % milestone
         let progress = Double(remainder) / Double(milestone)
-        let next = milestone - remainder
-        _ = next
 
         return VStack(alignment: .leading, spacing: 0) {
             Text("Deine Akte")
@@ -403,7 +424,7 @@ struct DashboardView: View {
             .frame(height: 6)
             .padding(.top, 12)
 
-            Text("NOCH \(StatsCalculator.compactCount(milestone - remainder)) WÖRTER")
+            Text("NOCH \(StatsCalculator.compactCount(milestone - remainder)) BIS ZUM \(Copy.akteMilestone.uppercased())")
                 .font(Theme.Typo.counter(10))
                 .tracking(0.8)
                 .textCase(.uppercase)
@@ -435,6 +456,11 @@ struct DashboardView: View {
         if panel.runModal() == .OK, let url = panel.url {
             try? FileManager.default.copyItem(atPath: path, toPath: url.path)
         }
+    }
+
+    private func copyRawText(_ record: TranscriptionRecord) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(record.rawText, forType: .string)
     }
 
     private func export(_ record: TranscriptionRecord, asMarkdown: Bool) {
@@ -478,33 +504,58 @@ private struct EarlierRowView: View {
                 .lineLimit(1)
                 .truncationMode(.tail)
                 .frame(maxWidth: .infinity, alignment: .leading)
+                .fixedSize(horizontal: false, vertical: true)
                 .layoutPriority(1) // v4: min-width 0 – Text darf schrumpfen
 
             if !record.targetApp.isEmpty {
                 Text(record.targetApp)
                     .font(Theme.Typo.counter(10))
                     .foregroundColor(Theme.Palette.text3)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: 112, alignment: .trailing)
             }
+
+            PolishBadge(record: record, compact: true)
 
             HStack(spacing: 2) {
                 if record.audioPath != nil {
-                    miniIcon(isPlaying ? "stop.fill" : "play.fill") { onPlay() }
+                    miniIcon(isPlaying ? "stop.fill" : "play.fill",
+                             label: isPlaying ? "Audio stoppen" : "Audio abspielen") { onPlay() }
                 }
                 miniIcon(copied ? "checkmark" : "doc.on.doc",
-                         tint: copied ? Theme.Palette.archivgruen : Theme.Palette.text3) {
+                         tint: copied ? Theme.Palette.archivgruen : Theme.Palette.text3,
+                         label: copied ? "Protokoll kopiert" : "Protokoll kopieren") {
                     onCopy()
                     copied = true
                     DispatchQueue.main.asyncAfter(deadline: .now() + 1.6) { copied = false }
                 }
             }
         }
+        .frame(height: 27)
         .padding(.horizontal, 16)
         .padding(.vertical, 13)
         .contentShape(Rectangle())
         .onTapGesture { onOpen() }
+        .focusable()
+        .focused($rowFocused)
+        .overlay(
+            RoundedRectangle(cornerRadius: Theme.Metrics.radiusControl)
+                .strokeBorder(rowFocused ? Theme.accent : Color.clear, lineWidth: 2)
+        )
+        .onKeyPress(.return) {
+            onOpen()
+            return .handled
+        }
+        .onKeyPress(.space) {
+            onOpen()
+            return .handled
+        }
     }
 
     private func miniIcon(_ symbol: String, tint: Color = Theme.Palette.text3,
+                          label: String,
                           action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Image(systemName: symbol)
@@ -514,7 +565,10 @@ private struct EarlierRowView: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .accessibilityLabel(label)
     }
+
+    @FocusState private var rowFocused: Bool
 }
 
 // MARK: - Warnkarte „Berechtigung fehlt"
@@ -577,11 +631,12 @@ struct FirstStartEmptyState: View {
     /// Startet eine echte Probaufnahme (Pill mit ✓ zum Beenden).
     var onTry: () -> Void
     var onChangeKey: () -> Void
+    @Environment(AppState.self) private var app
 
     var body: some View {
         VStack(spacing: 10) {
             Text(Copy.firstStartTitle)
-                .font(.custom("Geist", size: 17).weight(.bold))
+                .font(Theme.Typo.emptyTitle())
                 .foregroundColor(Theme.Palette.ink)
             Text(instructionWithKeycap)
                 .font(Theme.Typo.body())
@@ -590,7 +645,7 @@ struct FirstStartEmptyState: View {
                 .multilineTextAlignment(.center)
 
             HStack(spacing: 10) {
-                Button {} label: {
+                Button { onTry() } label: {
                     Text(Copy.firstStartTryButton)
                         .font(.custom("Geist", size: 13).weight(.semibold))
                         .foregroundColor(.white)
@@ -621,6 +676,6 @@ struct FirstStartEmptyState: View {
     }
 
     private var instructionWithKeycap: String {
-        Copy.firstStartBody
+        Copy.firstStartBody(combo: app.currentCombo)
     }
 }

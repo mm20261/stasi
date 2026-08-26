@@ -6,13 +6,16 @@ struct PulseForever: ViewModifier {
     var intensity: Double
 
     @State private var pulsing = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     func body(content: Content) -> some View {
         content
-            .opacity(pulsing ? max(1 - intensity, 0.05) : 1)
-            .onAppear { pulsing = true }
+            .opacity(!reduceMotion && pulsing ? max(1 - intensity, 0.05) : 1)
+            .onAppear { pulsing = !reduceMotion }
+            .onChange(of: reduceMotion) { _, reduced in pulsing = !reduced }
             .animation(
-                Animation.easeInOut(duration: 1.1).repeatForever(autoreverses: true),
+                reduceMotion ? nil
+                    : Animation.easeInOut(duration: 1.1).repeatForever(autoreverses: true),
                 value: pulsing
             )
     }

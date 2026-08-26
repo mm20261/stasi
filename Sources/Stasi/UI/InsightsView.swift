@@ -25,16 +25,21 @@ struct InsightsView: View {
                     .foregroundColor(Theme.Palette.text2)
                     .padding(.top, 5)
 
-                leitzahlCard
-                    .padding(.top, 22)
+                if app.history.records.isEmpty {
+                    emptyState
+                        .padding(.top, 22)
+                } else {
+                    leitzahlCard
+                        .padding(.top, 22)
 
-                HStack(alignment: .top, spacing: Theme.Metrics.gridGap) {
-                    appUsageCard
-                        .frame(maxWidth: .infinity)
-                    streakCard
-                        .frame(maxWidth: .infinity)
+                    HStack(alignment: .top, spacing: Theme.Metrics.gridGap) {
+                        appUsageCard
+                            .frame(maxWidth: .infinity)
+                        streakCard
+                            .frame(maxWidth: .infinity)
+                    }
+                    .padding(.top, Theme.Metrics.gridGap)
                 }
-                .padding(.top, Theme.Metrics.gridGap)
             }
             .padding(.horizontal, Theme.Metrics.contentPaddingH)
             .padding(.bottom, 80)
@@ -42,6 +47,15 @@ struct InsightsView: View {
         }
         .frame(maxWidth: .infinity, alignment: .center)
         .onAppear { app.refreshPermissionState() }
+    }
+
+    private var emptyState: some View {
+        Text(Copy.insightsEmpty)
+            .font(Theme.Typo.body())
+            .foregroundColor(Theme.Palette.text2)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .secondaryCard(insets: EdgeInsets(top: 24, leading: 24,
+                                               bottom: 24, trailing: 24))
     }
 
     // MARK: Leitzahl-Karte
@@ -62,10 +76,10 @@ struct InsightsView: View {
                     .lineLimit(1)
                     .minimumScaleFactor(0.5)
                 Text("Wörter diese Woche\(deltaSuffix(comparison.deltaPercent)).")
-                    .font(.custom("Geist", size: 13.5))
+                    .font(Theme.Typo.input())
                     .foregroundColor(Theme.Palette.text2)
                 Text("Getippt hättest du dafür etwa \(typing) gebraucht.")
-                    .font(.custom("Geist", size: 12.5))
+                    .font(Theme.Typo.caption())
                     .foregroundColor(Theme.Palette.text3)
             }
             Spacer()
@@ -177,7 +191,7 @@ struct InsightsView: View {
             }
 
             Text(streakNote(streak: streak))
-                .font(.custom("Geist", size: 11.5))
+                .font(Theme.Typo.note())
                 .foregroundColor(Theme.Palette.text3)
         }
         .frame(maxWidth: .infinity, alignment: .leading)

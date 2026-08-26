@@ -11,9 +11,12 @@ struct SettingsWindowView: View {
     @State private var recordingHotkey = false
     /// Während der Aufnahme erfasste Kombination (Vorschau bis „Übernehmen").
     @State private var draftCombo: HotkeyEngine.Combo?
+    @State private var recordingHandsFreeKey = false
+    @State private var draftHandsFreeKeyCode: UInt64?
 
     // Mikrofon-Popover
     @State private var micPopoverOpen = false
+    @State private var availableMics: [MicDevice] = []
 
     // Update-Prüfung
     @State private var updater = UpdateChecker()
@@ -45,7 +48,14 @@ struct SettingsWindowView: View {
             .frame(maxWidth: 620 + 2 * Theme.Metrics.contentPaddingH, alignment: .leading)
         }
         .frame(maxWidth: .infinity, alignment: .center)
-        .onAppear { app.refreshPermissionState() }
+        .onAppear {
+            app.refreshPermissionState()
+            availableMics = MicrophoneScanner.devices()
+        }
+        .onDisappear {
+            cancelHotkeyRecording()
+            cancelHandsFreeKeyRecording()
+        }
     }
 
     // MARK: Sektionen (Mono-Kicker + Hauptkarte, Zeilen 13×16)
@@ -71,11 +81,10 @@ struct SettingsWindowView: View {
             rowDivider()
             handsFreeRow
             rowDivider()
+            shortcutActionsRow
+            rowDivider()
             modeRow
             rowDivider()
-            permissionBadgeRow(title: "Eingabe-Überwachung",
-                               granted: app.listenEventGranted)
-            if !app.listenEventGranted { rowDivider() }
             permissionActionRow(title: "Bedienungshilfen",
                                 granted: app.accessibilityGranted)
         }
@@ -162,54 +171,44 @@ struct SettingsWindowView: View {
     }
 
     @State private var hotkeyCaptureMonitor: Any?
+    @State private var hotkeyCaptureTarget: HotkeyCaptureMonitorTarget?
 
     private func beginHotkeyRecording() {
         guard hotkeyCaptureMonitor == nil else { return }
+        cancelHandsFreeKeyRecording()
         recordingHotkey = true
         draftCombo = app.currentCombo
-        hotkeyCaptureMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .flagsChanged]) { event in
-            switch event.type {
-            case .keyDown where event.keyCode == 53:
+        let target = HotkeyCaptureMonitorTarget { action in
+            switch action {
+            case .cancel:
                 // Esc bricht ab – Monitor bleibt aktiv bis „Abbrechen".
-                MainActor.assumeIsolated {
-                    cancelHotkeyRecording()
-                }
-                return nil
-            case .flagsChanged:
-                // Modifier-Taste (z. B. rechte ⌘) als Kandidat zeigen.
-                if Self.isModifierKey(event.keyCode),
-                   !event.modifierFlags.intersection([.command, .control, .option, .shift]).isEmpty {
-                    MainActor.assumeIsolated {
-                        draftCombo = HotkeyEngine.Combo(keyCode: UInt64(event.keyCode), flags: 0)
-                    }
-                } else if event.keyCode == 63 {
+                cancelHotkeyRecording()
+            case .modifier(let combo):
+                draftCombo = combo
+            case .modifierReleased(let keyCode):
+                if keyCode == 63 {
                     // fn losgelassen → nichts
                 } else {
-                    MainActor.assumeIsolated {
-                        draftCombo = nil // Modifier allein reicht nicht → Anzeige leeren
-                    }
+                    draftCombo = nil // Modifier allein reicht nicht → Anzeige leeren
                 }
-                return nil
-            case .keyDown:
-                let keyCode = UInt64(event.keyCode)
-                var flags: UInt64 = 0
-                if event.modifierFlags.contains(.command) { flags |= CGEventFlags.maskCommand.rawValue }
-                if event.modifierFlags.contains(.control) { flags |= CGEventFlags.maskControl.rawValue }
-                if event.modifierFlags.contains(.option) { flags |= CGEventFlags.maskAlternate.rawValue }
-                if event.modifierFlags.contains(.shift) { flags |= CGEventFlags.maskShift.rawValue }
-                MainActor.assumeIsolated {
-                    draftCombo = HotkeyEngine.Combo(keyCode: keyCode, flags: flags)
-                }
-                return nil
-            default:
-                return event
+            case .key(let combo):
+                draftCombo = combo
             }
+        }
+        hotkeyCaptureTarget = target
+        hotkeyCaptureMonitor = NSEvent.addLocalMonitorForEvents(
+            matching: [.keyDown, .flagsChanged]
+        ) { [weak target] event in
+            guard let action = HotkeyCaptureEvent.parse(event) else { return event }
+            target?.send(action)
+            return nil
         }
     }
 
     private func cancelHotkeyRecording() {
         if let monitor = hotkeyCaptureMonitor { NSEvent.removeMonitor(monitor) }
         hotkeyCaptureMonitor = nil
+        hotkeyCaptureTarget = nil
         recordingHotkey = false
         draftCombo = nil
     }
@@ -221,25 +220,152 @@ struct SettingsWindowView: View {
     }
 
     nonisolated static func isModifierKey(_ code: UInt16) -> Bool {
-        [54, 55, 56, 57, 58, 59, 60, 61, 63].contains(Int(code))
+        [54, 55, 56, 57, 58, 59, 60, 61, 62, 63].contains(Int(code))
     }
 
     private var handsFreeRow: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Hands-free")
+                        .font(Theme.Typo.zeilenTitel())
+                        .foregroundColor(Theme.Palette.ink)
+                    Text("Doppeltipp auf \(VirtualKey.keySymbol(Int(settings.handsFreeKeyCode))) startet und stoppt die Aufnahme freihändig.")
+                        .font(Theme.Typo.secondary(size: 11.5))
+                        .foregroundColor(Theme.Palette.text2)
+                }
+                Spacer()
+                KeyBadge("\(VirtualKey.keySymbol(Int(settings.handsFreeKeyCode))) ×2")
+                    .opacity(recordingHandsFreeKey ? 0.4 : 1)
+                Button("ÄNDERN") {
+                    if !recordingHandsFreeKey { beginHandsFreeKeyRecording() }
+                }
+                .font(Theme.Typo.kicker(size: 10.5))
+                .tracking(0.8)
+                .foregroundColor(Theme.Palette.stempelrot)
+                .buttonStyle(.plain)
+                toggleControl(isOn: Binding(
+                    get: { settings.handsFreeOn },
+                    set: { app.setHandsFreeEnabled($0) }
+                ), accessibilityLabel: "Hands-free")
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 13)
+
+            if recordingHandsFreeKey {
+                handsFreeRecorderField
+                    .padding(.horizontal, 10)
+                    .padding(.bottom, 12)
+            }
+        }
+    }
+
+    private var handsFreeRecorderField: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("MODIFIER DRÜCKEN")
+                .kicker(Theme.Palette.stempelrot, tracking: 1.6)
+
+            HStack(spacing: 6) {
+                if let keyCode = draftHandsFreeKeyCode {
+                    KeyBadge(VirtualKey.keySymbol(Int(keyCode)))
+                        .font(Theme.Typo.keycap(14))
+                }
+                BlinkingCursor()
+            }
+
+            Text("Nur Modifier-Tasten. Esc bricht ab.")
+                .font(Theme.Typo.secondary(size: 11))
+                .foregroundColor(Theme.Palette.text3)
+            Text("Normale Tasten sind gesperrt, damit der Doppeltipp kein Zeichen eingibt.")
+                .font(Theme.Typo.secondary(size: 11))
+                .foregroundColor(Theme.Palette.text3)
+
+            HStack {
+                Spacer()
+                Button("Abbrechen") { cancelHandsFreeKeyRecording() }
+                    .buttonStyle(GhostButtonStyle())
+                Button("Übernehmen") { commitHandsFreeKeyRecording() }
+                    .buttonStyle(AccentButtonStyle())
+                    .disabled(draftHandsFreeKeyCode == nil)
+            }
+        }
+        .padding(14)
+        .background(
+            RoundedRectangle(cornerRadius: 8)
+                .fill(Theme.Palette.recorderFlaeche)
+                .overlay(RoundedRectangle(cornerRadius: 8)
+                    .strokeBorder(Theme.Palette.stempelrot,
+                                  style: StrokeStyle(lineWidth: 1, dash: [4, 3])))
+        )
+    }
+
+    @State private var handsFreeCaptureMonitor: Any?
+    @State private var handsFreeCaptureTarget: HotkeyCaptureMonitorTarget?
+
+    private func beginHandsFreeKeyRecording() {
+        guard handsFreeCaptureMonitor == nil else { return }
+        cancelHotkeyRecording()
+        recordingHandsFreeKey = true
+        draftHandsFreeKeyCode = settings.handsFreeKeyCode
+        let target = HotkeyCaptureMonitorTarget { action in
+            switch action {
+            case .cancel:
+                cancelHandsFreeKeyRecording()
+            case .modifier(let combo):
+                guard VirtualKey.isHandsFreeModifier(combo.keyCode) else { return }
+                draftHandsFreeKeyCode = combo.keyCode
+            case .modifierReleased:
+                break
+            case .key:
+                draftHandsFreeKeyCode = nil
+            }
+        }
+        handsFreeCaptureTarget = target
+        handsFreeCaptureMonitor = NSEvent.addLocalMonitorForEvents(
+            matching: [.keyDown, .flagsChanged]
+        ) { [weak target] event in
+            guard let action = HotkeyCaptureEvent.parse(event) else { return event }
+            target?.send(action)
+            return nil
+        }
+    }
+
+    private func cancelHandsFreeKeyRecording() {
+        if let monitor = handsFreeCaptureMonitor { NSEvent.removeMonitor(monitor) }
+        handsFreeCaptureMonitor = nil
+        handsFreeCaptureTarget = nil
+        recordingHandsFreeKey = false
+        draftHandsFreeKeyCode = nil
+    }
+
+    private func commitHandsFreeKeyRecording() {
+        guard let keyCode = draftHandsFreeKeyCode,
+              VirtualKey.isHandsFreeModifier(keyCode) else { return }
+        app.applyHandsFreeKeyCode(keyCode)
+        cancelHandsFreeKeyRecording()
+    }
+
+    private var shortcutActionsRow: some View {
         HStack {
             VStack(alignment: .leading, spacing: 2) {
-                Text("Hands-free")
+                Text("Letztes Protokoll")
                     .font(Theme.Typo.zeilenTitel())
                     .foregroundColor(Theme.Palette.ink)
-                Text("Doppeltipp auf fn startet und stoppt die Aufnahme freihändig.")
+                Text("Erneut kopieren oder direkt in das aktive Textfeld einfügen.")
                     .font(Theme.Typo.secondary(size: 11.5))
                     .foregroundColor(Theme.Palette.text2)
             }
             Spacer()
-            KeyBadge("fn ×2")
-            Text("AKTIV ✓")
-                .font(Theme.Typo.kicker(size: 10))
-                .tracking(0.8)
-                .foregroundColor(Theme.Palette.archivgruen)
+            HStack(spacing: 6) {
+                KeyBadge("⌃⌘C")
+                Text("KOPIEREN")
+                    .font(Theme.Typo.kicker(size: 9.5))
+                    .foregroundColor(Theme.Palette.text3)
+                KeyBadge("⌃⌘V")
+                Text("EINFÜGEN")
+                    .font(Theme.Typo.kicker(size: 9.5))
+                    .foregroundColor(Theme.Palette.text3)
+            }
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 13)
@@ -283,7 +409,7 @@ struct SettingsWindowView: View {
                 Text("ERTEILT ✓")
                     .font(Theme.Typo.kicker(size: 10))
                     .tracking(0.8)
-                    .foregroundColor(Theme.Palette.archivgruen)
+                    .foregroundColor(Theme.Palette.successText)
                     .padding(.horizontal, 9)
                     .padding(.vertical, 5)
                     .overlay(RoundedRectangle(cornerRadius: 5)
@@ -322,7 +448,7 @@ struct SettingsWindowView: View {
                 Text("ERTEILT ✓")
                     .font(Theme.Typo.kicker(size: 10))
                     .tracking(0.8)
-                    .foregroundColor(Theme.Palette.archivgruen)
+                    .foregroundColor(Theme.Palette.successText)
             } else {
                 Button("FREIGEBEN") {
                     Task { @MainActor in app.requestMissingPermissions() }
@@ -356,7 +482,7 @@ struct SettingsWindowView: View {
            let device = availableMics.first(where: { $0.uid == uid }) {
             return device.name
         }
-        return "MacBook Pro Mikrofon"
+        return availableMics.first(where: \.isDefault)?.name ?? "Systemstandard"
     }
 
     private var micRow: some View {
@@ -391,20 +517,12 @@ struct SettingsWindowView: View {
             .popover(isPresented: $micPopoverOpen, arrowEdge: .bottom) {
                 MicPickerPopover(selection: Binding(
                     get: { settings.preferredMicUID },
-                    set: { settings.preferredMicUID = $0 }))
+                    set: { settings.preferredMicUID = $0 }),
+                    devices: $availableMics)
             }
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 13)
-    }
-
-    private var availableMics: [MicDevice] {
-        MicrophoneCatalog.catalog(from: MicrophoneScanner.scan().map { raw in
-            MicDevice(uid: raw.transportUID ?? raw.name,
-                      name: raw.name,
-                      isDefault: raw.transportUID != nil
-                                 && raw.transportUID == MicrophoneScanner.defaultInputTransportUID())
-        })
     }
 
     private var languageRow: some View {
@@ -419,7 +537,14 @@ struct SettingsWindowView: View {
             }
             Spacer()
             Picker("", selection: Binding(get: { settings.language },
-                                          set: { settings.language = $0 })) {
+                                          set: {
+                                              settings.language = $0
+                                              Task {
+                                                  await app.prepareModel(
+                                                      for: settings.transcriptionLocale
+                                                  )
+                                              }
+                                          })) {
                 Text("AUTO").tag("auto")
                 Text("DE").tag("de_DE")
                 Text("EN").tag("en_US")
@@ -440,10 +565,7 @@ struct SettingsWindowView: View {
                       description: "Kurzer Ton bei Start und Ende der Aufnahme.",
                       isOn: Binding(get: { settings.soundOn }, set: { settings.soundOn = $0 }))
             rowDivider()
-            toggleRow(title: "KI-Nachbearbeitung",
-                      description: "Entfernt Füllwörter — ähm, äh, quasi. (Noch nicht aktiv)",
-                      isOn: Binding(get: { settings.aiPostProcess }, set: { settings.aiPostProcess = $0 }),
-                      disabled: true)
+            postProcessingRow
             rowDivider()
             toggleRow(title: "Autostart",
                       description: "Stasi beim Anmelden starten.",
@@ -453,6 +575,30 @@ struct SettingsWindowView: View {
                       description: "„Wir hören zu.“ & Co. — abschaltbar für Ernsthaftigkeit.",
                       isOn: Binding(get: { settings.ironyOn }, set: { settings.ironyOn = $0 }))
         }
+    }
+
+    private var postProcessingRow: some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(Copy.postProcessingTitle)
+                    .font(Theme.Typo.zeilenTitel())
+                    .foregroundColor(Theme.Palette.ink)
+                Text(Copy.postProcessingDescription(for: settings.postProcessing))
+                    .font(Theme.Typo.secondary(size: 11.5))
+                    .foregroundColor(Theme.Palette.text2)
+            }
+            Spacer()
+            Picker("", selection: Binding(get: { settings.postProcessing },
+                                           set: { settings.postProcessing = $0 })) {
+                Text(Copy.postProcessingOffLabel).tag(PolishLevel.off)
+                Text(Copy.postProcessingStandardLabel).tag(PolishLevel.standard)
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .frame(width: 200)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 13)
     }
 
     /// v4-Toggle: 40 × 24, Radius 999, an = stempelrot (Knopf 18 px rechts),
@@ -469,27 +615,35 @@ struct SettingsWindowView: View {
                     .foregroundColor(Theme.Palette.text2)
             }
             Spacer()
-            Button {
-                guard !disabled else { return }
-                isOn.wrappedValue.toggle()
-            } label: {
-                ZStack(alignment: .leading) {
-                    Capsule().fill(isOn.wrappedValue ? Theme.Palette.stempelrot : Theme.Palette.linieInnen)
-                        .frame(width: 40, height: 24)
-                    Circle()
-                        .fill(Theme.Palette.papier)
-                        .frame(width: 18, height: 18)
-                        .shadow(color: .black.opacity(0.15), radius: 1, x: 0, y: 1)
-                        .offset(x: isOn.wrappedValue ? 19 : 3, y: 0)
-                }
-                .contentShape(Capsule())
-            }
-            .buttonStyle(.plain)
-            .opacity(disabled ? 0.45 : 1)
-            .animation(reduceMotion ? nil : Theme.Motion.fast, value: isOn.wrappedValue)
+            toggleControl(isOn: isOn, disabled: disabled, accessibilityLabel: title)
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 13)
+    }
+
+    private func toggleControl(isOn: Binding<Bool>, disabled: Bool = false,
+                               accessibilityLabel: String) -> some View {
+        Button {
+            guard !disabled else { return }
+            isOn.wrappedValue.toggle()
+        } label: {
+            ZStack(alignment: .leading) {
+                Capsule().fill(isOn.wrappedValue ? Theme.Palette.stempelrot : Theme.Palette.linieInnen)
+                    .frame(width: 40, height: 24)
+                Circle()
+                    .fill(Theme.Palette.papier)
+                    .frame(width: 18, height: 18)
+                    .shadow(color: .black.opacity(0.15), radius: 1, x: 0, y: 1)
+                    .offset(x: isOn.wrappedValue ? 19 : 3, y: 0)
+            }
+            .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .opacity(disabled ? 0.45 : 1)
+        .animation(reduceMotion ? nil : Theme.Motion.fast, value: isOn.wrappedValue)
+        .accessibilityLabel(accessibilityLabel)
+        .accessibilityValue(isOn.wrappedValue ? "ein" : "aus")
+        .accessibilityAddTraits(.isToggle)
     }
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -520,6 +674,8 @@ struct SettingsWindowView: View {
                     }
                     .buttonStyle(.plain)
                     .help(name)
+                    .accessibilityLabel("Akzentfarbe \(name)")
+                    .accessibilityAddTraits(active ? .isSelected : [])
                 }
                 Spacer()
                 Text(activeAccentName)
@@ -546,8 +702,8 @@ struct SettingsWindowView: View {
             rowDivider()
             deleteAllRow
         }
-        .alert("Akte vernichten?", isPresented: $showDeleteConfirm) {
-            Button("Vernichten", role: .destructive) {
+        .alert("Alles löschen?", isPresented: $showDeleteConfirm) {
+            Button("Alles löschen", role: .destructive) {
                 app.history.deleteAll()
             }
             Button("Abbrechen", role: .cancel) {}
@@ -572,15 +728,13 @@ struct SettingsWindowView: View {
             Spacer()
             Picker("", selection: Binding(get: { settings.retention },
                                           set: { settings.retention = $0 })) {
-                Text("NIE").tag(Retention.forever)
-                Text("1 T").tag(Retention.oneDay)
-                Text("1 W").tag(Retention.oneWeek)
-                Text("2 W").tag(Retention.twoWeeks)
-                Text("1 MONAT").tag(Retention.oneMonth)
+                ForEach(Retention.allCases) { retention in
+                    Text(retention.label).tag(retention)
+                }
             }
             .pickerStyle(.segmented)
             .labelsHidden()
-            .frame(width: 280)
+            .frame(width: 360)
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 13)
@@ -597,7 +751,7 @@ struct SettingsWindowView: View {
                     .foregroundColor(Theme.Palette.text2)
             }
             Spacer()
-            Button("AKTE VERNICHTEN") {
+            Button("ALLES LÖSCHEN") {
                 showDeleteConfirm = true
             }
             .font(Theme.Typo.kicker(size: 10.5))
@@ -643,7 +797,11 @@ struct SettingsWindowView: View {
                 .buttonStyle(.plain)
 
                 if let available = updater.state.availableVersion {
-                    Button("UPDATE AUF V \(available)") {}
+                    Button("UPDATE AUF V \(available)") {
+                        if let url = updater.state.releaseURL {
+                            NSWorkspace.shared.open(url)
+                        }
+                    }
                         .font(Theme.Typo.kicker(size: 10.5))
                         .tracking(0.8)
                         .textCase(.uppercase)
@@ -653,6 +811,7 @@ struct SettingsWindowView: View {
                         .background(RoundedRectangle(cornerRadius: 5)
                             .fill(Theme.Palette.stempelrot))
                         .buttonStyle(.plain)
+                        .disabled(updater.state.releaseURL == nil)
                 }
             }
             .padding(.horizontal, 16)
@@ -710,17 +869,8 @@ struct BlinkingCursor: View {
 
 struct MicPickerPopover: View {
     @Binding var selection: String?
+    @Binding var devices: [MicDevice]
     @Environment(\.dismiss) private var dismiss
-    @State private var levelTick = 0.0
-
-    private var devices: [MicDevice] {
-        MicrophoneCatalog.catalog(from: MicrophoneScanner.scan().map { raw in
-            MicDevice(uid: raw.transportUID ?? raw.name,
-                      name: raw.name,
-                      isDefault: raw.transportUID != nil
-                                 && raw.transportUID == MicrophoneScanner.defaultInputTransportUID())
-        })
-    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -743,23 +893,14 @@ struct MicPickerPopover: View {
 
             Rectangle().fill(Theme.Palette.linieInnen).frame(height: Theme.Metrics.hairline)
 
-            // Fußzeile: vierbalkiger Live-Pegel (archivgruen)
-            HStack(spacing: 10) {
-                HStack(alignment: .bottom, spacing: 2.5) {
-                    ForEach(0..<4, id: \.self) { i in
-                        RoundedRectangle(cornerRadius: 1)
-                            .fill(Theme.Palette.archivgruen)
-                            .frame(width: 3, height: barHeight(i))
-                            .animation(reduceMotion ? nil :
-                                    Animation.easeInOut(duration: 0.5 + Double(i) * 0.13)
-                                    .repeatForever(autoreverses: true),
-                                       value: levelTick)
-                    }
-                }
-                Text("PEGEL WIRD GEPRÜFT")
+            HStack(spacing: 7) {
+                Circle()
+                    .fill(Theme.Palette.successColor)
+                    .frame(width: 6, height: 6)
+                Text("AUSGEWÄHLT ✓")
                     .font(Theme.Typo.kicker(size: 9.5))
                     .tracking(1)
-                    .foregroundColor(Theme.Palette.text3)
+                    .foregroundColor(Theme.Palette.successText)
                 Spacer()
             }
             .padding(.horizontal, 12)
@@ -767,14 +908,9 @@ struct MicPickerPopover: View {
         }
         .frame(width: 270)
         .background(Theme.Palette.papier)
-        .onAppear { levelTick = 1 }
-    }
-
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
-    private func barHeight(_ i: Int) -> CGFloat {
-        let phase = levelTick * 2 + Double(i) * 0.9
-        return 6 + CGFloat(abs(sin(phase))) * 8
+        .onAppear {
+            devices = MicrophoneScanner.devices()
+        }
     }
 
     private func micRow(_ device: MicDevice, isStandard: Bool, isSelected: Bool,

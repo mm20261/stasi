@@ -38,12 +38,6 @@ enum Retention: String, CaseIterable, Identifiable {
 @MainActor
 @Observable
 final class SettingsStore {
-    enum Appearance: String, CaseIterable, Identifiable {
-        case system, light, dark
-        var id: String { rawValue }
-        var label: String { switch self { case .system: "System"; case .light: "Hell"; case .dark: "Dunkel" } }
-    }
-
     enum HotkeyMode: String, CaseIterable, Identifiable {
         case pushToTalk, toggle
         var id: String { rawValue }
@@ -57,20 +51,35 @@ final class SettingsStore {
     ]
 
     private let d: UserDefaults
+    private let autostartHandler: (Bool) throws -> Void
+    private var isRevertingAutostart = false
 
     /// `defaults` ist für Tests injizierbar (eigene Suite).
-    init(defaults: UserDefaults = .standard) {
+    init(defaults: UserDefaults = .standard,
+         autostartHandler: @escaping (Bool) throws -> Void = { enabled in
+             if enabled {
+                 try SMAppService.mainApp.register()
+             } else {
+                 try SMAppService.mainApp.unregister()
+             }
+         }) {
         self.d = defaults
-        if let raw = defaults.string(forKey: "stasi.appearance"),
-           let a = Appearance(rawValue: raw) { appearance = a }
+        self.autostartHandler = autostartHandler
         if let n = defaults.object(forKey: "stasi.accentHex") as? Int { accentHex = UInt32(n) }
         userName = defaults.string(forKey: "stasi.userName") ?? ""
         avatarPath = defaults.string(forKey: "stasi.avatarPath")
         if let raw = defaults.string(forKey: "stasi.hotkeyMode"),
            let m = HotkeyMode(rawValue: raw) { hotkeyMode = m }
+        handsFreeOn = defaults.object(forKey: "stasi.handsFreeOn") as? Bool ?? true
+        if let number = defaults.object(forKey: "stasi.handsFree.keyCode") as? NSNumber,
+           VirtualKey.isHandsFreeModifier(number.uint64Value) {
+            handsFreeKeyCode = number.uint64Value
+        }
         language = defaults.string(forKey: "stasi.langChoice") ?? "auto"
         soundOn = defaults.object(forKey: "stasi.soundOn") as? Bool ?? true
-        aiPostProcess = defaults.object(forKey: "stasi.aiOn") as? Bool ?? false
+        if let raw = defaults.string(forKey: "stasi.postProcess"),
+           let level = PolishLevel(rawValue: raw) { postProcessing = level }
+        defaults.removeObject(forKey: "stasi.aiOn")
         ironyOn = defaults.object(forKey: "stasi.ironyOn") as? Bool ?? false
         autostartOn = defaults.object(forKey: "stasi.autostartOn") as? Bool ?? false
         if let raw = defaults.string(forKey: "stasi.retention"),
@@ -82,10 +91,6 @@ final class SettingsStore {
     }
 
     // MARK: Gespeicherte, beobachtbare Properties
-
-    var appearance: Appearance = .system {
-        didSet { d.set(appearance.rawValue, forKey: "stasi.appearance") }
-    }
 
     /// Gewählter Akzent (Hex); v3: fünf Presets, Standard Anthrazit.
     var accentHex: UInt32 = 0x1A1917 {
@@ -114,6 +119,20 @@ final class SettingsStore {
         didSet { d.set(hotkeyMode.rawValue, forKey: "stasi.hotkeyMode") }
     }
 
+    var handsFreeOn: Bool = true {
+        didSet { d.set(handsFreeOn, forKey: "stasi.handsFreeOn") }
+    }
+
+    var handsFreeKeyCode: UInt64 = 63 {
+        didSet {
+            guard VirtualKey.isHandsFreeModifier(handsFreeKeyCode) else {
+                handsFreeKeyCode = oldValue
+                return
+            }
+            d.set(Int(handsFreeKeyCode), forKey: "stasi.handsFree.keyCode")
+        }
+    }
+
     var language: String = "auto" {   // "auto" | "de_DE" | "en_US"
         didSet { d.set(language, forKey: "stasi.langChoice") }
     }
@@ -122,18 +141,27 @@ final class SettingsStore {
         didSet { d.set(soundOn, forKey: "stasi.soundOn") }
     }
 
-    var aiPostProcess: Bool = false {
-        didSet { d.set(aiPostProcess, forKey: "stasi.aiOn") }
+    var postProcessing: PolishLevel = .standard {
+        didSet { d.set(postProcessing.rawValue, forKey: "stasi.postProcess") }
     }
 
-    var ironyOn: Bool = true {
+    var ironyOn: Bool = false {
         didSet { d.set(ironyOn, forKey: "stasi.ironyOn") }
     }
 
     var autostartOn: Bool = false {
         didSet {
             d.set(autostartOn, forKey: "stasi.autostartOn")
-            try? autostartOn ? SMAppService.mainApp.register() : SMAppService.mainApp.unregister()
+            guard !isRevertingAutostart else { return }
+            do {
+                try autostartHandler(autostartOn)
+            } catch {
+                DebugLog.log("STASI-APP: Autostart konnte nicht geändert werden: \(error.localizedDescription)")
+                guard autostartOn else { return }
+                isRevertingAutostart = true
+                autostartOn = false
+                isRevertingAutostart = false
+            }
         }
     }
 
@@ -206,9 +234,11 @@ enum Copy {
     /// Hinweis auf der Rail-Karte „Deine Akte".
     @MainActor
     static func akteNote(_ s: SettingsStore) -> String {
-        s.ironyOn ? "Wächst mit jedem Wort. Ohne dein Zutun."
-                  : "Dein Diktier-Fortschritt diese Woche."
+        s.ironyOn ? "Lebenslang geführt. Alle 10.000 Wörter ein neuer Meilenstein."
+                  : "Alle diktierten Wörter seit deinem ersten Protokoll."
     }
+
+    static let akteMilestone = "10.000-Wörter-Meilenstein"
 
     @MainActor
     static func insightsSubtitle(_ s: SettingsStore) -> String {
@@ -224,21 +254,40 @@ enum Copy {
 
     // MARK: Feste Texte (nicht ironie-abhängig)
 
-    // Toasts (v4: kurz)
-    static let toastLogged = "Protokolliert"
-    static let toastCopied = "Kopiert — ⌘V"
-    static let toastDiscarded = "Verworfen"
+    // Fehler-Toasts; erfolgreiche/verworfene Aktionen bleiben bewusst still.
+    static let toastNothingHeard = "Nichts gehört"
+    static let toastTranscriptionAborted = "Transkription abgebrochen – bitte erneut versuchen"
+
+    // Aufnahme-Pill
+    static let pillModelLoading = "Modell lädt…"
+
+    // Deterministische Nachbearbeitung
+    static let postProcessingTitle = "Nachbearbeitung"
+    static let postProcessingOffLabel = "AUS"
+    static let postProcessingStandardLabel = "STANDARD"
+    static func postProcessingDescription(for level: PolishLevel) -> String {
+        switch level {
+        case .off: "Nur Wörterbuch-Korrekturen; das Transkript bleibt ansonsten unverändert."
+        case .standard: "Entfernt Füllwörter und löst nur eindeutige Selbstkorrekturen."
+        }
+    }
 
     // Anleitungsleiste im Bericht
     static let anleitungText = "halten und sprechen."
     static let anleitungStatusReady = "Bereit"
     static let anleitungStatusBlocked = "Hotkey inaktiv"
+    static let hotkeyRestartRequired = "Neustart nötig"
 
     // Leerzustand erster Start
     static let firstStartTitle = "Noch nichts protokolliert."
-    static let firstStartBody = "Setz den Cursor in ein Textfeld, halte ⌘ rechts und sprich einen Satz. Beim Loslassen steht er da."
+    static func firstStartBody(combo: HotkeyEngine.Combo) -> String {
+        "Setz den Cursor in ein Textfeld, halte \(VirtualKey.display(combo)) und sprich einen Satz. Beim Loslassen steht er da."
+    }
     static let firstStartTryButton = "Jetzt ausprobieren"
     static let firstStartChangeKeyButton = "Taste ändern"
+
+    static let insightsEmpty = "Noch nichts zu zählen – diktiere dein erstes Protokoll."
+    static let resetProtocolSearch = "Suche & Filter zurücksetzen"
 
     // Warnkarte „Berechtigung fehlt"
     static let permissionWarningTitle = "Der Hotkey funktioniert noch nicht."

@@ -7,7 +7,7 @@ OUT_DIR="${1:-build}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 APP_NAME="Stasi"
 BUNDLE_ID="app.stasi.macos"
-VERSION="0.1.0"
+VERSION="0.9.0"
 
 APP="$OUT_DIR/$APP_NAME.app"
 CONTENTS="$APP/Contents"
@@ -65,7 +65,7 @@ cat > "$CONTENTS/Info.plist" <<PLIST
 PLIST
 
 echo "▸ Icon…"
-ICON_PNG_DIR="$ROOT/Import/design_handoff_stasi/icons/anthrazit"
+ICON_PNG_DIR="$ROOT/import/design_handoff_stasi/icons/anthrazit"
 if [ -d "$ICON_PNG_DIR" ]; then
     # Handoff-Icon nutzen
     ICONSET="$ROOT/build/icon.iconset"

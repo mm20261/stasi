@@ -79,6 +79,7 @@ struct RootView: View {
         }
         .buttonStyle(.plain)
         .help("Konto")
+        .accessibilityLabel("Konto öffnen")
     }
 
     private var initials: String {

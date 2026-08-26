@@ -23,9 +23,10 @@ final class CopyV3Tests: XCTestCase {
 
     func testAkteNote() {
         XCTAssertEqual(Copy.akteNote(makeSettings(irony: true)),
-                       "Wächst mit jedem Wort. Ohne dein Zutun.")
+                       "Lebenslang geführt. Alle 10.000 Wörter ein neuer Meilenstein.")
         XCTAssertEqual(Copy.akteNote(makeSettings(irony: false)),
-                       "Dein Diktier-Fortschritt diese Woche.")
+                       "Alle diktierten Wörter seit deinem ersten Protokoll.")
+        XCTAssertEqual(Copy.akteMilestone, "10.000-Wörter-Meilenstein")
     }
 
     func testInsightsSubtitle() {
@@ -54,6 +55,9 @@ final class CopyV3Tests: XCTestCase {
                        "Die Akte ist leer. Das kommt selten vor.")
         XCTAssertEqual(Copy.emptyProtocols(makeSettings(irony: false)),
                        "Noch keine Protokolle.")
+        XCTAssertEqual(Copy.insightsEmpty,
+                       "Noch nichts zu zählen – diktiere dein erstes Protokoll.")
+        XCTAssertEqual(Copy.resetProtocolSearch, "Suche & Filter zurücksetzen")
     }
 
     func testPrivacyFootnote() {
@@ -65,10 +69,14 @@ final class CopyV3Tests: XCTestCase {
 
     // MARK: Feste Texte (nicht von der Ironie abhängig)
 
-    func testToastTexts() {
-        XCTAssertEqual(Copy.toastLogged, "Protokolliert")
-        XCTAssertEqual(Copy.toastCopied, "Kopiert — ⌘V")
-        XCTAssertEqual(Copy.toastDiscarded, "Verworfen")
+    func testErrorToastTexts() {
+        XCTAssertEqual(Copy.toastNothingHeard, "Nichts gehört")
+        XCTAssertEqual(Copy.toastTranscriptionAborted,
+                       "Transkription abgebrochen – bitte erneut versuchen")
+    }
+
+    func testRecordingPillModelLoadingText() {
+        XCTAssertEqual(Copy.pillModelLoading, "Modell lädt…")
     }
 
     func testGreetingByHour() {
@@ -91,10 +99,17 @@ final class CopyV3Tests: XCTestCase {
         XCTAssertEqual(Copy.anleitungText, "halten und sprechen.")
         XCTAssertEqual(Copy.anleitungStatusReady, "Bereit")
         XCTAssertEqual(Copy.anleitungStatusBlocked, "Hotkey inaktiv")
+        XCTAssertEqual(Copy.hotkeyRestartRequired, "Neustart nötig")
     }
 
     func testFirstStartEmptyState() {
         XCTAssertEqual(Copy.firstStartTitle, "Noch nichts protokolliert.")
+        let combo = HotkeyEngine.Combo(
+            keyCode: 8,
+            flags: CGEventFlags.maskControl.rawValue | CGEventFlags.maskCommand.rawValue
+        )
+        XCTAssertTrue(Copy.firstStartBody(combo: combo).contains(VirtualKey.display(combo)))
+        XCTAssertFalse(Copy.firstStartBody(combo: combo).contains("⌘ rechts"))
         XCTAssertEqual(Copy.firstStartTryButton, "Jetzt ausprobieren")
         XCTAssertEqual(Copy.firstStartChangeKeyButton, "Taste ändern")
     }

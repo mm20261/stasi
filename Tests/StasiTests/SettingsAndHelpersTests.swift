@@ -24,12 +24,32 @@ final class SettingsStoreTests: XCTestCase {
 
     func testDefaultsOnFirstLaunch() {
         let settings = SettingsStore(defaults: defaults)
-        XCTAssertEqual(settings.appearance, .system)
         XCTAssertEqual(settings.accentHex, 0x1A1917)
         XCTAssertEqual(settings.hotkeyMode, .pushToTalk)
+        XCTAssertTrue(settings.handsFreeOn)
+        XCTAssertEqual(settings.handsFreeKeyCode, 63)
         XCTAssertTrue(settings.soundOn)
         XCTAssertFalse(settings.ironyOn)
         XCTAssertFalse(settings.autostartOn)
+        XCTAssertEqual(settings.postProcessing, .standard)
+    }
+
+    func testPostProcessingPersists() {
+        let settings = SettingsStore(defaults: defaults)
+        settings.postProcessing = .off
+
+        let reloaded = SettingsStore(defaults: defaults)
+        XCTAssertEqual(reloaded.postProcessing, .off)
+        XCTAssertEqual(defaults.string(forKey: "stasi.postProcess"), "off")
+    }
+
+    func testLegacyAISettingIsRemovedWithoutMigration() {
+        defaults.set(true, forKey: "stasi.aiOn")
+
+        let settings = SettingsStore(defaults: defaults)
+
+        XCTAssertEqual(settings.postProcessing, .standard)
+        XCTAssertNil(defaults.object(forKey: "stasi.aiOn"))
     }
 
     func testAccentPersistenceAndThemeSync() {
@@ -60,6 +80,30 @@ final class SettingsStoreTests: XCTestCase {
         settings.hotkeyMode = .toggle
         let reloaded = SettingsStore(defaults: defaults)
         XCTAssertEqual(reloaded.hotkeyMode, .toggle)
+    }
+
+    func testHandsFreePersistence() {
+        let settings = SettingsStore(defaults: defaults)
+        settings.handsFreeOn = false
+        let reloaded = SettingsStore(defaults: defaults)
+        XCTAssertFalse(reloaded.handsFreeOn)
+    }
+
+    func testHandsFreeKeyCodePersists() {
+        let settings = SettingsStore(defaults: defaults)
+        settings.handsFreeKeyCode = 62
+
+        let reloaded = SettingsStore(defaults: defaults)
+        XCTAssertEqual(reloaded.handsFreeKeyCode, 62)
+        XCTAssertEqual(defaults.object(forKey: "stasi.handsFree.keyCode") as? Int, 62)
+    }
+
+    func testHandsFreeKeyCodeRejectsRegularKeys() {
+        let settings = SettingsStore(defaults: defaults)
+        settings.handsFreeKeyCode = 0
+
+        XCTAssertEqual(settings.handsFreeKeyCode, 63)
+        XCTAssertEqual(defaults.object(forKey: "stasi.handsFree.keyCode") as? Int, 63)
     }
 
     func testTranscriptionLocale() {
@@ -94,6 +138,24 @@ final class SettingsStoreTests: XCTestCase {
         XCTAssertEqual(Retention.twoWeeks.days, 14)
         XCTAssertEqual(Retention.oneMonth.days, 30)
     }
+
+    func testRetentionUsesFullLabels() {
+        XCTAssertEqual(Retention.allCases.map(\.label), [
+            "Nie löschen", "1 Tag", "1 Woche", "2 Wochen", "1 Monat",
+        ])
+    }
+
+    func testAutostartFailureResetsToggle() {
+        struct RegistrationError: Error {}
+        let settings = SettingsStore(defaults: defaults) { enabled in
+            if enabled { throw RegistrationError() }
+        }
+
+        settings.autostartOn = true
+
+        XCTAssertFalse(settings.autostartOn)
+        XCTAssertFalse(defaults.bool(forKey: "stasi.autostartOn"))
+    }
 }
 
 // MARK: - Ironie-Copy
@@ -120,6 +182,14 @@ final class CopyTests: XCTestCase {
         XCTAssertNotEqual(Copy.privacyFootnote(makeSettings(irony: true)),
                           Copy.privacyFootnote(makeSettings(irony: false)))
     }
+
+    func testPostProcessingCopy() {
+        XCTAssertEqual(Copy.postProcessingTitle, "Nachbearbeitung")
+        XCTAssertEqual(Copy.postProcessingOffLabel, "AUS")
+        XCTAssertEqual(Copy.postProcessingStandardLabel, "STANDARD")
+        XCTAssertFalse(Copy.postProcessingDescription(for: .off).isEmpty)
+        XCTAssertFalse(Copy.postProcessingDescription(for: .standard).isEmpty)
+    }
 }
 
 // MARK: - VirtualKey-Namen
@@ -131,6 +201,14 @@ final class VirtualKeyTests: XCTestCase {
         XCTAssertEqual(VirtualKey.name(for: 55), "Linke ⌘ halten")
         XCTAssertEqual(VirtualKey.name(for: 49), "Space halten")
         XCTAssertEqual(VirtualKey.name(for: 96), "F5 halten")
+        XCTAssertEqual(VirtualKey.keySymbol(62), "⌃ Rechts")
+    }
+
+    func testHandsFreeAllowsOnlyRequestedModifierKeys() {
+        XCTAssertEqual(VirtualKey.handsFreeModifierKeyCodes,
+                       [63, 55, 54, 58, 61, 59, 62, 56, 60])
+        XCTAssertFalse(VirtualKey.isHandsFreeModifier(0))
+        XCTAssertFalse(VirtualKey.isHandsFreeModifier(57))
     }
 
     func testLetterKeys() {
@@ -166,17 +244,37 @@ final class VirtualKeyTests: XCTestCase {
     }
 
     func testEditableRoles() {
-        XCTAssertTrue(TextInjector.isEditableRole("AXTextField"))
-        XCTAssertTrue(TextInjector.isEditableRole("AXTextArea"))
-        XCTAssertTrue(TextInjector.isEditableRole("AXWebArea"))
-        XCTAssertTrue(TextInjector.isEditableRole("AXComboBox"))
+        XCTAssertTrue(TextInjector.isEditableRole("AXTextField", valueSettable: false))
+        XCTAssertTrue(TextInjector.isEditableRole("AXTextArea", valueSettable: false))
+        XCTAssertTrue(TextInjector.isEditableRole("AXComboBox", valueSettable: false))
+        XCTAssertTrue(TextInjector.isEditableRole("AXWebArea", valueSettable: true))
+        XCTAssertFalse(TextInjector.isEditableRole("AXWebArea", valueSettable: false))
     }
 
     func testNonEditableRoles() {
-        XCTAssertFalse(TextInjector.isEditableRole("AXButton"))
-        XCTAssertFalse(TextInjector.isEditableRole("AXWindow"))
-        XCTAssertFalse(TextInjector.isEditableRole("AXGroup"))
-        XCTAssertFalse(TextInjector.isEditableRole(""))
+        XCTAssertFalse(TextInjector.isEditableRole("AXButton", valueSettable: true))
+        XCTAssertFalse(TextInjector.isEditableRole("AXWindow", valueSettable: true))
+        XCTAssertFalse(TextInjector.isEditableRole("AXGroup", valueSettable: true))
+        XCTAssertFalse(TextInjector.isEditableRole("", valueSettable: true))
+    }
+}
+
+// MARK: - DebugLog-Rotation
+
+final class DebugLogTests: XCTestCase {
+    func testOversizedLogIsRotated() throws {
+        let directory = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+            .appendingPathComponent(".build/debug-log-tests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let logURL = directory.appendingPathComponent("debug.log")
+        try Data(repeating: 0x41, count: 11).write(to: logURL)
+
+        try DebugLog.rotateIfNeeded(at: logURL, maxBytes: 10)
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: logURL.path))
+        XCTAssertEqual(try Data(contentsOf: directory.appendingPathComponent("debug.log.1")).count, 11)
     }
 }
 
@@ -198,18 +296,24 @@ final class AudioLevelTests: XCTestCase {
 
     func testSilenceGivesZero() {
         let level = AudioCapture.computeLevel(of: buffer(withAmplitude: 0))
-        XCTAssertEqual(level, 0, accuracy: 0.0001)
+        XCTAssertLessThan(level, 0.05)
     }
 
-    func testLoudSignalGivesHighLevel() {
-        let level = AudioCapture.computeLevel(of: buffer(withAmplitude: 0.5))
-        XCTAssertGreaterThan(level, 0.5)
+    func testQuietSignalRemainsBelowRoomLevel() {
+        let level = AudioCapture.computeLevel(of: buffer(withAmplitude: 0.005))
+        XCTAssertTrue((0.3...0.5).contains(level), "level=\(level)")
     }
 
-    func testQuietSignalGivesLowerLevel() {
-        let loud = AudioCapture.computeLevel(of: buffer(withAmplitude: 0.5))
-        let quiet = AudioCapture.computeLevel(of: buffer(withAmplitude: 0.05))
-        XCTAssertLessThan(quiet, loud)
+    func testRoomVolumeUsesMostOfMeterRange() {
+        let level = AudioCapture.computeLevel(of: buffer(withAmplitude: 0.04))
+        XCTAssertTrue((0.8...0.95).contains(level), "level=\(level)")
+    }
+
+    func testLoudSpeechStaysNormalizedAndAboveRoomVolume() {
+        let room = AudioCapture.computeLevel(of: buffer(withAmplitude: 0.04))
+        let loud = AudioCapture.computeLevel(of: buffer(withAmplitude: 0.08))
+        XCTAssertGreaterThan(loud, room)
+        XCTAssertLessThanOrEqual(loud, 1.0)
     }
 
     func testLevelIsNormalized() {

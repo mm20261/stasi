@@ -3,7 +3,10 @@ import Foundation
 // MARK: - AppVersion (Anzeige-Konstanten)
 
 enum AppVersion {
-    static let display = "0.9"
+    static var display: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
+            ?? "dev"
+    }
     static let akte = "001"
 }
 
@@ -14,9 +17,14 @@ enum AppVersion {
 
 // MARK: Release-Quelle
 
+struct ReleaseInfo: Equatable, Sendable {
+    /// Roher Versions-Tag der Veröffentlichung („v0.10").
+    let version: String
+    let url: URL
+}
+
 protocol ReleaseFetching: Sendable {
-    /// Liefert den rohen Versions-Tag der neuesten Veröffentlichung („v0.10").
-    func fetchLatestVersion() async throws -> String
+    func fetchLatestRelease() async throws -> ReleaseInfo
 }
 
 struct GitHubReleaseFetcher: ReleaseFetching {
@@ -26,10 +34,18 @@ struct GitHubReleaseFetcher: ReleaseFetching {
         self.url = repoAPIURL
     }
 
-    struct Payload: Decodable { let tagName: String }
+    struct Payload: Decodable {
+        let tagName: String
+        let htmlURL: URL
+
+        enum CodingKeys: String, CodingKey {
+            case tagName = "tag_name"
+            case htmlURL = "html_url"
+        }
+    }
     enum FetchError: Error { case badStatus }
 
-    func fetchLatestVersion() async throws -> String {
+    func fetchLatestRelease() async throws -> ReleaseInfo {
         var request = URLRequest(url: url)
         request.timeoutInterval = 10
         request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
@@ -37,9 +53,8 @@ struct GitHubReleaseFetcher: ReleaseFetching {
         guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
             throw FetchError.badStatus
         }
-        let decoder = JSONDecoder()
-        decoder.keyDecodingStrategy = .convertFromSnakeCase
-        return try decoder.decode(Payload.self, from: data).tagName
+        let payload = try JSONDecoder().decode(Payload.self, from: data)
+        return ReleaseInfo(version: payload.tagName, url: payload.htmlURL)
     }
 }
 
@@ -83,9 +98,12 @@ final class UpdateChecker {
         var lastChecked: Date?
         /// Normalisierte Version (ohne „v"), nil = keine neue verfügbar.
         var availableVersion: String?
+        /// Zielseite der verfügbaren GitHub-Veröffentlichung.
+        var releaseURL: URL?
 
         static func == (lhs: State, rhs: State) -> Bool {
             lhs.availableVersion == rhs.availableVersion
+                && lhs.releaseURL == rhs.releaseURL
                 && (lhs.lastChecked.map { $0.timeIntervalSince1970 } ?? -1
                     == rhs.lastChecked.map { $0.timeIntervalSince1970 } ?? -1)
         }
@@ -99,18 +117,20 @@ final class UpdateChecker {
 
     private static let lastCheckedKey = "stasi.update.lastChecked"
     private static let availableKey = "stasi.update.available"
+    private static let releaseURLKey = "stasi.update.releaseURL"
 
     init(fetcher: ReleaseFetching = GitHubReleaseFetcher(),
          defaults: UserDefaults = .standard,
          currentVersion: String? = nil) {
         self.fetcher = fetcher
         self.defaults = defaults
-        self.currentVersion = currentVersion
-            ?? Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
-            ?? "0.9"
+        self.currentVersion = currentVersion ?? AppVersion.display
         let lastChecked = defaults.object(forKey: Self.lastCheckedKey) as? Date
         let available = defaults.string(forKey: Self.availableKey)
-        state = State(lastChecked: lastChecked, availableVersion: available)
+        let releaseURL = defaults.string(forKey: Self.releaseURLKey).flatMap(URL.init(string:))
+        state = State(lastChecked: lastChecked,
+                      availableVersion: available,
+                      releaseURL: releaseURL)
     }
 
     func replaceFetcher(_ newFetcher: ReleaseFetching) {
@@ -122,9 +142,10 @@ final class UpdateChecker {
         isChecking = true
         defer { isChecking = false }
         do {
-            let raw = try await fetcher.fetchLatestVersion()
-            let newer = VersionComparator.isNewer(raw, than: currentVersion)
-            state.availableVersion = newer ? VersionComparator.display(raw) : nil
+            let release = try await fetcher.fetchLatestRelease()
+            let newer = VersionComparator.isNewer(release.version, than: currentVersion)
+            state.availableVersion = newer ? VersionComparator.display(release.version) : nil
+            state.releaseURL = newer ? release.url : nil
         } catch {
             // Netz-/API-Fehler: Zeitstempel setzen, letztes Ergebnis behalten.
             DebugLog.log("STASI-APP: Update-Check fehlgeschlagen: \(error.localizedDescription)")
@@ -141,6 +162,11 @@ final class UpdateChecker {
             defaults.set(available, forKey: Self.availableKey)
         } else {
             defaults.removeObject(forKey: Self.availableKey)
+        }
+        if let releaseURL = state.releaseURL {
+            defaults.set(releaseURL.absoluteString, forKey: Self.releaseURLKey)
+        } else {
+            defaults.removeObject(forKey: Self.releaseURLKey)
         }
     }
 

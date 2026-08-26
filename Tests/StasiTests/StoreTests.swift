@@ -11,8 +11,9 @@ final class DictionaryStoreTests: XCTestCase {
 
     override func setUp() {
         super.setUp()
-        tempDir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("stasi-tests-\(UUID().uuidString)", isDirectory: true)
+        tempDir = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+            .appendingPathComponent(".build/test-artifacts", isDirectory: true)
+            .appendingPathComponent("StoreTests-\(UUID().uuidString)", isDirectory: true)
         store = DictionaryStore(directory: tempDir)
     }
 
@@ -81,6 +82,63 @@ final class DictionaryStoreTests: XCTestCase {
         XCTAssertNotNil(entries)
         XCTAssertTrue(entries?.contains { ($0["value"] as? String) == "Handedit" } ?? false)
     }
+
+    func testMergeLearnedDeduplicatesAndUpdatesNote() {
+        let existing = DictionaryEntry(type: .learned, value: "Frobulator", note: "2× diktiert")
+        store.add(existing)
+
+        store.mergeLearned([
+            DictionaryEntry(type: .learned, value: "frobulator", note: "3× diktiert"),
+            DictionaryEntry(type: .learned, value: "Anthropic", note: "4× diktiert"),
+            DictionaryEntry(type: .learned, value: "Neologismus", note: "2× diktiert"),
+            DictionaryEntry(type: .learned, value: "NEOLOGISMUS", note: "2× diktiert"),
+        ])
+
+        let frobulator = store.entries.filter {
+            $0.matchSource.caseInsensitiveCompare("Frobulator") == .orderedSame
+        }
+        XCTAssertEqual(frobulator.count, 1)
+        XCTAssertEqual(frobulator.first?.note, "3× diktiert")
+        XCTAssertEqual(store.entries.filter {
+            $0.matchSource.caseInsensitiveCompare("Neologismus") == .orderedSame
+        }.count, 1)
+        XCTAssertEqual(store.entries.filter {
+            $0.type == .learned && $0.matchSource.caseInsensitiveCompare("Anthropic") == .orderedSame
+        }.count, 0)
+    }
+
+    func testIgnoreLearnedPersists() {
+        let learned = DictionaryEntry(type: .learned, value: "Frobulator", note: "2× diktiert")
+        store.add(learned)
+
+        store.ignoreLearned(learned)
+
+        XCTAssertFalse(store.entries.contains { $0.id == learned.id })
+        XCTAssertEqual(store.ignoredLearned, ["frobulator"])
+        store.mergeLearned([
+            DictionaryEntry(type: .learned, value: "FROBULATOR", note: "3× diktiert"),
+        ])
+        XCTAssertFalse(store.entries.contains {
+            $0.matchSource.caseInsensitiveCompare("Frobulator") == .orderedSame
+        })
+        let reloaded = DictionaryStore(directory: tempDir)
+        XCTAssertFalse(reloaded.entries.contains { $0.id == learned.id })
+        XCTAssertEqual(reloaded.ignoredLearned, ["frobulator"])
+    }
+
+    func testOldDictionaryWithoutIgnoredLearnedLoads() throws {
+        let legacyDirectory = tempDir.appendingPathComponent("legacy-dictionary", isDirectory: true)
+        try FileManager.default.createDirectory(at: legacyDirectory, withIntermediateDirectories: true)
+        let entry = DictionaryEntry(type: .word, value: "Legacy")
+        let encodedEntry = try JSONSerialization.jsonObject(with: JSONEncoder().encode(entry))
+        let legacyData = try JSONSerialization.data(withJSONObject: ["entries": [encodedEntry]])
+        try legacyData.write(to: legacyDirectory.appendingPathComponent("dictionary.json"))
+
+        let reloaded = DictionaryStore(directory: legacyDirectory)
+
+        XCTAssertEqual(reloaded.entries.map(\.value), ["Legacy"])
+        XCTAssertTrue(reloaded.ignoredLearned.isEmpty)
+    }
 }
 
 // MARK: - HistoryStore
@@ -93,8 +151,9 @@ final class HistoryStoreTests: XCTestCase {
 
     override func setUp() {
         super.setUp()
-        tempDir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("stasi-tests-\(UUID().uuidString)", isDirectory: true)
+        tempDir = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+            .appendingPathComponent(".build/test-artifacts", isDirectory: true)
+            .appendingPathComponent("HistoryStoreTests-\(UUID().uuidString)", isDirectory: true)
         store = HistoryStore(directory: tempDir)
     }
 
@@ -123,6 +182,22 @@ final class HistoryStoreTests: XCTestCase {
         XCTAssertEqual(reloaded.records.first?.correctedText, "Persistenz-Test")
         XCTAssertEqual(reloaded.records.first?.durationSecs ?? 0, 3.5, accuracy: 0.001)
         XCTAssertEqual(reloaded.records.first?.targetApp, "Notizen")
+    }
+
+    func testOldHistoryWithoutPolishSummaryStillLoads() throws {
+        let historyDirectory = tempDir.appendingPathComponent("legacy-history", isDirectory: true)
+        try FileManager.default.createDirectory(at: historyDirectory,
+                                                withIntermediateDirectories: true)
+        let record = makeRecord(text: "Altes Protokoll")
+        let encoded = try JSONEncoder().encode([record])
+        let json = try XCTUnwrap(JSONSerialization.jsonObject(with: encoded) as? [[String: Any]])
+        XCTAssertNil(json.first?["polish"])
+        try encoded.write(to: historyDirectory.appendingPathComponent("history.json"))
+
+        let reloaded = HistoryStore(directory: historyDirectory)
+
+        XCTAssertEqual(reloaded.records.first?.correctedText, "Altes Protokoll")
+        XCTAssertNil(reloaded.records.first?.polish)
     }
 
     func testInsertAtTop() {

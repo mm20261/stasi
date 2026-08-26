@@ -22,9 +22,18 @@ struct DictionaryBiaser: BiasingHook {
     let entries: [DictionaryEntry]
 
     func vocabularyContext(limit: Int = 12) -> [String] {
-        let words = entries.map(\.matchSource).filter { !$0.isEmpty }
+        var seen = Set<String>()
+        let words = entries
+            .filter { $0.type != .learned }
+            .map(\.replacementTarget)
+            .filter { !$0.isEmpty && seen.insert($0).inserted }
         // Kurze, prägnante Begriffe zuerst – maximale Wirkung pro Kontext-Token.
-        let sorted = words.sorted { $0.count < $1.count }
+        // Bei gleicher Länge bleibt die Wörterbuch-Reihenfolge stabil.
+        let sorted = words.enumerated().sorted {
+            $0.element.count == $1.element.count
+                ? $0.offset < $1.offset
+                : $0.element.count < $1.element.count
+        }.map(\.element)
         return Array(sorted.prefix(limit))
     }
 }

@@ -11,12 +11,43 @@ struct AudioChunk: @unchecked Sendable {
     let buffer: AVAudioPCMBuffer
 }
 
+/// Schmale Capture-Schnittstelle, damit der Session-Lebenszyklus ohne echte
+/// Mikrofon-Hardware getestet werden kann.
+protocol AudioCapturing: AnyObject, Sendable {
+    var isRunning: Bool { get }
+    var latestLevel: Double { get }
+
+    func start(outputFormat: AVAudioFormat,
+               recordTo url: URL?,
+               preferredMicUID: String?,
+               onBuffer: @escaping @Sendable (AudioChunk) -> Void) throws
+
+    @discardableResult
+    func stop() -> URL?
+}
+
 // MARK: - AudioCapture (Mikrofon-Capture + WAV-Mitschrieb + VU-Level)
 // Nimmt im NATIVEN Mikrofon-Format auf und konvertiert zum Wunschformat der
 // Engine (SpeechAnalyzer verlangt z. B. Int16 – Float32 füttern killt den
 // Prozess mit einer harten Precondition).
-final class AudioCapture: @unchecked Sendable {
-    private let engine = AVAudioEngine()
+final class AudioCapture: AudioCapturing, @unchecked Sendable {
+    /// Schmale Hardware-Naht für Dateilebenszyklus-Tests ohne Mikrofon/TCC.
+    struct EngineHooks {
+        let prepareInput: @Sendable (_ preferredMicUID: String?,
+                                     _ handler: @escaping @Sendable (AVAudioPCMBuffer) -> Void) throws -> AVAudioFormat
+        let prepareEngine: () -> Void
+        let startEngine: () throws -> Void
+        let stopEngine: () -> Void
+        let removeTap: () -> Void
+        /// Entspricht `reset()` + Freigabe der pro Aufnahme erzeugten Engine.
+        let teardownEngine: () -> Void
+    }
+
+    /// Pro Aufnahme neu erzeugt, damit der InputNode nach `stop()` vollständig
+    /// deallokiert wird und insbesondere Bluetooth-Mikrofone nicht belegt bleiben.
+    private var engine: AVAudioEngine?
+    private let engineHooks: EngineHooks?
+    private var inputTapInstalled = false
     private nonisolated(unsafe) var converter: AVAudioConverter?
     private nonisolated(unsafe) var outputFormat: AVAudioFormat?
     private nonisolated(unsafe) var onBuffer: (@Sendable (AudioChunk) -> Void)?
@@ -24,8 +55,12 @@ final class AudioCapture: @unchecked Sendable {
 
     // WAV-Mitschrieb: ausschließlich eigene Puffer, auf serialer Queue.
     private let writeQueue = DispatchQueue(label: "app.stasi.audio.write")
+    // Zugriff ausschließlich synchron/asynchron auf `writeQueue`.
     private nonisolated(unsafe) var outputFile: AVAudioFile?
     private var recordURL: URL?
+
+    /// Nur für Verifikation des Dateilebenszyklus; liest ebenfalls auf der Queue.
+    var hasOpenOutputFile: Bool { writeQueue.sync { outputFile != nil } }
 
     // VU-Level: Render-Thread schreibt unter Lock, Main-Poll liest.
     private let lock = NSLock()
@@ -36,6 +71,10 @@ final class AudioCapture: @unchecked Sendable {
         return rawLevel
     }
 
+    init(engineHooks: EngineHooks? = nil) {
+        self.engineHooks = engineHooks
+    }
+
     func start(outputFormat: AVAudioFormat,
                recordTo url: URL?,
                preferredMicUID: String? = nil,
@@ -44,48 +83,84 @@ final class AudioCapture: @unchecked Sendable {
         self.onBuffer = onBuffer
         self.outputFormat = outputFormat
 
-        let input = engine.inputNode
-        // Wunsch-Gerät VOR dem Format-Holen setzen – andere Geräte haben
-        // andere native Formate. Schlägt es fehl, läuft das Standardgerät.
-        MicrophoneScanner.apply(preferredMicUID, to: input)
-        let native = input.outputFormat(forBus: 0)
-        converter = native == outputFormat ? nil : AVAudioConverter(from: native, to: outputFormat)
-
         recordURL = url
-        if let url {
-            let file = try? AVAudioFile(
-                forWriting: url,
-                settings: outputFormat.settings,
-                commonFormat: outputFormat.commonFormat,
-                interleaved: outputFormat.isInterleaved
-            )
-            writeQueue.async { self.outputFile = file }
+        if engineHooks == nil {
+            engine = AVAudioEngine()
         }
+        do {
+            // Synchron VOR installTap: Der erste Tap-Puffer darf bereits in
+            // eine vollständig geöffnete WAV-Datei geschrieben werden.
+            if let url {
+                try writeQueue.sync {
+                    outputFile = try AVAudioFile(
+                        forWriting: url,
+                        settings: outputFormat.settings,
+                        commonFormat: outputFormat.commonFormat,
+                        interleaved: outputFormat.isInterleaved
+                    )
+                }
+            }
 
-        input.removeTap(onBus: 0)
-        input.installTap(onBus: 0, bufferSize: 2048, format: native) { [weak self] buffer, _ in
-            self?.handle(buffer)
+            let sink: @Sendable (AVAudioPCMBuffer) -> Void = { [weak self] buffer in
+                self?.handle(buffer)
+            }
+            let native: AVAudioFormat
+            if let engineHooks {
+                native = try engineHooks.prepareInput(preferredMicUID, sink)
+                inputTapInstalled = true
+            } else {
+                guard let engine else { preconditionFailure("Audio-Engine fehlt") }
+                let input = engine.inputNode
+                // Wunsch-Gerät VOR dem Format-Holen setzen – andere Geräte
+                // haben andere native Formate. Bei false läuft Standard weiter.
+                let micApplied = MicrophoneScanner.apply(preferredMicUID, to: input)
+                DebugLog.log("STASI-AUDIO: Mikrofon-Auswahl angewendet=\(micApplied)")
+                native = input.outputFormat(forBus: 0)
+                input.removeTap(onBus: 0)
+                input.installTap(onBus: 0, bufferSize: 2048, format: native) { buffer, _ in
+                    sink(buffer)
+                }
+                inputTapInstalled = true
+            }
+
+            converter = native == outputFormat ? nil : AVAudioConverter(from: native, to: outputFormat)
+            if let engineHooks {
+                engineHooks.prepareEngine()
+                try engineHooks.startEngine()
+            } else {
+                guard let engine else { preconditionFailure("Audio-Engine fehlt") }
+                engine.prepare()
+                try engine.start()
+            }
+            isRunning = true
+            DebugLog.log("STASI-AUDIO: Capture läuft – nativ \(native.sampleRate) Hz → Engine \(outputFormat.sampleRate) Hz")
+        } catch {
+            teardownEngine()
+            closeOutputFile()
+            converter = nil
+            self.outputFormat = nil
+            self.onBuffer = nil
+            recordURL = nil
+            isRunning = false
+            throw error
         }
-        engine.prepare()
-        try engine.start()
-        isRunning = true
-        DebugLog.log("STASI-AUDIO: Capture läuft – nativ \(native.sampleRate) Hz → Engine \(outputFormat.sampleRate) Hz")
     }
 
     /// Entfernt den Tap, lässt den Mitschrieb ausschreiben, liefert die Datei-URL.
     @discardableResult
     func stop() -> URL? {
         guard isRunning else { return nil }
-        engine.inputNode.removeTap(onBus: 0)
-        engine.stop()
+        teardownEngine()
         isRunning = false
         converter = nil
+        outputFormat = nil
         onBuffer = nil
         lock.lock()
         rawLevel = 0
         lock.unlock()
-        // Läuft auf der seriellen Queue NACH allen ausstehenden Writes.
-        writeQueue.async { self.outputFile = nil }
+        // Synchron NACH allen ausstehenden Writes: Bei Rückkehr ist die Datei
+        // garantiert geschlossen und kann sicher gelesen/exportiert werden.
+        closeOutputFile()
         let url = recordURL
         recordURL = nil
         return url
@@ -93,7 +168,7 @@ final class AudioCapture: @unchecked Sendable {
 
     // MARK: Audio-Thread
 
-    private func handle(_ buffer: AVAudioPCMBuffer) {
+    nonisolated private func handle(_ buffer: AVAudioPCMBuffer) {
         let level = Self.computeLevel(of: buffer)
         lock.lock()
         rawLevel = level
@@ -125,14 +200,42 @@ final class AudioCapture: @unchecked Sendable {
         }
         guard let owned else { return }
 
-        if outputFile != nil {
-            writeQueue.async { try? self.outputFile?.write(from: owned) }
+        let chunk = AudioChunk(buffer: owned)
+        writeQueue.async {
+            if let file = self.outputFile {
+                try? file.write(from: chunk.buffer)
+            }
         }
-        onBuffer?(AudioChunk(buffer: owned))
+        onBuffer?(chunk)
+    }
+
+    /// Reihenfolge ist absichtlich strikt: Tap weg → stop → reset → Referenz nil.
+    private func teardownEngine() {
+        if inputTapInstalled {
+            if let engineHooks {
+                engineHooks.removeTap()
+            } else {
+                engine?.inputNode.removeTap(onBus: 0)
+            }
+            inputTapInstalled = false
+        }
+
+        if let engineHooks {
+            engineHooks.stopEngine()
+            engineHooks.teardownEngine()
+        } else {
+            engine?.stop()
+            engine?.reset()
+            engine = nil
+        }
+    }
+
+    private func closeOutputFile() {
+        writeQueue.sync { outputFile = nil }
     }
 
     /// Deep-Copy eines Tap-Puffers in eigenen Speicher.
-    private static func copy(_ buffer: AVAudioPCMBuffer) -> AVAudioPCMBuffer? {
+    nonisolated static func copy(_ buffer: AVAudioPCMBuffer) -> AVAudioPCMBuffer? {
         guard buffer.frameLength > 0,
               let copy = AVAudioPCMBuffer(pcmFormat: buffer.format, frameCapacity: buffer.frameLength)
         else { return nil }
@@ -168,9 +271,8 @@ final class AudioCapture: @unchecked Sendable {
         }
     }
 
-    /// RMS → normalisierter Pegel (0…1). Höherer Gain + steilerer Exponent
-    /// (0.6 statt 0.4) spreizt die Dynamik: leise bleibt klein, laut schlägt
-    /// deutlich aus – damit die Waveform wirklich auf Lautstärke reagiert.
+    /// RMS → normalisierter Pegel (0…1). Die steile Kurve macht leise Sprache
+    /// sichtbar und legt Zimmerlautstärke auf etwa 80–95 % des Bereichs.
     nonisolated static func computeLevel(of buffer: AVAudioPCMBuffer) -> Double {
         guard let data = buffer.floatChannelData?[0] else { return 0 }
         let frames = Int(buffer.frameLength)
@@ -180,6 +282,6 @@ final class AudioCapture: @unchecked Sendable {
             sum += data[i] * data[i]
         }
         let rms = sqrt(sum / Float(frames / 4 + 1))
-        return Double(pow(min(rms * 7.0, 1.0), 0.6))
+        return Double(pow(min(rms * 25.0, 1.0), 0.4))
     }
 }
