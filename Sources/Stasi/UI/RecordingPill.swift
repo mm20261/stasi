@@ -158,7 +158,7 @@ final class PillController {
             onCommit: { [weak app] in app?.enqueue(.commit) }
         )
         pillView = view
-        pillPanel = PillPanel(content: view, size: NSSize(width: 140, height: 22))
+        pillPanel = PillPanel(content: view, size: NSSize(width: 140, height: 24))
         startAnimation()
         return view
     }
@@ -201,7 +201,7 @@ final class RecordingPillView: NSView {
     private var currentLevel: Double = 0
 
     init(onDiscard: @escaping () -> Void, onCommit: @escaping () -> Void) {
-        super.init(frame: NSRect(x: 0, y: 0, width: 140, height: 22))
+        super.init(frame: NSRect(x: 0, y: 0, width: 140, height: 24))
         self.onDiscard = onDiscard
         self.onCommit = onCommit
 
@@ -266,7 +266,7 @@ final class RecordingPillView: NSView {
         addSubview(transcriptLabel)
 
         widthConstraint = widthAnchor.constraint(equalToConstant: 140)
-        heightConstraint = heightAnchor.constraint(equalToConstant: 22)
+        heightConstraint = heightAnchor.constraint(equalToConstant: 24)
 
         NSLayoutConstraint.activate([
             widthConstraint,
@@ -308,7 +308,7 @@ final class RecordingPillView: NSView {
     private func applyBackground() {
         let ink = NSColor(Theme.Palette.ink)
         layer?.backgroundColor = ink.cgColor
-        layer?.cornerRadius = 11
+        layer?.cornerRadius = 12
         commitButton.contentTintColor = ink
     }
 
@@ -341,7 +341,7 @@ final class RecordingPillView: NSView {
     }
 
     /// 30 Hz: Waveform-Ballistik. Silenz = komplett flach (2 px, statisch),
-    /// Lautstärke spreizt die Balken deutlich bis 12 px – man sieht klar,
+    /// Lautstärke spreizt die Balken deutlich bis 14 px – man sieht klar,
     /// dass wirklich aufgenommen wird.
     func tick() {
         t += 1.0 / 30.0
@@ -409,7 +409,7 @@ final class PillWaveformView: NSView {
             }
             let phase = time * (2.4 + Double(index % 4) * 0.55) + Double(index) * 0.9
             let jagged = abs(sin(phase) * 0.6 + sin(phase * 2.1) * 0.4)
-            return MicLevelBars.height(level: level * (0.15 + 0.85 * jagged), jitter: 0)
+            return MicLevelBars.height(level: level * (0.45 + 0.55 * jagged), jitter: 0)
         }
         needsDisplay = true
     }

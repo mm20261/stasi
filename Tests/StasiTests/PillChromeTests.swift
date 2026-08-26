@@ -21,7 +21,7 @@ final class PillChromeTests: XCTestCase {
     func testPillWidthIdenticalForBothSources() {
         XCTAssertEqual(PillChrome.pillWidth(for: .pushToTalk), 140)
         XCTAssertEqual(PillChrome.pillWidth(for: .handsFree), 140)
-        XCTAssertEqual(PillChrome.pillHeight(hasPartialText: false), 22)
+        XCTAssertEqual(PillChrome.pillHeight(hasPartialText: false), 24)
     }
 
     func testPillGrowsForLiveTranscript() {
@@ -81,24 +81,24 @@ final class MicLevelBarTests: XCTestCase {
     }
 
     func testLoudLevelReachesMaximum() {
-        XCTAssertEqual(MicLevelBars.height(level: 1, jitter: 0), 12)
+        XCTAssertEqual(MicLevelBars.height(level: 1, jitter: 0), 14)
     }
 
     func testMidLevelIsBetween() {
         let h = MicLevelBars.height(level: 0.5, jitter: 0)
         XCTAssertGreaterThan(h, 2)
-        XCTAssertLessThan(h, 12)
+        XCTAssertLessThan(h, 14)
     }
 
     func testLevelIsClamped() {
         XCTAssertEqual(MicLevelBars.height(level: -1, jitter: 0), 2)
-        XCTAssertEqual(MicLevelBars.height(level: 5, jitter: 0), 12)
+        XCTAssertEqual(MicLevelBars.height(level: 5, jitter: 0), 14)
     }
 
     func testJitterOnlyModulatesWithinBounds() {
         for jitter in stride(from: -1.0, through: 1.0, by: 0.25) {
             let h = MicLevelBars.height(level: 0.4, jitter: jitter)
-            XCTAssertTrue((2...12).contains(h), "h=\(h) außerhalb für jitter=\(jitter)")
+            XCTAssertTrue((2...14).contains(h), "h=\(h) außerhalb für jitter=\(jitter)")
         }
     }
 }

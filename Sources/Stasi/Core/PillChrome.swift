@@ -24,7 +24,7 @@ enum PillChrome {
     }
 
     static func pillHeight(hasPartialText: Bool) -> CGFloat {
-        hasPartialText ? 52 : 22
+        hasPartialText ? 52 : 24
     }
 }
 
@@ -32,10 +32,10 @@ enum PillChrome {
 
 enum MicLevelBars {
     static let minHeight: CGFloat = 2
-    static let maxHeight: CGFloat = 12
+    static let maxHeight: CGFloat = 14
 
-    /// Level (0…1) + kleiner Balken-Jitter → Höhe 2…12 px.
-    /// Stille = flach (2 px), laut = voller Ausschlag (12 px).
+    /// Level (0…1) + kleiner Balken-Jitter → Höhe 2…14 px.
+    /// Stille = flach (2 px), laut = voller Ausschlag (14 px).
     static func height(level: Double, jitter: Double) -> CGFloat {
         let clamped = max(0, min(level, 1))
         let jittered = max(0, min(clamped + jitter * 0.15, 1))

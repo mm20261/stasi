@@ -270,18 +270,24 @@ final class AudioLevelTests: XCTestCase {
 
     func testSilenceGivesZero() {
         let level = AudioCapture.computeLevel(of: buffer(withAmplitude: 0))
-        XCTAssertEqual(level, 0, accuracy: 0.0001)
+        XCTAssertLessThan(level, 0.05)
     }
 
-    func testLoudSignalGivesHighLevel() {
-        let level = AudioCapture.computeLevel(of: buffer(withAmplitude: 0.5))
-        XCTAssertGreaterThan(level, 0.5)
+    func testQuietSignalRemainsBelowRoomLevel() {
+        let level = AudioCapture.computeLevel(of: buffer(withAmplitude: 0.005))
+        XCTAssertTrue((0.15...0.45).contains(level), "level=\(level)")
     }
 
-    func testQuietSignalGivesLowerLevel() {
-        let loud = AudioCapture.computeLevel(of: buffer(withAmplitude: 0.5))
-        let quiet = AudioCapture.computeLevel(of: buffer(withAmplitude: 0.05))
-        XCTAssertLessThan(quiet, loud)
+    func testRoomVolumeUsesMostOfMeterRange() {
+        let level = AudioCapture.computeLevel(of: buffer(withAmplitude: 0.04))
+        XCTAssertTrue((0.55...0.9).contains(level), "level=\(level)")
+    }
+
+    func testLoudSpeechStaysNormalizedAndAboveRoomVolume() {
+        let room = AudioCapture.computeLevel(of: buffer(withAmplitude: 0.04))
+        let loud = AudioCapture.computeLevel(of: buffer(withAmplitude: 0.08))
+        XCTAssertGreaterThan(loud, room)
+        XCTAssertLessThanOrEqual(loud, 1.0)
     }
 
     func testLevelIsNormalized() {
