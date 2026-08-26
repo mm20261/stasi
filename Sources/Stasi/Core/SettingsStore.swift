@@ -71,6 +71,10 @@ final class SettingsStore {
         if let raw = defaults.string(forKey: "stasi.hotkeyMode"),
            let m = HotkeyMode(rawValue: raw) { hotkeyMode = m }
         handsFreeOn = defaults.object(forKey: "stasi.handsFreeOn") as? Bool ?? true
+        if let number = defaults.object(forKey: "stasi.handsFree.keyCode") as? NSNumber,
+           VirtualKey.isHandsFreeModifier(number.uint64Value) {
+            handsFreeKeyCode = number.uint64Value
+        }
         language = defaults.string(forKey: "stasi.langChoice") ?? "auto"
         soundOn = defaults.object(forKey: "stasi.soundOn") as? Bool ?? true
         if let raw = defaults.string(forKey: "stasi.postProcess"),
@@ -117,6 +121,16 @@ final class SettingsStore {
 
     var handsFreeOn: Bool = true {
         didSet { d.set(handsFreeOn, forKey: "stasi.handsFreeOn") }
+    }
+
+    var handsFreeKeyCode: UInt64 = 63 {
+        didSet {
+            guard VirtualKey.isHandsFreeModifier(handsFreeKeyCode) else {
+                handsFreeKeyCode = oldValue
+                return
+            }
+            d.set(Int(handsFreeKeyCode), forKey: "stasi.handsFree.keyCode")
+        }
     }
 
     var language: String = "auto" {   // "auto" | "de_DE" | "en_US"

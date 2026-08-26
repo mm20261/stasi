@@ -2,7 +2,7 @@ import XCTest
 import CoreGraphics
 @testable import Stasi
 
-// MARK: - ShortcutDetector (⌃⌘V/⌃⌘C-Chords + Fn-Doppeltipp)
+// MARK: - ShortcutDetector (⌃⌘V/⌃⌘C + Modifier-Doppeltipp)
 
 final class ShortcutDetectorTests: XCTestCase {
 
@@ -114,5 +114,48 @@ final class ShortcutDetectorTests: XCTestCase {
         _ = d.process(kind: .flagsChanged, keyCode: ShortcutDetector.fnKeyCode, flags: 0, now: t0.addingTimeInterval(0.3))
         let single = d.process(kind: .flagsChanged, keyCode: ShortcutDetector.fnKeyCode, flags: ShortcutDetector.secondaryFn, now: t0.addingTimeInterval(0.4))
         XCTAssertTrue(single.isEmpty)
+    }
+
+    func testConfiguredCommandDoubleTapFires() {
+        var d = ShortcutDetector(handsFreeKeyCode: 55)
+        d.handsFreeEnabled = true
+        let t0 = Date(timeIntervalSince1970: 0)
+        _ = d.process(kind: .flagsChanged, keyCode: 55,
+                      flags: CGEventFlags.maskCommand.rawValue, now: t0)
+        _ = d.process(kind: .flagsChanged, keyCode: 55,
+                      flags: 0, now: t0.addingTimeInterval(0.1))
+        let events = d.process(kind: .flagsChanged, keyCode: 55,
+                               flags: CGEventFlags.maskCommand.rawValue,
+                               now: t0.addingTimeInterval(0.25))
+
+        XCTAssertEqual(events, [.handsFreeTap])
+    }
+
+    func testConfiguredOptionDoubleTapOutsideWindowDoesNotFire() {
+        var d = ShortcutDetector(handsFreeKeyCode: 58)
+        d.handsFreeEnabled = true
+        let t0 = Date(timeIntervalSince1970: 0)
+        _ = d.process(kind: .flagsChanged, keyCode: 58,
+                      flags: CGEventFlags.maskAlternate.rawValue, now: t0)
+        _ = d.process(kind: .flagsChanged, keyCode: 58,
+                      flags: 0, now: t0.addingTimeInterval(0.1))
+        let events = d.process(kind: .flagsChanged, keyCode: 58,
+                               flags: CGEventFlags.maskAlternate.rawValue,
+                               now: t0.addingTimeInterval(0.36))
+
+        XCTAssertTrue(events.isEmpty)
+    }
+
+    func testConfiguredNonFnModifierIgnoresFn() {
+        var d = ShortcutDetector(handsFreeKeyCode: 59)
+        d.handsFreeEnabled = true
+        let t0 = Date(timeIntervalSince1970: 0)
+        _ = d.process(kind: .flagsChanged, keyCode: ShortcutDetector.fnKeyCode,
+                      flags: ShortcutDetector.secondaryFn, now: t0)
+        let events = d.process(kind: .flagsChanged, keyCode: ShortcutDetector.fnKeyCode,
+                               flags: ShortcutDetector.secondaryFn,
+                               now: t0.addingTimeInterval(0.2))
+
+        XCTAssertTrue(events.isEmpty)
     }
 }

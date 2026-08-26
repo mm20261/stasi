@@ -71,9 +71,9 @@ final class AppState {
     var onToast: ((String, Bool) -> Void)?
 
     private var recordStart: Date?
-    private var elapsedTimer: Timer?
     private let levelTraceEnabled: Bool
     private let consumeTimeoutNanoseconds: UInt64
+    private let minimumPushToTalkDuration: TimeInterval
     @ObservationIgnored private var lastLevelTraceUptime: TimeInterval = 0
     @ObservationIgnored private var phaseEnteredAt = Date()
     @ObservationIgnored private var watchdogRecoveryQueued = false
@@ -155,6 +155,7 @@ final class AppState {
              return misspelling.location == NSNotFound
          },
          consumeTimeoutNanoseconds: UInt64 = 2_000_000_000,
+         minimumPushToTalkDuration: TimeInterval = PillChrome.presentationDelay,
          installHotkey: Bool = true,
          audioDirectory: URL? = nil) {
         self.settings = settings
@@ -166,6 +167,7 @@ final class AppState {
         self.modelInstaller = modelInstaller
         self.spellChecker = spellChecker
         self.consumeTimeoutNanoseconds = consumeTimeoutNanoseconds
+        self.minimumPushToTalkDuration = minimumPushToTalkDuration
         self.audioDirectory = audioDirectory ?? DictionaryStore.appSupportDirectory
             .appendingPathComponent("audio", isDirectory: true)
         levelTraceEnabled = ProcessInfo.processInfo.environment["STASI_LEVEL_TRACE"] == "1"
@@ -201,7 +203,8 @@ final class AppState {
         let hk = HotkeyEngine(
             combo: currentCombo,
             chords: [Self.copyLastChord, Self.insertLastChord],
-            handsFreeEnabled: settings.handsFreeOn
+            handsFreeEnabled: settings.handsFreeOn,
+            handsFreeKeyCode: settings.handsFreeKeyCode
         )
         // Kein Task, kein Actor-Hop im Tap-Pfad – nur enqueue (thread-sicher).
         hk.onPress = { [weak self] in self?.enqueue(.press) }
@@ -304,6 +307,13 @@ final class AppState {
         reinstallHotkey()
     }
 
+    func applyHandsFreeKeyCode(_ keyCode: UInt64) {
+        guard VirtualKey.isHandsFreeModifier(keyCode),
+              settings.handsFreeKeyCode != keyCode else { return }
+        settings.handsFreeKeyCode = keyCode
+        reinstallHotkey()
+    }
+
     private func reinstallHotkey() {
         hotkey?.stop()
         hotkey = nil
@@ -394,7 +404,6 @@ final class AppState {
         phase = .recording
         recordStart = Date()
         elapsed = 0
-        startElapsedTimer()
         playStartSound()
 
         let locale = settings.transcriptionLocale
@@ -510,11 +519,18 @@ final class AppState {
             return
         }
         guard let session = currentSession else { return }
+        let duration = max(
+            elapsed,
+            recordStart.map { Date().timeIntervalSince($0) } ?? 0
+        )
+        if recordingSource == .pushToTalk,
+           duration < minimumPushToTalkDuration {
+            silentlyAbortShortPushToTalk(session)
+            return
+        }
         session.state = .stopping
         phase = .transcribing
-        stopElapsedTimer()
         playStopSound()
-        let duration = elapsed
 
         Task { @MainActor [weak self, weak session] in
             guard let self, let session else { return }
@@ -525,7 +541,6 @@ final class AppState {
                 DebugLog.log("STASI-APP: Kurz-Tipp während Setup")
                 await session.teardown()
                 guard session === self.currentSession else { return }
-                self.onToast?("Zu kurz – Taste gedrückt halten", false)
                 self.finishAbortedSession(session)
                 return
             }
@@ -573,7 +588,6 @@ final class AppState {
         discardRequested = true
         session.state = .stopping
         phase = .transcribing
-        stopElapsedTimer()
         playStopSound()
         Task { @MainActor [weak self, weak session] in
             guard let self, let session else { return }
@@ -582,9 +596,24 @@ final class AppState {
             let wasRunning = session.audio.isRunning
             await session.teardown()
             guard session === self.currentSession else { return }
-            self.onToast?(wasRunning ? Copy.toastDiscarded : "Zu kurz – Taste gedrückt halten", false)
+            if wasRunning { self.onToast?(Copy.toastDiscarded, false) }
             self.finishAbortedSession(session)
         }
+    }
+
+    /// Ein versehentlicher PTT-Tipp wird sofort aus der sichtbaren
+    /// Zustandsmaschine entfernt. Das Setup/Capture räumt im Hintergrund auf,
+    /// ohne Status-Pill, Toast oder Historieneintrag zu erzeugen.
+    private func silentlyAbortShortPushToTalk(_ session: DictationSession) {
+        DebugLog.log("STASI-APP: PTT-Kurztipp <250 ms – still verworfen")
+        session.state = .stopping
+        currentSession = nil
+        resetLevel()
+        partialText = ""
+        elapsed = 0
+        recordStart = nil
+        phase = .idle
+        Task { await session.teardown() }
     }
 
     func requestCommit() {
@@ -612,7 +641,6 @@ final class AppState {
         currentSession = nil
         resetLevel()
         partialText = ""
-        stopElapsedTimer()
         phase = .idle
         onToast?(Copy.toastTranscriptionAborted, false)
         if let session {
@@ -722,7 +750,7 @@ final class AppState {
         resetLevel()
         partialText = ""
         phase = .idle
-        stopElapsedTimer()
+        recordStart = nil
     }
 
     private func isKnownWord(_ word: String, locale: Locale) -> Bool {
@@ -769,7 +797,7 @@ final class AppState {
         }
     }
 
-    /// Fn-Doppeltipp – Hands-free: Aufnahme starten bzw. beenden (Togglen).
+    /// Modifier-Doppeltipp – Hands-free: Aufnahme starten bzw. beenden (Togglen).
     func handsFreeToggle() {
         if phase == .idle {
             startDictation(source: .handsFree)
@@ -811,25 +839,12 @@ final class AppState {
         displayLevel = 0
     }
 
-    private func startElapsedTimer() {
-        elapsedTimer?.invalidate()
-        let timer = Timer(timeInterval: 0.1,
-                          target: self,
-                          selector: #selector(elapsedTimerFired(_:)),
-                          userInfo: nil,
-                          repeats: true)
-        elapsedTimer = timer
-        RunLoop.main.add(timer, forMode: .common)
-    }
-
-    @objc private func elapsedTimerFired(_ timer: Timer) {
-        guard let start = recordStart else { return }
-        elapsed = Date().timeIntervalSince(start)
-    }
-
-    private func stopElapsedTimer() {
-        elapsedTimer?.invalidate()
-        elapsedTimer = nil
+    /// Der bestehende 20-Hz-App-Poll aktualisiert zugleich die Aufnahmedauer;
+    /// dadurch braucht die Pill keinen eigenen Einblende-Timer.
+    func updateElapsedFromPoll(now: Date = Date()) {
+        guard phase == .recording,
+              let start = recordStart else { return }
+        elapsed = max(0, now.timeIntervalSince(start))
     }
 }
 

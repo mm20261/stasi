@@ -255,6 +255,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         pollTickCount += 1
         app.applyPendingPermissionStateFromPoll()
         app.checkPhaseWatchdog(now: now)
+        app.updateElapsedFromPoll(now: now)
         app.ingestLevelFromPoll()
         statusBar.refresh()
         PillController.shared.sync(

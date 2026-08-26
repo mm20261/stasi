@@ -196,6 +196,7 @@ final class DictationSessionTests: XCTestCase {
                          modelInstaller: @escaping @Sendable (Locale) async throws -> Void = { _ in },
                          spellChecker: @escaping @MainActor (String, String) -> Bool = { _, _ in true },
                          consumeTimeoutNanoseconds: UInt64 = 2_000_000_000,
+                         minimumPushToTalkDuration: TimeInterval = 0,
                          directory: URL? = nil) -> AppState {
         let root = directory ?? makeDirectory()
         let dictionary = DictionaryStore(directory: root.appendingPathComponent("dictionary"))
@@ -211,6 +212,7 @@ final class DictationSessionTests: XCTestCase {
             modelInstaller: modelInstaller,
             spellChecker: spellChecker,
             consumeTimeoutNanoseconds: consumeTimeoutNanoseconds,
+            minimumPushToTalkDuration: minimumPushToTalkDuration,
             installHotkey: false,
             audioDirectory: root.appendingPathComponent("audio")
         )
@@ -370,11 +372,16 @@ final class DictationSessionTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: url.path))
     }
 
-    func testShortTapBeforeEngineStartDoesNotHangAndStopsAudio() async {
+    func testShortTapBeforeEngineStartIsCompletelySilent() async {
         let audio = FakeAudioCapture()
         let speech = FakeSpeechEngine()
         let gate = PermissionGate()
-        let app = makeApp(audio: audio, engines: [speech], permission: { await gate.request() })
+        let app = makeApp(
+            audio: audio,
+            engines: [speech],
+            permission: { await gate.request() },
+            minimumPushToTalkDuration: PillChrome.presentationDelay
+        )
         var toasts: [String] = []
         app.onToast = { message, _ in toasts.append(message) }
 
@@ -383,12 +390,14 @@ final class DictationSessionTests: XCTestCase {
         app.stopDictation(commit: true)
         await gate.resolve(true)
         await waitUntil { app.phase == .idle }
+        await waitUntil { (await speech.metrics()).finishCount == 1 }
 
         let metrics = await speech.metrics()
         XCTAssertFalse(audio.isRunning)
         XCTAssertEqual(audio.stopCount, 1)
         XCTAssertEqual(metrics.startCount, 0)
-        XCTAssertEqual(toasts.last, "Zu kurz – Taste gedrückt halten")
+        XCTAssertTrue(toasts.isEmpty)
+        XCTAssertTrue(app.history.records.isEmpty)
     }
 
     func testSetupErrorTearsEverythingDown() async {

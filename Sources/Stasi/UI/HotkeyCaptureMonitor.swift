@@ -12,7 +12,8 @@ enum HotkeyCaptureEvent: Sendable {
             return .cancel
         case .flagsChanged:
             if isModifierKey(event.keyCode),
-               !event.modifierFlags.intersection([.command, .control, .option, .shift]).isEmpty {
+               (!event.modifierFlags.intersection([.command, .control, .option, .shift]).isEmpty
+                || (event.keyCode == 63 && event.modifierFlags.contains(.function))) {
                 return .modifier(HotkeyEngine.Combo(keyCode: UInt64(event.keyCode), flags: 0))
             }
             return .modifierReleased(keyCode: event.keyCode)
@@ -29,7 +30,7 @@ enum HotkeyCaptureEvent: Sendable {
     }
 
     private nonisolated static func isModifierKey(_ keyCode: UInt16) -> Bool {
-        [54, 55, 56, 57, 58, 59, 60, 61, 63].contains(keyCode)
+        [54, 55, 56, 57, 58, 59, 60, 61, 62, 63].contains(keyCode)
     }
 }
 

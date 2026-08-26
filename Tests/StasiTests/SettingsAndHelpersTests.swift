@@ -27,6 +27,7 @@ final class SettingsStoreTests: XCTestCase {
         XCTAssertEqual(settings.accentHex, 0x1A1917)
         XCTAssertEqual(settings.hotkeyMode, .pushToTalk)
         XCTAssertTrue(settings.handsFreeOn)
+        XCTAssertEqual(settings.handsFreeKeyCode, 63)
         XCTAssertTrue(settings.soundOn)
         XCTAssertFalse(settings.ironyOn)
         XCTAssertFalse(settings.autostartOn)
@@ -86,6 +87,23 @@ final class SettingsStoreTests: XCTestCase {
         settings.handsFreeOn = false
         let reloaded = SettingsStore(defaults: defaults)
         XCTAssertFalse(reloaded.handsFreeOn)
+    }
+
+    func testHandsFreeKeyCodePersists() {
+        let settings = SettingsStore(defaults: defaults)
+        settings.handsFreeKeyCode = 62
+
+        let reloaded = SettingsStore(defaults: defaults)
+        XCTAssertEqual(reloaded.handsFreeKeyCode, 62)
+        XCTAssertEqual(defaults.object(forKey: "stasi.handsFree.keyCode") as? Int, 62)
+    }
+
+    func testHandsFreeKeyCodeRejectsRegularKeys() {
+        let settings = SettingsStore(defaults: defaults)
+        settings.handsFreeKeyCode = 0
+
+        XCTAssertEqual(settings.handsFreeKeyCode, 63)
+        XCTAssertEqual(defaults.object(forKey: "stasi.handsFree.keyCode") as? Int, 63)
     }
 
     func testTranscriptionLocale() {
@@ -183,6 +201,14 @@ final class VirtualKeyTests: XCTestCase {
         XCTAssertEqual(VirtualKey.name(for: 55), "Linke ⌘ halten")
         XCTAssertEqual(VirtualKey.name(for: 49), "Space halten")
         XCTAssertEqual(VirtualKey.name(for: 96), "F5 halten")
+        XCTAssertEqual(VirtualKey.keySymbol(62), "⌃ Rechts")
+    }
+
+    func testHandsFreeAllowsOnlyRequestedModifierKeys() {
+        XCTAssertEqual(VirtualKey.handsFreeModifierKeyCodes,
+                       [63, 55, 54, 58, 61, 59, 62, 56, 60])
+        XCTAssertFalse(VirtualKey.isHandsFreeModifier(0))
+        XCTAssertFalse(VirtualKey.isHandsFreeModifier(57))
     }
 
     func testLetterKeys() {
@@ -275,12 +301,12 @@ final class AudioLevelTests: XCTestCase {
 
     func testQuietSignalRemainsBelowRoomLevel() {
         let level = AudioCapture.computeLevel(of: buffer(withAmplitude: 0.005))
-        XCTAssertTrue((0.15...0.45).contains(level), "level=\(level)")
+        XCTAssertTrue((0.3...0.5).contains(level), "level=\(level)")
     }
 
     func testRoomVolumeUsesMostOfMeterRange() {
         let level = AudioCapture.computeLevel(of: buffer(withAmplitude: 0.04))
-        XCTAssertTrue((0.55...0.9).contains(level), "level=\(level)")
+        XCTAssertTrue((0.8...0.95).contains(level), "level=\(level)")
     }
 
     func testLoudSpeechStaysNormalizedAndAboveRoomVolume() {

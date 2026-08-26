@@ -60,13 +60,15 @@ final class HotkeyEngine: @unchecked Sendable {
     private(set) var isDown = false
     private(set) var isOperational = false
     private var tapWasDisabled = false
-    private var shortcut = ShortcutDetector()
+    private var shortcut: ShortcutDetector
     private var reenablePolicy: HotkeyReenablePolicy
 
     init(combo: Combo, chords: [Combo] = [], handsFreeEnabled: Bool = false,
+         handsFreeKeyCode: UInt64 = ShortcutDetector.fnKeyCode,
          reenablePolicy: HotkeyReenablePolicy = HotkeyReenablePolicy()) {
         self.combo = combo
         self.reenablePolicy = reenablePolicy
+        self.shortcut = ShortcutDetector(handsFreeKeyCode: handsFreeKeyCode)
         self.shortcut.chords = chords
         self.shortcut.handsFreeEnabled = handsFreeEnabled
     }
@@ -195,7 +197,7 @@ final class HotkeyEngine: @unchecked Sendable {
             break
         }
 
-        // Zusatz-Shortcuts (Fn-Doppeltipp)
+        // Zusatz-Shortcuts (konfigurierter Modifier-Doppeltipp)
         let kind: ShortcutDetector.Kind
         switch type {
         case .keyDown: kind = .keyDown
@@ -219,7 +221,7 @@ final class HotkeyEngine: @unchecked Sendable {
         case 54, 55: return .maskCommand
         case 56, 60: return .maskShift
         case 58, 61: return .maskAlternate
-        case 59: return .maskControl
+        case 59, 62: return .maskControl
         case 63: return .maskSecondaryFn
         case 57: return .maskAlphaShift
         default: return nil
@@ -237,7 +239,7 @@ final class HotkeyEngine: @unchecked Sendable {
 
 // MARK: - ShortcutDetector
 // Reiner, zustandsbehafteter Detektor für Zusatz-Shortcuts: Chord-Aktionen
-// und Fn-Doppeltipp (Hands-free). Kein CGEvent nötig → testbar.
+// und konfigurierter Modifier-Doppeltipp (Hands-free). Kein CGEvent nötig → testbar.
 
 struct ShortcutDetector {
     enum Kind: Equatable {
@@ -254,10 +256,20 @@ struct ShortcutDetector {
 
     var chords: [HotkeyEngine.Combo] = []
     var handsFreeEnabled = false
+    var handsFreeKeyCode: UInt64
     var doubleTapWindow: TimeInterval = 0.35
 
-    private var fnWasDown = false
-    private var lastFnDownAt: Date?
+    private var modifierWasDown = false
+    private var lastModifierDownAt: Date?
+
+    init(chords: [HotkeyEngine.Combo] = [], handsFreeEnabled: Bool = false,
+         handsFreeKeyCode: UInt64 = Self.fnKeyCode,
+         doubleTapWindow: TimeInterval = 0.35) {
+        self.chords = chords
+        self.handsFreeEnabled = handsFreeEnabled
+        self.handsFreeKeyCode = handsFreeKeyCode
+        self.doubleTapWindow = doubleTapWindow
+    }
 
     mutating func process(kind: Kind, keyCode: UInt64, flags: UInt64,
                           isRepeat: Bool = false, now: Date = Date()) -> [Event] {
@@ -270,19 +282,32 @@ struct ShortcutDetector {
             }
         }
 
-        if handsFreeEnabled, kind == .flagsChanged, keyCode == Self.fnKeyCode {
-            let down = (flags & Self.secondaryFn) != 0
-            if down && !fnWasDown {
-                if let last = lastFnDownAt, now.timeIntervalSince(last) <= doubleTapWindow {
+        if handsFreeEnabled, kind == .flagsChanged, keyCode == handsFreeKeyCode,
+           let modifierMask = Self.modifierMask(for: handsFreeKeyCode) {
+            let down = (flags & modifierMask) != 0
+            if down && !modifierWasDown {
+                if let last = lastModifierDownAt,
+                   now.timeIntervalSince(last) <= doubleTapWindow {
                     events.append(.handsFreeTap)
-                    lastFnDownAt = nil
+                    lastModifierDownAt = nil
                 } else {
-                    lastFnDownAt = now
+                    lastModifierDownAt = now
                 }
             }
-            fnWasDown = down
+            modifierWasDown = down
         }
 
         return events
+    }
+
+    private static func modifierMask(for keyCode: UInt64) -> UInt64? {
+        switch keyCode {
+        case 54, 55: CGEventFlags.maskCommand.rawValue
+        case 56, 60: CGEventFlags.maskShift.rawValue
+        case 58, 61: CGEventFlags.maskAlternate.rawValue
+        case 59, 62: CGEventFlags.maskControl.rawValue
+        case 63: secondaryFn
+        default: nil
+        }
     }
 }
