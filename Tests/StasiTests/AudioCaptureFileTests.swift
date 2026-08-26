@@ -1,3 +1,4 @@
+import AudioToolbox
 import AVFoundation
 import XCTest
 @testable import Stasi
@@ -40,6 +41,23 @@ final class AudioCaptureFileTests: XCTestCase {
         }
     }
 
+    private final class ConfigurationBox: @unchecked Sendable {
+        private let lock = NSLock()
+        private var configuration: AudioCapture.IOConfiguration?
+
+        func store(_ configuration: AudioCapture.IOConfiguration) {
+            lock.lock()
+            self.configuration = configuration
+            lock.unlock()
+        }
+
+        func load() -> AudioCapture.IOConfiguration? {
+            lock.lock()
+            defer { lock.unlock() }
+            return configuration
+        }
+    }
+
     private func makeDirectory() -> URL {
         let directory = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
             .appendingPathComponent(".build/test-artifacts", isDirectory: true)
@@ -56,42 +74,61 @@ final class AudioCaptureFileTests: XCTestCase {
     }
 
     private func hooks(format: AVAudioFormat,
-                       beforeTap: (@Sendable () -> Void)? = nil,
+                       beforeInput: (@Sendable () -> Void)? = nil,
+                       configure: @escaping @Sendable (AudioCapture.IOConfiguration) -> Void = { _ in },
+                       initialize: @escaping () throws -> Void = {},
                        start: @escaping () throws -> Void = {},
                        stop: @escaping () -> Void = {},
-                       removeTap: @escaping () -> Void = {},
-                       teardown: @escaping () -> Void = {}) -> AudioCapture.EngineHooks {
-        AudioCapture.EngineHooks(
-            prepareInput: { _, _ in
-                beforeTap?()
+                       uninitialize: @escaping () -> Void = {},
+                       dispose: @escaping () -> Void = {}) -> AudioCapture.AudioUnitHooks {
+        AudioCapture.AudioUnitHooks(
+            configureInput: { configuration, _, _ in
+                configure(configuration)
+                beforeInput?()
                 return format
             },
-            prepareEngine: {},
-            startEngine: start,
-            stopEngine: stop,
-            removeTap: removeTap,
-            teardownEngine: teardown
+            initialize: initialize,
+            start: start,
+            stop: stop,
+            uninitialize: uninitialize,
+            dispose: dispose
         )
     }
 
-    func testWAVExistsBeforeTapInstallation() throws {
-        let url = makeDirectory().appendingPathComponent("before-tap.wav")
-        let existedBeforeTap = LockedFlag()
+    func testWAVExistsBeforeInputConfiguration() throws {
+        let url = makeDirectory().appendingPathComponent("before-input.wav")
+        let existedBeforeInput = LockedFlag()
         let outputFormat = format()
-        let capture = AudioCapture(engineHooks: hooks(format: outputFormat) {
-            existedBeforeTap.set(FileManager.default.fileExists(atPath: url.path))
+        let capture = AudioCapture(audioUnitHooks: hooks(format: outputFormat) {
+            existedBeforeInput.set(FileManager.default.fileExists(atPath: url.path))
         })
 
         try capture.start(outputFormat: outputFormat, recordTo: url) { _ in }
 
-        XCTAssertTrue(existedBeforeTap.get())
+        XCTAssertTrue(existedBeforeInput.get())
+        _ = capture.stop()
+    }
+
+    func testConfiguresInputOnlyIO() throws {
+        let outputFormat = format()
+        let configurationBox = ConfigurationBox()
+        let capture = AudioCapture(audioUnitHooks: hooks(
+            format: outputFormat,
+            configure: { configurationBox.store($0) }
+        ))
+
+        try capture.start(outputFormat: outputFormat, recordTo: nil) { _ in }
+
+        XCTAssertEqual(configurationBox.load(), .inputOnly)
+        XCTAssertTrue(configurationBox.load()?.inputEnabled == true)
+        XCTAssertTrue(configurationBox.load()?.outputEnabled == false)
         _ = capture.stop()
     }
 
     func testWAVIsOpenAfterStart() throws {
         let url = makeDirectory().appendingPathComponent("open.wav")
         let outputFormat = format()
-        let capture = AudioCapture(engineHooks: hooks(format: outputFormat))
+        let capture = AudioCapture(audioUnitHooks: hooks(format: outputFormat))
 
         try capture.start(outputFormat: outputFormat, recordTo: url) { _ in }
 
@@ -101,15 +138,15 @@ final class AudioCaptureFileTests: XCTestCase {
         _ = capture.stop()
     }
 
-    func testStopClosesFileAndRemovesTap() throws {
+    func testStopClosesFileAndDisposesAudioUnit() throws {
         let url = makeDirectory().appendingPathComponent("closed.wav")
         let outputFormat = format()
         var teardownOrder: [String] = []
-        let capture = AudioCapture(engineHooks: hooks(
+        let capture = AudioCapture(audioUnitHooks: hooks(
             format: outputFormat,
             stop: { teardownOrder.append("stop") },
-            removeTap: { teardownOrder.append("tap") },
-            teardown: { teardownOrder.append("teardown") }
+            uninitialize: { teardownOrder.append("uninitialize") },
+            dispose: { teardownOrder.append("dispose") }
         ))
         try capture.start(outputFormat: outputFormat, recordTo: url) { _ in }
 
@@ -118,19 +155,19 @@ final class AudioCaptureFileTests: XCTestCase {
         XCTAssertEqual(returnedURL, url)
         XCTAssertFalse(capture.hasOpenOutputFile)
         XCTAssertFalse(capture.isRunning)
-        XCTAssertEqual(teardownOrder, ["tap", "stop", "teardown"])
+        XCTAssertEqual(teardownOrder, ["stop", "uninitialize", "dispose"])
     }
 
-    func testEngineStartFailureRemovesTapAndClosesFile() {
+    func testAudioUnitStartFailureUninitializesDisposesAndClosesFile() {
         let url = makeDirectory().appendingPathComponent("failed.wav")
         let outputFormat = format()
         var teardownOrder: [String] = []
-        let capture = AudioCapture(engineHooks: hooks(
+        let capture = AudioCapture(audioUnitHooks: hooks(
             format: outputFormat,
             start: { throw StartError.failed },
             stop: { teardownOrder.append("stop") },
-            removeTap: { teardownOrder.append("tap") },
-            teardown: { teardownOrder.append("teardown") }
+            uninitialize: { teardownOrder.append("uninitialize") },
+            dispose: { teardownOrder.append("dispose") }
         ))
 
         XCTAssertThrowsError(
@@ -138,17 +175,17 @@ final class AudioCaptureFileTests: XCTestCase {
         )
         XCTAssertFalse(capture.hasOpenOutputFile)
         XCTAssertFalse(capture.isRunning)
-        XCTAssertEqual(teardownOrder, ["tap", "stop", "teardown"])
+        XCTAssertEqual(teardownOrder, ["uninitialize", "dispose"])
     }
 
-    func testSecondStartAfterStopCreatesFreshEngineLifecycle() throws {
+    func testSecondStartAfterStopCreatesFreshAudioUnitLifecycle() throws {
         let outputFormat = format()
         var startCount = 0
-        var teardownCount = 0
-        let capture = AudioCapture(engineHooks: hooks(
+        var disposeCount = 0
+        let capture = AudioCapture(audioUnitHooks: hooks(
             format: outputFormat,
             start: { startCount += 1 },
-            teardown: { teardownCount += 1 }
+            dispose: { disposeCount += 1 }
         ))
 
         try capture.start(outputFormat: outputFormat, recordTo: nil) { _ in }
@@ -157,26 +194,208 @@ final class AudioCaptureFileTests: XCTestCase {
         _ = capture.stop()
 
         XCTAssertEqual(startCount, 2)
-        XCTAssertEqual(teardownCount, 2)
+        XCTAssertEqual(disposeCount, 2)
         XCTAssertFalse(capture.isRunning)
     }
 
-    func testTapSinkDeliversBufferFromBackgroundThread() async throws {
+    func testNativeFormatDifferentFromTargetCreatesConverter() throws {
+        let targetFormat = format()
+        let nativeFormat = try XCTUnwrap(AVAudioFormat(
+            commonFormat: .pcmFormatFloat32,
+            sampleRate: 48_000,
+            channels: 1,
+            interleaved: false
+        ))
+        let capture = AudioCapture(audioUnitHooks: hooks(format: nativeFormat))
+
+        try capture.start(outputFormat: targetFormat, recordTo: nil) { _ in }
+
+        XCTAssertTrue(capture.hasConverter)
+        _ = capture.stop()
+    }
+
+    func testInputFormatConfigurationReadsHardwareSideAndWritesMatchingClientSide() throws {
+        let hardwareFormat = try XCTUnwrap(AVAudioFormat(
+            commonFormat: .pcmFormatInt16,
+            sampleRate: 48_000,
+            channels: 2,
+            interleaved: true
+        ))
+        let hardwareDescription = hardwareFormat.streamDescription.pointee
+        var readScope: AudioUnitScope?
+        var readElement: AudioUnitElement?
+        var writeScope: AudioUnitScope?
+        var writeElement: AudioUnitElement?
+        var writtenDescription: AudioStreamBasicDescription?
+
+        let formats = try AudioCapture.configureInputFormats(
+            readHardwareFormat: { scope, element in
+                readScope = scope
+                readElement = element
+                return (noErr, hardwareDescription)
+            },
+            setClientFormat: { description, scope, element in
+                writtenDescription = description
+                writeScope = scope
+                writeElement = element
+                return noErr
+            }
+        )
+
+        XCTAssertEqual(readScope, kAudioUnitScope_Input)
+        XCTAssertEqual(readElement, 1)
+        XCTAssertEqual(writeScope, kAudioUnitScope_Output)
+        XCTAssertEqual(writeElement, 1)
+        XCTAssertEqual(formats.hardware.sampleRate, 48_000)
+        XCTAssertEqual(formats.hardware.channelCount, 2)
+        XCTAssertEqual(formats.client.sampleRate, 48_000)
+        XCTAssertEqual(formats.client.channelCount, 2)
+        XCTAssertEqual(formats.client.commonFormat, .pcmFormatFloat32)
+        XCTAssertFalse(formats.client.isInterleaved)
+
+        var written = try XCTUnwrap(writtenDescription)
+        let writtenFormat = AVAudioFormat(streamDescription: &written)
+        XCTAssertEqual(writtenFormat?.sampleRate, 48_000)
+        XCTAssertEqual(writtenFormat?.channelCount, 2)
+        XCTAssertEqual(writtenFormat?.commonFormat, .pcmFormatFloat32)
+        XCTAssertEqual(writtenFormat?.isInterleaved, false)
+    }
+
+    func testInputFormatConfigurationPropagatesHardwareReadFailure() {
+        let expectedStatus = OSStatus(-50)
+
+        XCTAssertThrowsError(try AudioCapture.configureInputFormats(
+            readHardwareFormat: { _, _ in
+                (expectedStatus, AudioStreamBasicDescription())
+            },
+            setClientFormat: { _, _, _ in
+                XCTFail("Clientformat darf nach Lesefehler nicht gesetzt werden")
+                return noErr
+            }
+        )) { error in
+            XCTAssertTrue(error.localizedDescription.contains("Natives Hardwareformat lesen"))
+            XCTAssertTrue(error.localizedDescription.contains("\(expectedStatus)"))
+        }
+    }
+
+    func testInputFormatConfigurationPropagatesClientFormatSetFailure() throws {
+        let hardwareFormat = try XCTUnwrap(AVAudioFormat(
+            commonFormat: .pcmFormatFloat32,
+            sampleRate: 48_000,
+            channels: 1,
+            interleaved: false
+        ))
+        let hardwareDescription = hardwareFormat.streamDescription.pointee
+        let expectedStatus = OSStatus(-10868)
+
+        XCTAssertThrowsError(try AudioCapture.configureInputFormats(
+            readHardwareFormat: { _, _ in (noErr, hardwareDescription) },
+            setClientFormat: { _, _, _ in expectedStatus }
+        )) { error in
+            XCTAssertTrue(error.localizedDescription.contains("Float32-Clientformat setzen"))
+            XCTAssertTrue(error.localizedDescription.contains("\(expectedStatus)"))
+        }
+    }
+
+    func testMaximumFramesConfigurationSetsRequestedValueBeforeReadingEffectiveValue() throws {
+        var operations: [String] = []
+
+        let capacity = try AudioCapture.configureMaximumFrames(
+            requested: 4_096,
+            set: { value in
+                operations.append("set:\(value)")
+                return noErr
+            },
+            get: {
+                operations.append("get")
+                return (noErr, 8_192)
+            }
+        )
+
+        XCTAssertEqual(operations, ["set:4096", "get"])
+        XCTAssertEqual(capacity, 8_192)
+    }
+
+    func testMaximumFramesConfigurationRejectsSetFailure() {
+        let expectedStatus = OSStatus(-50)
+
+        XCTAssertThrowsError(try AudioCapture.configureMaximumFrames(
+            requested: 4_096,
+            set: { _ in expectedStatus },
+            get: { XCTFail("Get darf nach Set-Fehler nicht laufen"); return (noErr, 4_096) }
+        )) { error in
+            XCTAssertTrue(error.localizedDescription.contains("\(expectedStatus)"))
+        }
+    }
+
+    func testMaximumFramesCapacityNeverFallsBelowRequestedValue() throws {
+        let capacity = try AudioCapture.configureMaximumFrames(
+            requested: 4_096,
+            set: { _ in noErr },
+            get: { (noErr, 512) }
+        )
+
+        XCTAssertEqual(capacity, 4_096)
+    }
+
+    func testRenderBufferPreparationSetsNonInterleavedTopologyAndByteSizes() throws {
+        let inputFormat = try XCTUnwrap(AVAudioFormat(
+            commonFormat: .pcmFormatFloat32,
+            sampleRate: 44_100,
+            channels: 2,
+            interleaved: false
+        ))
+        let buffer = try XCTUnwrap(AVAudioPCMBuffer(
+            pcmFormat: inputFormat,
+            frameCapacity: 4_096
+        ))
+
+        let status = AudioCapture.prepareRenderBuffer(buffer, frameCount: 2_048)
+        let buffers = UnsafeMutableAudioBufferListPointer(buffer.mutableAudioBufferList)
+
+        XCTAssertEqual(status, noErr)
+        XCTAssertEqual(buffer.frameLength, 2_048)
+        XCTAssertEqual(buffer.mutableAudioBufferList.pointee.mNumberBuffers, 2)
+        XCTAssertEqual(buffers.count, 2)
+        XCTAssertTrue(buffers.allSatisfy { $0.mNumberChannels == 1 })
+        XCTAssertTrue(buffers.allSatisfy { $0.mDataByteSize == 2_048 * 4 })
+        XCTAssertTrue(buffers.allSatisfy { $0.mData != nil })
+    }
+
+    func testRenderBufferPreparationRejectsOversizedSliceWithoutMutatingLength() throws {
+        let inputFormat = try XCTUnwrap(AVAudioFormat(
+            commonFormat: .pcmFormatFloat32,
+            sampleRate: 44_100,
+            channels: 1,
+            interleaved: false
+        ))
+        let buffer = try XCTUnwrap(AVAudioPCMBuffer(
+            pcmFormat: inputFormat,
+            frameCapacity: 4_096
+        ))
+
+        let status = AudioCapture.prepareRenderBuffer(buffer, frameCount: 4_097)
+
+        XCTAssertEqual(status, kAudio_ParamError)
+        XCTAssertEqual(buffer.frameLength, 0)
+    }
+
+    func testInputCallbackDeliversBufferFromBackgroundThread() async throws {
         let outputFormat = format()
         let sinkBox = SinkBox()
         let received = expectation(description: "Puffer erreicht onBuffer")
-        let hooks = AudioCapture.EngineHooks(
-            prepareInput: { _, sink in
+        let hooks = AudioCapture.AudioUnitHooks(
+            configureInput: { _, _, sink in
                 sinkBox.store(sink)
                 return outputFormat
             },
-            prepareEngine: {},
-            startEngine: {},
-            stopEngine: {},
-            removeTap: {},
-            teardownEngine: {}
+            initialize: {},
+            start: {},
+            stop: {},
+            uninitialize: {},
+            dispose: {}
         )
-        let capture = AudioCapture(engineHooks: hooks)
+        let capture = AudioCapture(audioUnitHooks: hooks)
         let buffer = try XCTUnwrap(AVAudioPCMBuffer(
             pcmFormat: outputFormat,
             frameCapacity: 16
