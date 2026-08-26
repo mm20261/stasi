@@ -256,8 +256,8 @@ final class AudioCapture: AudioCapturing, @unchecked Sendable {
         }
     }
 
-    /// RMS → normalisierter Pegel (0…1). Zimmerlautstärke landet bewusst im
-    /// oberen Mittelfeld; erst deutlich lautere Sprache nähert sich der Kappe.
+    /// RMS → normalisierter Pegel (0…1). Die steile Kurve macht leise Sprache
+    /// sichtbar und legt Zimmerlautstärke auf etwa 80–95 % des Bereichs.
     nonisolated static func computeLevel(of buffer: AVAudioPCMBuffer) -> Double {
         guard let data = buffer.floatChannelData?[0] else { return 0 }
         let frames = Int(buffer.frameLength)
@@ -267,6 +267,6 @@ final class AudioCapture: AudioCapturing, @unchecked Sendable {
             sum += data[i] * data[i]
         }
         let rms = sqrt(sum / Float(frames / 4 + 1))
-        return Double(pow(min(rms * 15.0, 1.0), 0.45))
+        return Double(pow(min(rms * 25.0, 1.0), 0.4))
     }
 }

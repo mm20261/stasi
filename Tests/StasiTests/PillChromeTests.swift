@@ -33,6 +33,19 @@ final class PillChromeTests: XCTestCase {
         XCTAssertEqual(PillChrome.pillWidth(for: .pushToTalk, modelReady: false), 190)
     }
 
+    func testShortPushToTalkStaysHidden() {
+        XCTAssertFalse(PillChrome.shouldShowRecording(source: .pushToTalk, elapsed: 0.249))
+    }
+
+    func testPushToTalkAppearsAtThreshold() {
+        XCTAssertEqual(PillChrome.presentationDelay, 0.25)
+        XCTAssertTrue(PillChrome.shouldShowRecording(source: .pushToTalk, elapsed: 0.25))
+    }
+
+    func testHandsFreeAppearsImmediately() {
+        XCTAssertTrue(PillChrome.shouldShowRecording(source: .handsFree, elapsed: 0))
+    }
+
     @MainActor
     func testPillBackgroundAlwaysUsesInk() throws {
         let suite = "PillChromeTests.\(UUID().uuidString)"
@@ -77,28 +90,60 @@ final class PillChromeTests: XCTestCase {
 final class MicLevelBarTests: XCTestCase {
 
     func testSilenceStaysAtMinimum() {
-        XCTAssertEqual(MicLevelBars.height(level: 0, jitter: 0), 2)
+        XCTAssertEqual(MicLevelBars.height(level: 0, jitter: 0), 4)
     }
 
     func testLoudLevelReachesMaximum() {
-        XCTAssertEqual(MicLevelBars.height(level: 1, jitter: 0), 14)
+        XCTAssertEqual(MicLevelBars.height(level: 1, jitter: 0), 20)
     }
 
     func testMidLevelIsBetween() {
         let h = MicLevelBars.height(level: 0.5, jitter: 0)
-        XCTAssertGreaterThan(h, 2)
-        XCTAssertLessThan(h, 14)
+        XCTAssertGreaterThan(h, 4)
+        XCTAssertLessThan(h, 20)
     }
 
     func testLevelIsClamped() {
-        XCTAssertEqual(MicLevelBars.height(level: -1, jitter: 0), 2)
-        XCTAssertEqual(MicLevelBars.height(level: 5, jitter: 0), 14)
+        XCTAssertEqual(MicLevelBars.height(level: -1, jitter: 0), 4)
+        XCTAssertEqual(MicLevelBars.height(level: 5, jitter: 0), 20)
     }
 
     func testJitterOnlyModulatesWithinBounds() {
         for jitter in stride(from: -1.0, through: 1.0, by: 0.25) {
             let h = MicLevelBars.height(level: 0.4, jitter: jitter)
-            XCTAssertTrue((2...14).contains(h), "h=\(h) außerhalb für jitter=\(jitter)")
+            XCTAssertTrue((4...20).contains(h), "h=\(h) außerhalb für jitter=\(jitter)")
         }
+    }
+
+    func testPeakIsHeldFor150MillisecondsThenFalls() {
+        let peak = MicLevelBars.height(level: 0.9, jitter: 0)
+        let quiet = MicLevelBars.height(level: 0.1, jitter: 0)
+        let attack = MicLevelBars.nextPeak(
+            current: MicLevelBars.minHeight,
+            target: peak,
+            holdUntil: 0,
+            now: 1
+        )
+        let held = MicLevelBars.nextPeak(
+            current: attack.height,
+            target: quiet,
+            holdUntil: attack.holdUntil,
+            now: 1.149
+        )
+        let falling = MicLevelBars.nextPeak(
+            current: held.height,
+            target: quiet,
+            holdUntil: held.holdUntil,
+            now: 1.151
+        )
+
+        XCTAssertEqual(held.height, peak)
+        XCTAssertLessThan(falling.height, peak)
+        XCTAssertGreaterThan(falling.height, quiet)
+    }
+
+    func testBarOpacityRunsFromDimmedSilenceToOpaquePeak() {
+        XCTAssertEqual(MicLevelBars.opacity(forHeight: MicLevelBars.minHeight), 0.35)
+        XCTAssertEqual(MicLevelBars.opacity(forHeight: MicLevelBars.maxHeight), 1)
     }
 }

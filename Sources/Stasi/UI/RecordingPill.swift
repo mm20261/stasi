@@ -61,6 +61,7 @@ final class PillController {
     private var lastSource: RecordingSource = .pushToTalk
     private var lastHadPartialText = false
     private var lastModelReady = true
+    private var recordingPillVisible = false
 
     func sync(phase: AppState.Phase, partialText: String, elapsed: TimeInterval,
               level: Double, source: RecordingSource, modelReady: Bool) {
@@ -87,12 +88,18 @@ final class PillController {
 
         switch phase {
         case .recording:
+            guard PillChrome.shouldShowRecording(source: source, elapsed: elapsed) else {
+                return
+            }
             let view = ensurePill(app: app)
             view.applyChrome(for: source)
             view.update(level: level, secs: elapsed,
                         partialText: partialText, modelReady: modelReady)
-            if entered || sourceChanged || layoutChanged {
-                if entered {
+            let newlyVisible = !recordingPillVisible
+            if newlyVisible || entered || sourceChanged || layoutChanged {
+                if newlyVisible {
+                    recordingPillVisible = true
+                    view.resetWaveform()
                     pillPanel?.positionBottomCenter()
                     startAnimation()
                 }
@@ -105,9 +112,10 @@ final class PillController {
                 pillPanel?.orderFront(nil)
             }
         default:
-            if exited {
+            if exited || recordingPillVisible {
                 pillPanel?.orderOut(nil)
                 stopAnimation()
+                recordingPillVisible = false
             }
         }
     }
@@ -166,7 +174,6 @@ final class PillController {
         )
         pillView = view
         pillPanel = PillPanel(content: view, size: NSSize(width: 140, height: 24))
-        startAnimation()
         return view
     }
 
@@ -353,8 +360,8 @@ final class RecordingPillView: NSView {
         heightConstraint.constant = PillChrome.pillHeight(hasPartialText: hasPartialText)
     }
 
-    /// 30 Hz: Waveform-Ballistik. Silenz = komplett flach (2 px, statisch),
-    /// Lautstärke spreizt die Balken deutlich bis 14 px – man sieht klar,
+    /// 30 Hz: Waveform-Ballistik. Stille = flach (4 px, statisch),
+    /// Lautstärke spreizt die Balken symmetrisch bis 20 px – man sieht klar,
     /// dass wirklich aufgenommen wird.
     func tick() {
         t += 1.0 / 30.0
@@ -363,6 +370,11 @@ final class RecordingPillView: NSView {
 
     /// Test-Naht: exakt die Höhen, die `PillWaveformView.draw(_:)` verwendet.
     var waveformHeightsForTesting: [CGFloat] { waveformView.barHeights }
+
+    func resetWaveform() {
+        t = 0
+        waveformView.reset()
+    }
 }
 
 // MARK: - Generischer Phasenstatus (AppKit)
@@ -410,30 +422,50 @@ final class PillWaveformView: NSView {
         repeating: MicLevelBars.minHeight,
         count: barCount
     )
+    private var peakHoldUntil = Array(repeating: TimeInterval.zero, count: barCount)
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
     }
 
     func update(level: Double, time: Double, reduceMotion: Bool) {
-        barHeights = (0..<Self.barCount).map { index in
-            guard !reduceMotion else {
-                return MicLevelBars.height(level: level, jitter: 0)
+        for index in 0..<Self.barCount {
+            let modulatedLevel: Double
+            if reduceMotion {
+                modulatedLevel = level
+            } else {
+                let phase = time * (2.4 + Double(index % 4) * 0.55) + Double(index) * 0.9
+                let jagged = abs(sin(phase) * 0.6 + sin(phase * 2.1) * 0.4)
+                modulatedLevel = level * (0.55 + 0.45 * jagged)
             }
-            let phase = time * (2.4 + Double(index % 4) * 0.55) + Double(index) * 0.9
-            let jagged = abs(sin(phase) * 0.6 + sin(phase * 2.1) * 0.4)
-            return MicLevelBars.height(level: level * (0.45 + 0.55 * jagged), jitter: 0)
+            let target = MicLevelBars.height(level: modulatedLevel, jitter: 0)
+            let peak = MicLevelBars.nextPeak(
+                current: barHeights[index],
+                target: target,
+                holdUntil: peakHoldUntil[index],
+                now: time
+            )
+            barHeights[index] = peak.height
+            peakHoldUntil[index] = peak.holdUntil
         }
+        needsDisplay = true
+    }
+
+    func reset() {
+        barHeights = Array(repeating: MicLevelBars.minHeight, count: Self.barCount)
+        peakHoldUntil = Array(repeating: 0, count: Self.barCount)
         needsDisplay = true
     }
 
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
-        NSColor(white: 1, alpha: 0.95).setFill()
         for (index, height) in barHeights.enumerated() {
             let x = CGFloat(index) * (Self.barWidth + Self.spacing)
-            let rect = NSRect(x: x, y: (bounds.height - height) / 2,
+            // Mittelpunkt bleibt fest: der Ausschlag wächst symmetrisch nach
+            // oben und unten, ohne die 24-px-Pill zu vergrößern.
+            let rect = NSRect(x: x, y: bounds.midY - height / 2,
                               width: Self.barWidth, height: height)
+            NSColor(white: 1, alpha: MicLevelBars.opacity(forHeight: height)).setFill()
             NSBezierPath(roundedRect: rect, xRadius: 1, yRadius: 1).fill()
         }
     }
