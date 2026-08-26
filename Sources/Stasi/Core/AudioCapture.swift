@@ -13,7 +13,6 @@ struct AudioChunk: @unchecked Sendable {
 
 /// Schmale Capture-Schnittstelle, damit der Session-Lebenszyklus ohne echte
 /// Mikrofon-Hardware getestet werden kann.
-@MainActor
 protocol AudioCapturing: AnyObject, Sendable {
     var isRunning: Bool { get }
     var latestLevel: Double { get }
@@ -34,8 +33,8 @@ protocol AudioCapturing: AnyObject, Sendable {
 final class AudioCapture: AudioCapturing, @unchecked Sendable {
     /// Schmale Hardware-Naht für Dateilebenszyklus-Tests ohne Mikrofon/TCC.
     struct EngineHooks {
-        let prepareInput: (_ preferredMicUID: String?,
-                           _ handler: @escaping @Sendable (AVAudioPCMBuffer) -> Void) throws -> AVAudioFormat
+        let prepareInput: @Sendable (_ preferredMicUID: String?,
+                                     _ handler: @escaping @Sendable (AVAudioPCMBuffer) -> Void) throws -> AVAudioFormat
         let prepareEngine: () -> Void
         let startEngine: () throws -> Void
         let stopEngine: () -> Void
@@ -94,11 +93,12 @@ final class AudioCapture: AudioCapturing, @unchecked Sendable {
                 }
             }
 
+            let sink: @Sendable (AVAudioPCMBuffer) -> Void = { [weak self] buffer in
+                self?.handle(buffer)
+            }
             let native: AVAudioFormat
             if let engineHooks {
-                native = try engineHooks.prepareInput(preferredMicUID) { [weak self] buffer in
-                    self?.handle(buffer)
-                }
+                native = try engineHooks.prepareInput(preferredMicUID, sink)
             } else {
                 let input = engine.inputNode
                 // Wunsch-Gerät VOR dem Format-Holen setzen – andere Geräte
@@ -107,8 +107,8 @@ final class AudioCapture: AudioCapturing, @unchecked Sendable {
                 DebugLog.log("STASI-AUDIO: Mikrofon-Auswahl angewendet=\(micApplied)")
                 native = input.outputFormat(forBus: 0)
                 input.removeTap(onBus: 0)
-                input.installTap(onBus: 0, bufferSize: 2048, format: native) { [weak self] buffer, _ in
-                    self?.handle(buffer)
+                input.installTap(onBus: 0, bufferSize: 2048, format: native) { buffer, _ in
+                    sink(buffer)
                 }
             }
 
@@ -220,7 +220,7 @@ final class AudioCapture: AudioCapturing, @unchecked Sendable {
     }
 
     /// Deep-Copy eines Tap-Puffers in eigenen Speicher.
-    nonisolated private static func copy(_ buffer: AVAudioPCMBuffer) -> AVAudioPCMBuffer? {
+    nonisolated static func copy(_ buffer: AVAudioPCMBuffer) -> AVAudioPCMBuffer? {
         guard buffer.frameLength > 0,
               let copy = AVAudioPCMBuffer(pcmFormat: buffer.format, frameCapacity: buffer.frameLength)
         else { return nil }
