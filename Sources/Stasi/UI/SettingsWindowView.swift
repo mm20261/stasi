@@ -166,54 +166,43 @@ struct SettingsWindowView: View {
     }
 
     @State private var hotkeyCaptureMonitor: Any?
+    @State private var hotkeyCaptureTarget: HotkeyCaptureMonitorTarget?
 
     private func beginHotkeyRecording() {
         guard hotkeyCaptureMonitor == nil else { return }
         recordingHotkey = true
         draftCombo = app.currentCombo
-        hotkeyCaptureMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .flagsChanged]) { event in
-            switch event.type {
-            case .keyDown where event.keyCode == 53:
+        let target = HotkeyCaptureMonitorTarget { action in
+            switch action {
+            case .cancel:
                 // Esc bricht ab – Monitor bleibt aktiv bis „Abbrechen".
-                MainActor.assumeIsolated {
-                    cancelHotkeyRecording()
-                }
-                return nil
-            case .flagsChanged:
-                // Modifier-Taste (z. B. rechte ⌘) als Kandidat zeigen.
-                if Self.isModifierKey(event.keyCode),
-                   !event.modifierFlags.intersection([.command, .control, .option, .shift]).isEmpty {
-                    MainActor.assumeIsolated {
-                        draftCombo = HotkeyEngine.Combo(keyCode: UInt64(event.keyCode), flags: 0)
-                    }
-                } else if event.keyCode == 63 {
+                cancelHotkeyRecording()
+            case .modifier(let combo):
+                draftCombo = combo
+            case .modifierReleased(let keyCode):
+                if keyCode == 63 {
                     // fn losgelassen → nichts
                 } else {
-                    MainActor.assumeIsolated {
-                        draftCombo = nil // Modifier allein reicht nicht → Anzeige leeren
-                    }
+                    draftCombo = nil // Modifier allein reicht nicht → Anzeige leeren
                 }
-                return nil
-            case .keyDown:
-                let keyCode = UInt64(event.keyCode)
-                var flags: UInt64 = 0
-                if event.modifierFlags.contains(.command) { flags |= CGEventFlags.maskCommand.rawValue }
-                if event.modifierFlags.contains(.control) { flags |= CGEventFlags.maskControl.rawValue }
-                if event.modifierFlags.contains(.option) { flags |= CGEventFlags.maskAlternate.rawValue }
-                if event.modifierFlags.contains(.shift) { flags |= CGEventFlags.maskShift.rawValue }
-                MainActor.assumeIsolated {
-                    draftCombo = HotkeyEngine.Combo(keyCode: keyCode, flags: flags)
-                }
-                return nil
-            default:
-                return event
+            case .key(let combo):
+                draftCombo = combo
             }
+        }
+        hotkeyCaptureTarget = target
+        hotkeyCaptureMonitor = NSEvent.addLocalMonitorForEvents(
+            matching: [.keyDown, .flagsChanged]
+        ) { [weak target] event in
+            guard let action = HotkeyCaptureEvent.parse(event) else { return event }
+            target?.send(action)
+            return nil
         }
     }
 
     private func cancelHotkeyRecording() {
         if let monitor = hotkeyCaptureMonitor { NSEvent.removeMonitor(monitor) }
         hotkeyCaptureMonitor = nil
+        hotkeyCaptureTarget = nil
         recordingHotkey = false
         draftCombo = nil
     }

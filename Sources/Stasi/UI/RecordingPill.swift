@@ -142,11 +142,18 @@ final class PillController {
         toastPanel?.orderFront(nil)
 
         toastTimer?.invalidate()
-        toastTimer = Timer.scheduledTimer(withTimeInterval: 2.6, repeats: false) { [weak self] _ in
-            MainActor.assumeIsolated {
-                self?.toastPanel?.orderOut(nil)
-            }
-        }
+        let timer = Timer(timeInterval: 2.6,
+                          target: self,
+                          selector: #selector(toastTimerFired(_:)),
+                          userInfo: nil,
+                          repeats: false)
+        toastTimer = timer
+        RunLoop.main.add(timer, forMode: .common)
+    }
+
+    @objc private func toastTimerFired(_ timer: Timer) {
+        toastPanel?.orderOut(nil)
+        if toastTimer === timer { toastTimer = nil }
     }
 
     // MARK: Intern
@@ -167,11 +174,17 @@ final class PillController {
 
     private func startAnimation() {
         guard animationTimer == nil else { return }
-        animationTimer = Timer.scheduledTimer(withTimeInterval: 1 / 30, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated {
-                self?.pillView?.tick()
-            }
-        }
+        let timer = Timer(timeInterval: 1 / 30,
+                          target: self,
+                          selector: #selector(animationTimerFired(_:)),
+                          userInfo: nil,
+                          repeats: true)
+        animationTimer = timer
+        RunLoop.main.add(timer, forMode: .common)
+    }
+
+    @objc private func animationTimerFired(_ timer: Timer) {
+        pillView?.tick()
     }
 
     private func stopAnimation() {

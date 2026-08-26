@@ -77,6 +77,7 @@ final class AppState {
     @ObservationIgnored private var lastLevelTraceUptime: TimeInterval = 0
     @ObservationIgnored private var phaseEnteredAt = Date()
     @ObservationIgnored private var watchdogRecoveryQueued = false
+    private let permissionCheckMailbox = PermissionCheckMailbox()
 
     // MARK: Command-Channel
     // Hotkey-Tap-Callbacks und @objc-Button-Thunks dürfen KEINE Tasks spawnen
@@ -226,25 +227,24 @@ final class AppState {
                              listen: Permissions.listenEventGranted)
     }
 
-    private var permissionCheckInFlight = false
-
     /// Poll-Variante: Preflights im Hintergrund. Hängt tccd (typisch direkt
     /// nach Ad-hoc-Re-Sign), blockiert sonst jeder Check den Main-Thread –
     /// das war das "Fenster tot, Klicks versacken"-Symptom.
     func refreshPermissionStateAsync() {
-        guard !permissionCheckInFlight else { return }
-        permissionCheckInFlight = true
-        DispatchQueue.global(qos: .utility).async { [weak self] in
+        guard permissionCheckMailbox.begin() else { return }
+        let mailbox = permissionCheckMailbox
+        DispatchQueue.global(qos: .utility).async {
             let ax = Permissions.accessibilityGranted
             let listen = Permissions.listenEventGranted
-            DispatchQueue.main.async {
-                MainActor.assumeIsolated {
-                    guard let self else { return }
-                    self.permissionCheckInFlight = false
-                    self.applyPermissionState(ax: ax, listen: listen)
-                }
-            }
+            mailbox.finish(ax: ax, listen: listen)
         }
+    }
+
+    /// Billiger Lock-Read aus dem bestehenden Main-Poll. Die GCD-Closure
+    /// berührt niemals MainActor-Zustand und benötigt keinen Executor-Hop.
+    func applyPendingPermissionStateFromPoll() {
+        guard let result = permissionCheckMailbox.consume() else { return }
+        applyPermissionState(ax: result.ax, listen: result.listen)
     }
 
     private func applyPermissionState(ax: Bool, listen: Bool) {
@@ -813,17 +813,56 @@ final class AppState {
 
     private func startElapsedTimer() {
         elapsedTimer?.invalidate()
-        // Statisch MainActor-isoliert (Timer auf Main-RunLoop) → kein Task nötig
-        elapsedTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated {
-                guard let self, let start = self.recordStart else { return }
-                self.elapsed = Date().timeIntervalSince(start)
-            }
-        }
+        let timer = Timer(timeInterval: 0.1,
+                          target: self,
+                          selector: #selector(elapsedTimerFired(_:)),
+                          userInfo: nil,
+                          repeats: true)
+        elapsedTimer = timer
+        RunLoop.main.add(timer, forMode: .common)
+    }
+
+    @objc private func elapsedTimerFired(_ timer: Timer) {
+        guard let start = recordStart else { return }
+        elapsed = Date().timeIntervalSince(start)
     }
 
     private func stopElapsedTimer() {
         elapsedTimer?.invalidate()
         elapsedTimer = nil
+    }
+}
+
+private final class PermissionCheckMailbox: @unchecked Sendable {
+    struct Result: Sendable {
+        let ax: Bool
+        let listen: Bool
+    }
+
+    private let lock = NSLock()
+    private var checking = false
+    private var pending: Result?
+
+    func begin() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !checking else { return false }
+        checking = true
+        return true
+    }
+
+    func finish(ax: Bool, listen: Bool) {
+        lock.lock()
+        pending = Result(ax: ax, listen: listen)
+        lock.unlock()
+    }
+
+    func consume() -> Result? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let pending else { return nil }
+        self.pending = nil
+        checking = false
+        return pending
     }
 }

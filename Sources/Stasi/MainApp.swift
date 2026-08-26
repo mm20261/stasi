@@ -207,6 +207,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private weak var selectionRef: AppSelection?
     private var pollTickCount = 0
     private var lastPollFire = Date()
+    private var pollTimer: Timer?
 
     func wireUp(app: AppState, settings: SettingsStore, selection: AppSelection) {
         guard self.app == nil else { return } // nur beim ersten Erscheinen verdrahten
@@ -227,17 +228,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Sync: Statusbar-Icon/-Status und Pill folgen Phase/Level/Timer.
     private func poll() {
-        // Timer-Block erbt MainActor-Isolation statisch → direkter Aufruf,
-        // KEIN Task { @MainActor } (Task-Churn aus GCD-Kontext korruptiert
-        // unter macOS 26.6 die Executor-Metadaten → SwiftUI-Crashes).
-        Timer.scheduledTimer(withTimeInterval: 1 / 20, repeats: true) { [weak self] _ in
-            // Der Timer wurde auf dem Main-RunLoop angelegt. Das explizite
-            // assumeIsolated erklärt diese Garantie Swift 6, ohne einen Task
-            // aus dem Timer-Callback zu erzeugen.
-            MainActor.assumeIsolated {
-                self?.pollTick()
-            }
-        }
+        let timer = Timer(timeInterval: 1 / 20,
+                          target: self,
+                          selector: #selector(pollTimerFired(_:)),
+                          userInfo: nil,
+                          repeats: true)
+        pollTimer = timer
+        RunLoop.main.add(timer, forMode: .common)
+    }
+
+    /// ObjC-Target-Dispatch auf dem Main-RunLoop: kein Swift-Executor-Check.
+    @objc private func pollTimerFired(_ timer: Timer) {
+        pollTick()
     }
 
     private func pollTick() {
@@ -251,6 +253,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         guard let app else { return }
         pollTickCount += 1
+        app.applyPendingPermissionStateFromPoll()
         app.checkPhaseWatchdog(now: now)
         app.ingestLevelFromPoll()
         statusBar.refresh()

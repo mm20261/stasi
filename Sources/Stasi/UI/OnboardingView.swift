@@ -10,6 +10,7 @@ struct OnboardingView: View {
     /// Live-Kombination aus Schritt 3.
     @State private var draftCombo: HotkeyEngine.Combo?
     @State private var captureMonitor: Any?
+    @State private var captureTarget: HotkeyCaptureMonitorTarget?
     @State private var microphoneGranted = Permissions.microphoneGranted
     @State private var showPermissionWarning = false
 
@@ -370,38 +371,30 @@ struct OnboardingView: View {
 
     private func startCapture() {
         guard captureMonitor == nil else { return }
-        captureMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .flagsChanged]) { event in
-            switch event.type {
-            case .keyDown where event.keyCode == 53:
-                MainActor.assumeIsolated { draftCombo = nil }
-                return nil
-            case .flagsChanged:
-                if Self.isModifierKey(event.keyCode),
-                   !event.modifierFlags.intersection([.command, .control, .option, .shift]).isEmpty {
-                    MainActor.assumeIsolated {
-                        draftCombo = HotkeyEngine.Combo(keyCode: UInt64(event.keyCode), flags: 0)
-                    }
-                }
-                return nil
-            case .keyDown:
-                var flags: UInt64 = 0
-                if event.modifierFlags.contains(.command) { flags |= CGEventFlags.maskCommand.rawValue }
-                if event.modifierFlags.contains(.control) { flags |= CGEventFlags.maskControl.rawValue }
-                if event.modifierFlags.contains(.option) { flags |= CGEventFlags.maskAlternate.rawValue }
-                if event.modifierFlags.contains(.shift) { flags |= CGEventFlags.maskShift.rawValue }
-                MainActor.assumeIsolated {
-                    draftCombo = HotkeyEngine.Combo(keyCode: UInt64(event.keyCode), flags: flags)
-                }
-                return nil
-            default:
-                return event
+        let target = HotkeyCaptureMonitorTarget { action in
+            switch action {
+            case .cancel:
+                draftCombo = nil
+            case .modifier(let combo), .key(let combo):
+                draftCombo = combo
+            case .modifierReleased:
+                break
             }
+        }
+        captureTarget = target
+        captureMonitor = NSEvent.addLocalMonitorForEvents(
+            matching: [.keyDown, .flagsChanged]
+        ) { [weak target] event in
+            guard let action = HotkeyCaptureEvent.parse(event) else { return event }
+            target?.send(action)
+            return nil
         }
     }
 
     private func removeMonitor() {
         if let monitor = captureMonitor { NSEvent.removeMonitor(monitor) }
         captureMonitor = nil
+        captureTarget = nil
     }
 
     private func commitHotkey() {
@@ -416,7 +409,4 @@ struct OnboardingView: View {
         model.finish()
     }
 
-    nonisolated static func isModifierKey(_ code: UInt16) -> Bool {
-        [54, 55, 56, 57, 58, 59, 60, 61, 63].contains(Int(code))
-    }
 }
