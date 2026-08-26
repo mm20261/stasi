@@ -254,17 +254,11 @@ enum Copy {
 
     // MARK: Feste Texte (nicht ironie-abhängig)
 
-    // Toasts (v4: kurz)
-    static let toastLogged = "Protokolliert"
-    static let toastCopied = "Kopiert — ⌘V"
-    static let toastDiscarded = "Verworfen"
+    // Fehler-Toasts; erfolgreiche/verworfene Aktionen bleiben bewusst still.
     static let toastNothingHeard = "Nichts gehört"
     static let toastTranscriptionAborted = "Transkription abgebrochen – bitte erneut versuchen"
 
-    // Phasenstatus der AppKit-Pill
-    static let pillTranscribing = "Transkribiere…"
-    static let pillPolishing = "Poliere…"
-    static let pillInjecting = "Füge ein…"
+    // Aufnahme-Pill
     static let pillModelLoading = "Modell lädt…"
 
     // Deterministische Nachbearbeitung

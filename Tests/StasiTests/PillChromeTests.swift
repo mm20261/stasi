@@ -47,6 +47,42 @@ final class PillChromeTests: XCTestCase {
     }
 
     @MainActor
+    func testProcessingPhasesUseTextlessSpinner() {
+        for phase in [AppState.Phase.transcribing, .polishing, .injecting] {
+            XCTAssertTrue(PillChrome.shouldShowSpinner(
+                phase: phase,
+                processingElapsed: PillChrome.spinnerDelay
+            ))
+        }
+        XCTAssertFalse(PillChrome.shouldShowSpinner(
+            phase: .recording,
+            processingElapsed: PillChrome.spinnerDelay
+        ))
+        XCTAssertFalse(PillChrome.shouldShowSpinner(
+            phase: .idle,
+            processingElapsed: PillChrome.spinnerDelay
+        ))
+
+        let animated = SpinnerViewNS(reduceMotion: false)
+        let reduced = SpinnerViewNS(reduceMotion: true)
+        XCTAssertFalse(animated.subviews.contains { $0 is NSTextField })
+        XCTAssertTrue(animated.rotatesForTesting)
+        XCTAssertFalse(reduced.rotatesForTesting)
+    }
+
+    func testSpinnerWaitsForPresentationThreshold() {
+        XCTAssertEqual(PillChrome.spinnerDelay, 0.2)
+        XCTAssertFalse(PillChrome.shouldShowSpinner(
+            phase: .transcribing,
+            processingElapsed: PillChrome.spinnerDelay - 0.001
+        ))
+        XCTAssertTrue(PillChrome.shouldShowSpinner(
+            phase: .transcribing,
+            processingElapsed: PillChrome.spinnerDelay
+        ))
+    }
+
+    @MainActor
     func testPillBackgroundAlwaysUsesInk() throws {
         let suite = "PillChromeTests.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))

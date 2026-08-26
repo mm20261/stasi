@@ -55,18 +55,20 @@ final class PillController {
     private var pillView: RecordingPillView?
     private var toastPanel: PillPanel?
     private var toastTimer: Timer?
-    private var statusPanel: PillPanel?
+    private var spinnerPanel: PillPanel?
+    private var spinnerView: SpinnerViewNS?
 
     private var lastPhase: AppState.Phase = .idle
     private var lastSource: RecordingSource = .pushToTalk
     private var lastHadPartialText = false
     private var lastModelReady = true
     private var recordingPillVisible = false
+    private var spinnerVisible = false
 
     func sync(phase: AppState.Phase, partialText: String, elapsed: TimeInterval,
-              level: Double, source: RecordingSource, modelReady: Bool) {
+              processingElapsed: TimeInterval, level: Double,
+              source: RecordingSource, modelReady: Bool) {
         guard let app else { return }
-        let phaseChanged = phase != lastPhase
         let entered = phase == .recording && lastPhase != .recording
         let exited = phase != .recording && lastPhase == .recording
         let sourceChanged = phase == .recording && lastSource != source
@@ -77,13 +79,13 @@ final class PillController {
         lastHadPartialText = hasPartialText
         lastModelReady = modelReady
 
-        if phaseChanged {
-            switch phase {
-            case .transcribing: showStatus(Copy.pillTranscribing)
-            case .polishing: showStatus(Copy.pillPolishing)
-            case .injecting: showStatus(Copy.pillInjecting)
-            case .idle, .recording: hideStatus()
-            }
+        if PillChrome.shouldShowSpinner(
+            phase: phase,
+            processingElapsed: processingElapsed
+        ) {
+            showSpinner()
+        } else {
+            hideSpinner()
         }
 
         switch phase {
@@ -120,24 +122,30 @@ final class PillController {
         }
     }
 
-    /// Generischer Phasenstatus. Block 3A ergänzt im Phase-Switch nur „Poliere…".
-    func showStatus(_ text: String) {
-        let view = StatusViewNS(text: text)
-        if statusPanel == nil {
-            statusPanel = PillPanel(content: view, size: NSSize(width: 190, height: 36))
+    private func showSpinner() {
+        guard !spinnerVisible else { return }
+        let view: SpinnerViewNS
+        if let spinnerView {
+            view = spinnerView
         } else {
-            statusPanel?.contentView = view
+            view = SpinnerViewNS()
+            spinnerView = view
+            spinnerPanel = PillPanel(content: view, size: NSSize(width: 36, height: 36))
         }
-        statusPanel?.resize(to: NSSize(width: 190, height: 36))
-        statusPanel?.positionBottomCenter()
-        statusPanel?.orderFront(nil)
+        spinnerVisible = true
+        view.startAnimating()
+        spinnerPanel?.positionBottomCenter()
+        spinnerPanel?.orderFront(nil)
     }
 
-    func hideStatus() {
-        statusPanel?.orderOut(nil)
+    private func hideSpinner() {
+        guard spinnerVisible else { return }
+        spinnerVisible = false
+        spinnerView?.stopAnimating()
+        spinnerPanel?.orderOut(nil)
     }
 
-    /// Toast-Pill nach Abschluss/Verwerfen (v3: 36 px hoch)
+    /// Fehler-/Warn-Toast (v3: 36 px hoch)
     func showToast(_ message: String, success: Bool) {
         let view = ToastViewNS(text: message, success: success)
         if toastPanel == nil {
@@ -377,34 +385,63 @@ final class RecordingPillView: NSView {
     }
 }
 
-// MARK: - Generischer Phasenstatus (AppKit)
+// MARK: - Textloser Verarbeitungsstatus (AppKit)
 
 @MainActor
-final class StatusViewNS: NSView {
-    init(text: String) {
-        super.init(frame: NSRect(x: 0, y: 0, width: 190, height: 36))
+final class SpinnerViewNS: NSView {
+    private let spinner = NSProgressIndicator()
+    private let staticDot = NSView()
+    private let reduceMotion: Bool
+
+    var rotatesForTesting: Bool { !reduceMotion }
+
+    init(reduceMotion: Bool = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion) {
+        self.reduceMotion = reduceMotion
+        super.init(frame: NSRect(x: 0, y: 0, width: 36, height: 36))
         wantsLayer = true
-        layer?.backgroundColor = NSColor(
-            red: 0x1A / 255, green: 0x19 / 255, blue: 0x17 / 255, alpha: 1
-        ).cgColor
+        layer?.backgroundColor = NSColor(Theme.Palette.ink).cgColor
         layer?.cornerRadius = 18
 
-        let label = NSTextField(labelWithString: text)
-        label.font = NSFont(name: "Geist", size: 12.5)
-            ?? .systemFont(ofSize: 12.5, weight: .medium)
-        label.textColor = NSColor(
-            red: 0xF4 / 255, green: 0xF2 / 255, blue: 0xED / 255, alpha: 1
-        )
-        label.alignment = .center
-        label.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(label)
+        spinner.style = .spinning
+        spinner.controlSize = .small
+        spinner.appearance = NSAppearance(named: .darkAqua)
+        spinner.isDisplayedWhenStopped = false
+        spinner.isHidden = reduceMotion
+        spinner.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(spinner)
+
+        staticDot.wantsLayer = true
+        staticDot.layer?.backgroundColor = NSColor.white.withAlphaComponent(0.9).cgColor
+        staticDot.layer?.cornerRadius = 3
+        staticDot.isHidden = !reduceMotion
+        staticDot.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(staticDot)
+
+        setAccessibilityElement(true)
+        setAccessibilityRole(.progressIndicator)
+        setAccessibilityLabel("Diktat wird verarbeitet")
 
         NSLayoutConstraint.activate([
-            widthAnchor.constraint(equalToConstant: 190),
+            widthAnchor.constraint(equalToConstant: 36),
             heightAnchor.constraint(equalToConstant: 36),
-            label.centerXAnchor.constraint(equalTo: centerXAnchor),
-            label.centerYAnchor.constraint(equalTo: centerYAnchor),
+            spinner.centerXAnchor.constraint(equalTo: centerXAnchor),
+            spinner.centerYAnchor.constraint(equalTo: centerYAnchor),
+            spinner.widthAnchor.constraint(equalToConstant: 18),
+            spinner.heightAnchor.constraint(equalToConstant: 18),
+            staticDot.centerXAnchor.constraint(equalTo: centerXAnchor),
+            staticDot.centerYAnchor.constraint(equalTo: centerYAnchor),
+            staticDot.widthAnchor.constraint(equalToConstant: 6),
+            staticDot.heightAnchor.constraint(equalToConstant: 6),
         ])
+    }
+
+    func startAnimating() {
+        guard !reduceMotion else { return }
+        spinner.startAnimation(nil)
+    }
+
+    func stopAnimating() {
+        spinner.stopAnimation(nil)
     }
 
     required init?(coder: NSCoder) { fatalError("nicht unterstützt") }
@@ -511,7 +548,7 @@ final class PillCircleButton: NSButton {
     required init?(coder: NSCoder) { fatalError("nicht unterstützt") }
 }
 
-// MARK: - Toast (AppKit, v3: 36 px, dunkle Pill, grüner Haken / rotes ✕)
+// MARK: - Toast (AppKit, v3: 36 px, dunkle Pill)
 
 @MainActor
 final class ToastViewNS: NSView {

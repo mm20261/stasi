@@ -94,13 +94,13 @@ final class StatusBarController {
                     .flatMap(NSImage.init(contentsOf:))
             case .transcribing:
                 image = NSImage(systemSymbolName: "ellipsis",
-                                accessibilityDescription: Copy.pillTranscribing)
+                                accessibilityDescription: "Transkription")
             case .polishing:
                 image = NSImage(systemSymbolName: "sparkles",
-                                accessibilityDescription: Copy.pillPolishing)
+                                accessibilityDescription: "Nachbearbeitung")
             case .injecting:
                 image = NSImage(systemSymbolName: "text.insert",
-                                accessibilityDescription: Copy.pillInjecting)
+                                accessibilityDescription: "Text einfügen")
             }
             if let image {
                 image.isTemplate = phase != .recording
@@ -262,6 +262,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             phase: app.phase,
             partialText: app.partialText,
             elapsed: app.elapsed,
+            processingElapsed: app.processingElapsed(now: now),
             level: app.displayLevel,
             source: app.recordingSource,
             modelReady: app.currentSessionModelReady

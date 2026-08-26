@@ -15,9 +15,23 @@ enum PillChrome {
     /// Hands-free ist ein bewusster Start und erscheint ohne Verzögerung.
     static let presentationDelay: TimeInterval = 0.25
 
+    /// Kurze Verarbeitung bleibt unsichtbar, damit der Spinner nicht aufblitzt.
+    /// Die durchgehende Dauer kommt aus dem bestehenden 20-Hz-App-Poll.
+    static let spinnerDelay: TimeInterval = 0.2
+
     static func shouldShowRecording(source: RecordingSource,
                                     elapsed: TimeInterval) -> Bool {
         source == .handsFree || elapsed >= presentationDelay
+    }
+
+    static func shouldShowSpinner(phase: AppState.Phase,
+                                  processingElapsed: TimeInterval) -> Bool {
+        switch phase {
+        case .transcribing, .polishing, .injecting:
+            processingElapsed >= spinnerDelay
+        case .idle, .recording:
+            false
+        }
     }
 
     /// ✕ und ✓ immer klickbar (auch gelockt – Wispr-Stil).

@@ -69,19 +69,13 @@ final class CopyV3Tests: XCTestCase {
 
     // MARK: Feste Texte (nicht von der Ironie abhängig)
 
-    func testToastTexts() {
-        XCTAssertEqual(Copy.toastLogged, "Protokolliert")
-        XCTAssertEqual(Copy.toastCopied, "Kopiert — ⌘V")
-        XCTAssertEqual(Copy.toastDiscarded, "Verworfen")
+    func testErrorToastTexts() {
         XCTAssertEqual(Copy.toastNothingHeard, "Nichts gehört")
         XCTAssertEqual(Copy.toastTranscriptionAborted,
                        "Transkription abgebrochen – bitte erneut versuchen")
     }
 
-    func testPillStatusTexts() {
-        XCTAssertEqual(Copy.pillTranscribing, "Transkribiere…")
-        XCTAssertEqual(Copy.pillPolishing, "Poliere…")
-        XCTAssertEqual(Copy.pillInjecting, "Füge ein…")
+    func testRecordingPillModelLoadingText() {
         XCTAssertEqual(Copy.pillModelLoading, "Modell lädt…")
     }
 

@@ -400,6 +400,39 @@ final class DictationSessionTests: XCTestCase {
         XCTAssertTrue(app.history.records.isEmpty)
     }
 
+    func testCompletionAndDiscardStaySilentWhileErrorsStillToast() async {
+        let audio = FakeAudioCapture()
+        let app = makeApp(
+            audio: audio,
+            engines: [
+                FakeSpeechEngine(text: "Erfolgreiches Diktat"),
+                FakeSpeechEngine(text: "Wird verworfen"),
+                FakeSpeechEngine(),
+            ]
+        )
+        var toasts: [(String, Bool)] = []
+        app.onToast = { toasts.append(($0, $1)) }
+
+        app.startDictation()
+        await waitUntil { audio.isRunning }
+        app.stopDictation(commit: true)
+        await waitUntil { app.phase == .idle }
+
+        app.startDictation()
+        await waitUntil { audio.isRunning }
+        app.requestDiscard()
+        await waitUntil { app.phase == .idle }
+
+        app.startDictation()
+        await waitUntil { audio.isRunning }
+        app.stopDictation(commit: true)
+        await waitUntil { app.phase == .idle }
+
+        XCTAssertEqual(toasts.count, 1)
+        XCTAssertEqual(toasts.first?.0, Copy.toastNothingHeard)
+        XCTAssertEqual(toasts.first?.1, false)
+    }
+
     func testSetupErrorTearsEverythingDown() async {
         let directory = makeDirectory()
         let audio = FakeAudioCapture()

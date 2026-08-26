@@ -45,7 +45,11 @@ App getippt. Komplett **on-device** via macOS-26-`SpeechTranscriber` (EN/DE).
 > Pegelbalken wachsen symmetrisch von der Mittellinie über 4–20 px, nutzen
 > 150 ms Peak-Hold und 35–100 % Weiß-Deckkraft. Push-to-talk wird erst ab
 > 250 ms eingeblendet; kürzere Tipps werden ohne Pill, Status, Toast oder
-> Protokoll still verworfen. Hands-free erscheint sofort.
+> Protokoll still verworfen. Hands-free erscheint sofort. Nach dem Loslassen
+> ersetzt ein textloser 36×36-px-AppKit-Spinner die früheren Phasentexte, aber
+> erst nach `PillChrome.spinnerDelay` (200 ms über alle Verarbeitungsphasen).
+> Bei Reduce Motion steht stattdessen ein ruhiger weißer Punkt. Erfolgs- und
+> Verwerfen-Toasts sind entfernt; Fehler- und Warn-Toasts bleiben erhalten.
 
 ## Aktueller Stand (Stand: 26.08.2026 – v3-Look mit V4-Features)
 
@@ -66,8 +70,9 @@ Streak-Heatmap mit Stempel-Badge), **Protokolle** gruppiert nach Tag mit
 Aktenzeichen/WPM/Korrektur-/Poliert-Badges und einsehbarem Rohtext, Aufnahme-Pill auf
 **Akzent-Basis** (✕/✓ in beiden Aufnahmemodi), zweizeiligem Live-Transkript und
 sichtbarer Modell-Vorbereitung;
-separate AppKit-Status-Pills zeigen Transkription und Einfügen. **Toasts 36 px**
-(„Protokolliert ✓" Stil), **Onboarding 4 Schritte** bei erstem Start + Leerzustand erster Start
+ein textloser **36×36-px-AppKit-Spinner** zeigt verzögert die Verarbeitung; unter
+Reduce Motion bleibt er als ruhiger Punkt stehen. **Toasts 36 px** erscheinen nur
+noch für Fehler und Warnungen, **Onboarding 4 Schritte** bei erstem Start + Leerzustand erster Start
 im Bericht. Die Menüleiste verwendet pro Phase ein explizit gecachtes Symbol.
 Nach jedem Diktat landet der korrigierte Text **automatisch in der Zwischenablage**
 (⌘V zum Einfügen – wie bei Wispr). **Hands-free per frei wählbarem Modifier-Doppeltipp**
@@ -89,7 +94,7 @@ Nach jedem neuen Protokoll schlägt **Auto-gelernt** wiederholt diktierte, unbek
 Begriffe vor (DE konservativ über Großschreibung mitten im Satz, EN zusätzlich über
 unbekannte Wörter). Vorschläge lassen sich übernehmen oder dauerhaft ignorieren.
 
-**Test-Suite: 341 Tests, 0 Fehler** (`Tests/StasiTests/`; davon 4 Pipeline-E2E gated).
+**Test-Suite: 344 Tests, 0 Fehler** (`Tests/StasiTests/`; davon 4 Pipeline-E2E gated).
 TDD etabliert – bei Änderungen an Logik: erst Test, dann Fix.
 
 ### Bekannte Grenzen / offene Punkte
@@ -148,8 +153,8 @@ Sources/Stasi/
 │   │                          Tipzeit-Schätzung)
 │   ├── ProtocolSearch.swift   Volltextsuche + Filter (ALLE/7T/30T), Tagesgruppierung,
 │   │                          FileNumber (Aktenzeichen), ProtocolExporter (alle .md)
-│   ├── PillChrome.swift       RecordingSource + 250-ms-Sichtbarkeitsschwelle + Live-Text/
-│   │                          Modellstatus → Pill-Geometrie; MicLevelBars 4–20 px/Peak-Hold
+│   ├── PillChrome.swift       RecordingSource + 250-ms-Aufnahme-/200-ms-Spinner-Schwelle +
+│   │                          Live-Text/Modellstatus → Pill-Geometrie; MicLevelBars 4–20 px/Peak-Hold
 │   ├── UpdateChecker.swift    Release-Fetch (GitHub-API) + numerischer Versionsvergleich
 │   │                          + Statuszeile; persistiert Version, Prüfzeit und Release-URL
 │   ├── MicrophoneSelection.swift  MicDevice/MicrophoneCatalog (reine Logik, getestet)
@@ -170,13 +175,13 @@ Sources/Stasi/
 │                              HotkeyCaptureMonitor (ObjC-Main-Thread-Hop), AccountView
 │                              (Kreis-Avatar/Signaturkarte), OnboardingView,
 │                              RecordingPill.swift (pures AppKit: Aufnahme/symmetrische
-│                              Waveform/Live-Text/Status/Toast), Effects.swift
+│                              Waveform/Live-Text/textloser Spinner/Fehler-Toast), Effects.swift
 └── Support/                   Permissions.swift (Mikrofon/AX; ListenEvent nur Diagnose),
                                DebugLog.swift (Rotation >2 MB nach debug.log.1), VirtualKey.swift
 
 scripts/make-app.sh            → build/Stasi.app (stabil signiert, Icon aus import/…/icons/anthrazit)
 scripts/gen_icon.swift         → Fallback-Icon-Generator
-Tests/StasiTests/              → 341 Tests (XCTest): AutoLearnScout/TextTidy/FillerFilter/SelfCorrectionResolver/
+Tests/StasiTests/              → 344 Tests (XCTest): AutoLearnScout/TextTidy/FillerFilter/SelfCorrectionResolver/
                                  TranscriptPolisher/DictationSession/HotkeyReenablePolicy/
                                  AudioCaptureFile/DictionaryWatcher/ThemeV3/CopyV3/
                                  ProtocolSearch/PillChrome/UpdateChecker + Bestand
@@ -296,12 +301,12 @@ echter, vom Nutzer reproduzierter Bug:
 
 - **`swift test` kann an der Runner-Infra hängen** – zuverlässig:
   `swift build --build-tests && xcrun xctest .build/arm64-apple-macosx/debug/StasiPackageTests.xctest`
-- Suite: 341 Tests, davon Pipeline (2 aktiv + 4 gated), AutoLearnScout (13),
+- Suite: 344 Tests, davon Pipeline (2 aktiv + 4 gated), AutoLearnScout (13),
   TextTidy (10), FillerFilter (26), SelfCorrectionResolver (37),
-  TranscriptPolisher (9), DictationSession (19),
+  TranscriptPolisher (9), DictationSession (20),
   HotkeyReenablePolicy (8), AudioCaptureFile (7), DictionaryWatcher (2),
   ShortcutDetector (14), ThemeV3 (7), CopyV3 (14), ProtocolSearch (13),
-  PillChrome/MicLevelBars (17), UpdateChecker (11), MicrophoneCatalog (6),
+  PillChrome/MicLevelBars (19), UpdateChecker (11), MicrophoneCatalog (6),
   Onboarding (6). Bei Logik-Änderungen: erst Test schreiben/ändern, dann implementieren
   (TDD).
 - Diagnose-Logs laufen mit: `STASI-HK PRESS/RELEASE`, `STASI-PILL ✓/✕`, `STASI-APP …`,

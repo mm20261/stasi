@@ -22,7 +22,10 @@ final class AppState {
     private(set) var phase: Phase = .idle {
         didSet {
             guard oldValue != phase else { return }
-            phaseEnteredAt = Date()
+            let now = Date()
+            phaseEnteredAt = now
+            if phase == .transcribing { processingStartedAt = now }
+            if phase == .idle || phase == .recording { processingStartedAt = nil }
             if phase == .idle { watchdogRecoveryQueued = false }
         }
     }
@@ -76,6 +79,7 @@ final class AppState {
     private let minimumPushToTalkDuration: TimeInterval
     @ObservationIgnored private var lastLevelTraceUptime: TimeInterval = 0
     @ObservationIgnored private var phaseEnteredAt = Date()
+    @ObservationIgnored private var processingStartedAt: Date?
     @ObservationIgnored private var watchdogRecoveryQueued = false
     private let permissionCheckMailbox = PermissionCheckMailbox()
 
@@ -593,10 +597,8 @@ final class AppState {
             guard let self, let session else { return }
             await session.setupTask?.value
             guard session === self.currentSession else { return }
-            let wasRunning = session.audio.isRunning
             await session.teardown()
             guard session === self.currentSession else { return }
-            if wasRunning { self.onToast?(Copy.toastDiscarded, false) }
             self.finishAbortedSession(session)
         }
     }
@@ -732,12 +734,10 @@ final class AppState {
                 TextInjector.inject(trimmed)
             }
             // Zwei Poll-Zyklen Sichtbarkeit, auch wenn das Einfügen nur einen
-            // kurzen CGEvent-Chunk benötigt.
+            // kurzen CGEvent-Chunk benötigt. Der verzögerte Spinner bleibt bei
+            // insgesamt schneller Verarbeitung trotzdem unsichtbar.
             try? await Task.sleep(nanoseconds: 100_000_000)
             await MainActor.run { [weak self] in
-                // Erst nach dem Einfügen toasten: `.injecting` bleibt während
-                // des tatsächlichen Tippens als Status sichtbar.
-                self?.onToast?(editable ? Copy.toastLogged : Copy.toastCopied, true)
                 self?.phase = .idle
                 self?.partialText = ""
             }
@@ -778,21 +778,15 @@ final class AppState {
     private func copyLast() {
         guard let record = history.records.first else { return }
         copy(record)
-        onToast?(Copy.toastCopied, true)
     }
 
     private func insertLast() {
         guard let record = history.records.first else { return }
         let text = record.correctedText
         copy(record)
-        Task.detached(priority: .userInitiated) { [weak self] in
-            let editable = TextInjector.isFocusedElementEditable()
-            if editable {
+        Task.detached(priority: .userInitiated) {
+            if TextInjector.isFocusedElementEditable() {
                 TextInjector.inject(text)
-            } else {
-                await MainActor.run {
-                    self?.onToast?(Copy.toastCopied, true)
-                }
             }
         }
     }
@@ -845,6 +839,16 @@ final class AppState {
         guard phase == .recording,
               let start = recordStart else { return }
         elapsed = max(0, now.timeIntervalSince(start))
+    }
+
+    /// Durchgehende Dauer ab Loslassen über Transkription, Nachbearbeitung
+    /// und Einfügen. Der bestehende Main-Poll liest sie ohne zusätzlichen Timer.
+    func processingElapsed(now: Date = Date()) -> TimeInterval {
+        guard let start = processingStartedAt,
+              phase == .transcribing || phase == .polishing || phase == .injecting else {
+            return 0
+        }
+        return max(0, now.timeIntervalSince(start))
     }
 }
 
