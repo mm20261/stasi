@@ -81,7 +81,7 @@ Nach jedem neuen Protokoll schlägt **Auto-gelernt** wiederholt diktierte, unbek
 Begriffe vor (DE konservativ über Großschreibung mitten im Satz, EN zusätzlich über
 unbekannte Wörter). Vorschläge lassen sich übernehmen oder dauerhaft ignorieren.
 
-**Test-Suite: 309 Tests, 0 Fehler** (`Tests/StasiTests/`; davon 4 Pipeline-E2E gated).
+**Test-Suite: 329 Tests, 0 Fehler** (`Tests/StasiTests/`; davon 4 Pipeline-E2E gated).
 TDD etabliert – bei Änderungen an Logik: erst Test, dann Fix.
 
 ### Bekannte Grenzen / offene Punkte
@@ -155,7 +155,8 @@ Sources/Stasi/
 │                              (Hero/Rail), ProtocolsView (Suche/AZ/Tagesgruppen),
 │                              InsightsView (Leitzahl/Akzent-Stufen/Stempel), DictionaryView
 │                              (Segmented-Tabs), SettingsWindowView (Mic-Popover,
-│                              Recorder-Feld, Akzent-Presets, Update-Zeile), AccountView
+│                              Recorder-Feld, Akzent-Presets, Update-Zeile),
+│                              HotkeyCaptureMonitor (ObjC-Main-Thread-Hop), AccountView
 │                              (Kreis-Avatar/Signaturkarte), OnboardingView,
 │                              RecordingPill.swift (pures AppKit: Aufnahme/Live-Text/Status/
 │                              Toast), Effects.swift
@@ -164,7 +165,7 @@ Sources/Stasi/
 
 scripts/make-app.sh            → build/Stasi.app (stabil signiert, Icon aus import/…/icons/anthrazit)
 scripts/gen_icon.swift         → Fallback-Icon-Generator
-Tests/StasiTests/              → 309 Tests (XCTest): AutoLearnScout/TextTidy/FillerFilter/SelfCorrectionResolver/
+Tests/StasiTests/              → 329 Tests (XCTest): AutoLearnScout/TextTidy/FillerFilter/SelfCorrectionResolver/
                                  TranscriptPolisher/DictationSession/HotkeyReenablePolicy/
                                  AudioCaptureFile/DictionaryWatcher/ThemeV3/CopyV3/
                                  ProtocolSearch/PillChrome/UpdateChecker + Bestand
@@ -172,13 +173,17 @@ Tests/StasiTests/              → 309 Tests (XCTest): AutoLearnScout/TextTidy/F
 
 ## ⚠️ HART ERARBEITETE REGELN (macOS 26.6 / Swift 6.3 – NICHT verletzen!)
 
-Diese Lektionen stammen aus 6 dokumentierten Crashes + Freezes. Jede davon war ein
+Diese Lektionen stammen aus 7 dokumentierten Crashes + Freezes. Jede davon war ein
 echter, vom Nutzer reproduzierter Bug:
 
 1. **KEIN `Task { @MainActor … }` aus GCD-Timern / Audio-Render-Thread / NSEvent-Monitoren.**
    Task-Churn aus Kontexten ohne Swift-Concurrency-Root korruptiert die Executor-Metadaten
    → `swift_task_isMainExecutor` crasht später ZUFÄLLIG in SwiftUI (Buttons, Forms, Timeline-
-   Views). Timer-Blöcke auf dem Main-RunLoop erben MainActor statisch → direkt aufrufen.
+   Views). `MainActor.assumeIsolated` in RunLoop-Timern, NSEvent-Monitoren oder GCD-
+   Callbacks ist **VERBOTEN**: Es führt denselben dynamischen
+   `swift_task_isCurrentExecutor`-Check aus und segfaultete am 26.08.2026 im Leerlauf
+   (`Stasi-2026-08-26-105541.ips`, `objc_opt_class` auf `0x1e` aus `AppDelegate.poll()`).
+   Stattdessen ObjC-Target-Timer bzw. lock-geschützten Zustand + Main-Poll verwenden.
    Level aus dem Render-Thread: nur lock-geschützter Wert schreiben, Main-Poll liest ihn.
 
 2. **KEIN SwiftUI in manuell verwalteten NSPanels** (borderless/nonactivating).
@@ -276,7 +281,7 @@ echter, vom Nutzer reproduzierter Bug:
 
 - **`swift test` kann an der Runner-Infra hängen** – zuverlässig:
   `swift build --build-tests && xcrun xctest .build/arm64-apple-macosx/debug/StasiPackageTests.xctest`
-- Suite: 309 Tests, davon Pipeline (2 aktiv + 4 gated), AutoLearnScout (13),
+- Suite: 329 Tests, davon Pipeline (2 aktiv + 4 gated), AutoLearnScout (13),
   TextTidy (10), FillerFilter (26), SelfCorrectionResolver (37),
   TranscriptPolisher (9), DictationSession (15),
   HotkeyReenablePolicy (8), AudioCaptureFile (6), DictionaryWatcher (2),
