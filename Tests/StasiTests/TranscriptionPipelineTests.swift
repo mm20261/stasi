@@ -66,7 +66,7 @@ final class TranscriptionPipelineTests: XCTestCase {
         }
 
         // 2 Sekunden "Audio" in ~85-ms-Blöcken im Engine-Format füttern,
-        // in Echtzeit-Takt (wie der AVAudioEngine-Tap es liefert)
+        // in Echtzeit-Takt (wie der Audio-Input-Callback ihn liefert)
         let buffer = speechLikeBuffer(seconds: 0.085, format: format)
         let blocks = Int(2.0 / 0.085)
         for _ in 0..<blocks {

@@ -433,7 +433,7 @@ final class AppState {
                   session.state == .settingUp else { return }
             do {
                 // Mikrofon-Recht ZUERST klären (async, blockiert nichts) –
-                // die AVAudioEngine ohne Recht anzufassen hängt sonst den
+                // die Audio-Hardware ohne Recht anzufassen hängt sonst den
                 // Main-Thread in der synchronen TCC-Abfrage fest.
                 let microphoneGranted = await self.requestMicrophone()
                 guard session === self.currentSession else { return }

@@ -1,9 +1,9 @@
-import AVFoundation
+import CoreAudio
 import Foundation
 
 // MARK: - Mikrofon-Auswahl (v4)
-// Popover-Geräteliste + Auswahl pro Engine (kAudioOutputUnitProperty_
-// CurrentDevice auf dem InputNode) – das System-Standardgerät bleibt unangetastet.
+// Popover-Geräteliste + Auswahl fuer die input-only AUHAL. Das
+// System-Standardgeraet selbst bleibt unangetastet.
 
 /// Ein Eintrag der Mikrofon-Liste.
 struct MicDevice: Equatable, Identifiable {
@@ -89,6 +89,13 @@ enum MicrophoneScanner {
 
     /// Transport-UID des aktiven macOS-Eingabegeräts (nil = Systemstandard).
     static func defaultInputTransportUID() -> String? {
+        guard let deviceID = defaultInputDeviceID() else { return nil }
+        return transportUID(deviceID)
+    }
+
+    /// Aktuelle DeviceID des Systemstandard-Eingangs. Nur gelesen, niemals
+    /// geschrieben; die Auswahl wird spaeter ausschliesslich auf der AUHAL gesetzt.
+    static func defaultInputDeviceID() -> AudioDeviceID? {
         var deviceID = AudioDeviceID(0)
         var size = UInt32(MemoryLayout<AudioDeviceID>.size)
         var address = AudioObjectPropertyAddress(
@@ -97,40 +104,26 @@ enum MicrophoneScanner {
             mElement: kAudioObjectPropertyElementMain)
         guard AudioObjectGetPropertyData(systemObject, &address, 0, nil, &size, &deviceID) == noErr,
               deviceID != 0 else { return nil }
-        return transportUID(deviceID)
+        return deviceID
     }
 
-    // MARK: Auflösung UID → DeviceID + Anwenden auf die Engine
+    // MARK: Aufloesung UID -> DeviceID
 
     /// UID → aktuelle AudioDeviceID (UIDs sind stabil, IDs nicht).
     static func deviceID(forTransportUID uid: String) -> AudioDeviceID? {
         scan().first(where: { $0.transportUID == uid })?.deviceID
     }
 
-    /// Setzt das Gerät auf dem InputNode der Engine (VOR dem Start!).
-    /// Liefert false, wenn das Gerät fehlt oder die Property abgelehnt wird –
-    /// dann läuft einfach das Standardgerät weiter.
-    static func apply(_ uid: String?, to node: AVAudioInputNode) -> Bool {
-        guard let uid else { return true } // kein Wunsch → Standard lassen
-        guard let deviceID = deviceID(forTransportUID: uid) else {
-            DebugLog.log("STASI-AUDIO: Wunsch-Mikrofon nicht gefunden (\(uid)) – nutze Standard")
-            return false
+    /// Wunsch-UID oder explizit das aktuelle Default-Input-Geraet. Eine nicht
+    /// mehr vorhandene Wunsch-UID faellt kontrolliert auf den Standard zurueck.
+    static func inputDeviceID(preferredUID: String?) -> AudioDeviceID? {
+        if let preferredUID {
+            if let selected = deviceID(forTransportUID: preferredUID) {
+                return selected
+            }
+            DebugLog.log("STASI-AUDIO: Wunsch-Mikrofon nicht gefunden (\(preferredUID)) – nutze Standard")
         }
-        var id = deviceID
-        let size = UInt32(MemoryLayout<AudioDeviceID>.size)
-        let status = withUnsafePointer(to: &id) { pointer in
-            AudioUnitSetProperty(node.audioUnit!,
-                                 kAudioOutputUnitProperty_CurrentDevice,
-                                 kAudioObjectPropertyScopeGlobal,
-                                 0,
-                                 pointer,
-                                 size)
-        }
-        if status != noErr {
-            DebugLog.log("STASI-AUDIO: Mikrofon konnte nicht gesetzt werden (OSStatus \(status)) – nutze Standard")
-            return false
-        }
-        return true
+        return defaultInputDeviceID()
     }
 
     private static func stringProperty(_ selector: AudioObjectPropertySelector,
