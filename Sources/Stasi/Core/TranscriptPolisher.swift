@@ -13,11 +13,26 @@ struct PolishChange: Codable, Equatable, Sendable {
         case stutter
         case selfCorrection
         case discourseFiller
+        case dictionary
         case textTidy
     }
 
     let kind: Kind
     let count: Int
+    let removed: String?
+    let kept: String?
+
+    init(kind: Kind, count: Int, removed: String? = nil, kept: String? = nil) {
+        self.kind = kind
+        self.count = count
+        self.removed = removed
+        self.kept = kept
+    }
+}
+
+struct PolishDetailSection: Equatable, Sendable {
+    let title: String
+    let items: [String]
 }
 
 struct PolishSummary: Codable, Equatable, Sendable {
@@ -29,6 +44,7 @@ struct PolishSummary: Codable, Equatable, Sendable {
     var stutterWordsRemoved: Int { count(.stutter) }
     var selfCorrectionsResolved: Int { count(.selfCorrection) }
     var discourseFillerWordsRemoved: Int { count(.discourseFiller) }
+    var dictionaryCorrectionsApplied: Int { count(.dictionary) }
     var fillerWordsRemoved: Int {
         hesitationWordsRemoved + discourseFillerWordsRemoved
     }
@@ -36,22 +52,65 @@ struct PolishSummary: Codable, Equatable, Sendable {
     /// Kurzes, belastbares UI-Label. Reine Interpunktions-/Whitespace-Glättung
     /// zählt bewusst nicht als sichtbares „Poliert"-Ergebnis.
     func badgeText(correctionCount: Int = 0) -> String? {
-        guard level == .standard else { return nil }
+        guard level == .standard, !changes.isEmpty else { return nil }
         if fillerWordsRemoved > 0 {
             return "POLIERT · −\(fillerWordsRemoved) FÜLLWÖRTER"
         }
         if stutterWordsRemoved > 0 || selfCorrectionsResolved > 0 {
             return "POLIERT · VERSPRECHER"
         }
-        if correctionCount > 0 {
-            let noun = correctionCount == 1 ? "KORREKTUR" : "KORREKTUREN"
-            return "POLIERT · \(correctionCount) \(noun)"
+        let corrections = dictionaryCorrectionsApplied > 0
+            ? dictionaryCorrectionsApplied : correctionCount
+        if corrections > 0 {
+            let noun = corrections == 1 ? "KORREKTUR" : "KORREKTUREN"
+            return "POLIERT · \(corrections) \(noun)"
         }
         return nil
     }
 
+    var compactBadgeText: String? {
+        badgeText() == nil ? nil : "POLIERT"
+    }
+
+    /// Reine Präsentationslogik für das gemeinsame Detail-Popover.
+    /// Reihenfolge bleibt stabil und folgt der Nachbearbeitungs-Pipeline.
+    func detailSections(corrections: [AppliedCorrection]) -> [PolishDetailSection] {
+        guard level == .standard else { return [] }
+        let fillers = changes.compactMap { change -> String? in
+            guard change.kind == .hesitation || change.kind == .discourseFiller else {
+                return nil
+            }
+            return change.removed
+        }
+        let slips = changes.compactMap { change -> String? in
+            guard change.kind == .stutter || change.kind == .selfCorrection,
+                  let removed = change.removed, let kept = change.kept else { return nil }
+            return "„\(removed)“ → „\(kept)“"
+        }
+        var dictionary = changes.compactMap { change -> String? in
+            guard change.kind == .dictionary,
+                  let removed = change.removed, let kept = change.kept else { return nil }
+            return "„\(removed)“ → „\(kept)“"
+        }
+        if dictionary.isEmpty {
+            dictionary = corrections.map { "„\($0.matched)“ → „\($0.target)“" }
+        }
+
+        var sections: [PolishDetailSection] = []
+        if !fillers.isEmpty {
+            sections.append(PolishDetailSection(title: "Füllwörter entfernt", items: fillers))
+        }
+        if !slips.isEmpty {
+            sections.append(PolishDetailSection(title: "Versprecher", items: slips))
+        }
+        if !dictionary.isEmpty {
+            sections.append(PolishDetailSection(title: "Wörterbuch", items: dictionary))
+        }
+        return sections
+    }
+
     private func count(_ kind: PolishChange.Kind) -> Int {
-        changes.first(where: { $0.kind == kind })?.count ?? 0
+        changes.filter { $0.kind == kind }.reduce(0) { $0 + $1.count }
     }
 }
 
@@ -86,23 +145,34 @@ enum TranscriptPolisher {
 
         let hesitation = FillerFilter.removeHesitations(text, locale: polishLocale)
         text = hesitation.text
-        add(.hesitation, count: hesitation.removedWords, to: &changes)
+        addFillerEdits(.hesitation, result: hesitation, to: &changes)
 
         let stutter = FillerFilter.collapseStutters(text, locale: polishLocale)
         text = stutter.text
-        add(.stutter, count: stutter.removedWords, to: &changes)
+        addFillerEdits(.stutter, result: stutter, to: &changes)
 
         let selfCorrection = SelfCorrectionResolver.resolve(text, locale: polishLocale)
         text = selfCorrection.text
-        add(.selfCorrection, count: selfCorrection.resolvedCount, to: &changes)
+        if selfCorrection.edits.isEmpty {
+            add(.selfCorrection, count: selfCorrection.resolvedCount, to: &changes)
+        } else {
+            for edit in selfCorrection.edits {
+                add(.selfCorrection, count: 1, removed: edit.removed,
+                    kept: edit.kept, to: &changes)
+            }
+        }
 
         let discourse = FillerFilter.removeDiscourseFillers(text, locale: polishLocale)
         text = discourse.text
-        add(.discourseFiller, count: discourse.removedWords, to: &changes)
+        addFillerEdits(.discourseFiller, result: discourse, to: &changes)
 
         let firstTidy = TextTidy.tidy(text)
         if firstTidy != text { add(.textTidy, count: 1, to: &changes) }
         let corrected = CorrectionEngine.correct(firstTidy, entries: entries)
+        for correction in corrected.applied {
+            add(.dictionary, count: 1, removed: correction.matched,
+                kept: correction.target, to: &changes)
+        }
         let finalText = TextTidy.tidy(corrected.text)
         if finalText != corrected.text { add(.textTidy, count: 1, to: &changes) }
 
@@ -113,13 +183,29 @@ enum TranscriptPolisher {
         )
     }
 
+    private static func addFillerEdits(_ kind: PolishChange.Kind,
+                                       result: FillerFilter.Result,
+                                       to changes: inout [PolishChange]) {
+        guard !result.edits.isEmpty else {
+            add(kind, count: result.removedWords, to: &changes)
+            return
+        }
+        for edit in result.edits {
+            let removedCount = edit.removed.split(whereSeparator: { $0.isWhitespace }).count
+            let keptCount = edit.kept?.split(whereSeparator: { $0.isWhitespace }).count ?? 0
+            let count = kind == .stutter
+                ? max(1, removedCount - keptCount)
+                : max(1, removedCount)
+            add(kind, count: count, removed: edit.removed,
+                kept: edit.kept, to: &changes)
+        }
+    }
+
     private static func add(_ kind: PolishChange.Kind, count: Int,
+                            removed: String? = nil, kept: String? = nil,
                             to changes: inout [PolishChange]) {
         guard count > 0 else { return }
-        if let index = changes.firstIndex(where: { $0.kind == kind }) {
-            changes[index] = PolishChange(kind: kind, count: changes[index].count + count)
-        } else {
-            changes.append(PolishChange(kind: kind, count: count))
-        }
+        changes.append(PolishChange(kind: kind, count: count,
+                                    removed: removed, kept: kept))
     }
 }

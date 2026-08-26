@@ -240,11 +240,10 @@ struct DashboardView: View {
 
                 HStack(spacing: 8) {
                     Text(heroMeta(record))
-                    if let badge = record.polish?.badgeText(
-                        correctionCount: record.corrections.count
-                    ) {
-                        PolishBadge(text: badge)
-                    }
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                        .fixedSize(horizontal: false, vertical: true)
+                    PolishBadge(record: record)
                 }
                 .font(Theme.Typo.counter(10.5))
                 .monospacedDigit()
@@ -505,19 +504,20 @@ private struct EarlierRowView: View {
                 .lineLimit(1)
                 .truncationMode(.tail)
                 .frame(maxWidth: .infinity, alignment: .leading)
+                .fixedSize(horizontal: false, vertical: true)
                 .layoutPriority(1) // v4: min-width 0 – Text darf schrumpfen
 
             if !record.targetApp.isEmpty {
                 Text(record.targetApp)
                     .font(Theme.Typo.counter(10))
                     .foregroundColor(Theme.Palette.text3)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: 112, alignment: .trailing)
             }
 
-            if let badge = record.polish?.badgeText(
-                correctionCount: record.corrections.count
-            ) {
-                PolishBadge(text: badge)
-            }
+            PolishBadge(record: record, compact: true)
 
             HStack(spacing: 2) {
                 if record.audioPath != nil {
@@ -533,6 +533,7 @@ private struct EarlierRowView: View {
                 }
             }
         }
+        .frame(height: 27)
         .padding(.horizontal, 16)
         .padding(.vertical, 13)
         .contentShape(Rectangle())
@@ -568,23 +569,6 @@ private struct EarlierRowView: View {
     }
 
     @FocusState private var rowFocused: Bool
-}
-
-struct PolishBadge: View {
-    let text: String
-
-    var body: some View {
-        Text(text)
-            .font(Theme.Typo.counter(10))
-            .monospacedDigit()
-            .foregroundColor(Theme.Palette.text3)
-            .padding(.horizontal, 6)
-            .padding(.vertical, 1.5)
-            .background(RoundedRectangle(cornerRadius: 3)
-                .strokeBorder(Theme.Palette.linieSidebar,
-                              lineWidth: Theme.Metrics.hairline))
-            .accessibilityLabel(text.capitalized)
-    }
 }
 
 // MARK: - Warnkarte „Berechtigung fehlt"

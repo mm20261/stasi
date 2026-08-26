@@ -1,9 +1,15 @@
 import Foundation
 
 enum FillerFilter {
+    struct Edit: Equatable, Sendable {
+        let removed: String
+        let kept: String?
+    }
+
     struct Result: Equatable, Sendable {
         let text: String
         let removedWords: Int
+        let edits: [Edit]
     }
 
     static func removeHesitations(_ input: String, locale: PolishLocale) -> Result {
@@ -15,39 +21,43 @@ enum FillerFilter {
                 pattern: "(?<![\\p{L}\\p{N}\\p{M}\\-_])(?:\(alternatives.joined(separator: "|")))(?![\\p{L}\\p{N}\\p{M}\\-_])",
                 options: [.caseInsensitive]
               ) else {
-            return Result(text: input, removedWords: 0)
+            return Result(text: input, removedWords: 0, edits: [])
         }
         let ranges = matches(regex, in: input).compactMap { Range($0.range, in: input) }
         return Result(text: compactWhitespace(removing: ranges, from: input),
-                      removedWords: ranges.count)
+                      removedWords: ranges.count,
+                      edits: ranges.map { Edit(removed: String(input[$0]), kept: nil) })
     }
 
     static func collapseStutters(_ input: String, locale: PolishLocale) -> Result {
         guard let regex = try? NSRegularExpression(
             pattern: "(?<![\\p{L}\\p{N}\\p{M}\\-_])(\\p{L}{2,12})(?:[ \\t]+\\1){1,3}(?![\\p{L}\\p{N}\\p{M}\\-_])",
             options: [.caseInsensitive]
-        ) else { return Result(text: input, removedWords: 0) }
+        ) else { return Result(text: input, removedWords: 0, edits: []) }
 
         let englishExceptions: Set<String> = ["had", "that", "very", "so"]
-        let replacements = matches(regex, in: input).compactMap { match -> (Range<String.Index>, String, Int)? in
+        let replacements = matches(regex, in: input).compactMap {
+            match -> (Range<String.Index>, String, Int, String)? in
             guard let range = Range(match.range, in: input),
                   let wordRange = Range(match.range(at: 1), in: input) else { return nil }
             let word = String(input[wordRange])
             if locale == .en && englishExceptions.contains(word.lowercased()) { return nil }
             let tokenCount = input[range].split(whereSeparator: { $0 == " " || $0 == "\t" }).count
-            return (range, word, max(0, tokenCount - 1))
+            return (range, word, max(0, tokenCount - 1), String(input[range]))
         }
 
         var output = input
-        for (range, replacement, _) in replacements.reversed() {
+        for (range, replacement, _, _) in replacements.reversed() {
             output.replaceSubrange(range, with: replacement)
         }
         return Result(text: compactWhitespace(output),
-                      removedWords: replacements.reduce(0) { $0 + $1.2 })
+                      removedWords: replacements.reduce(0) { $0 + $1.2 },
+                      edits: replacements.map { Edit(removed: $0.3, kept: $0.1) })
     }
 
     static func removeDiscourseFillers(_ input: String, locale: PolishLocale) -> Result {
-        var removals: [(range: Range<String.Index>, replacement: String, words: Int)] = []
+        var removals: [(range: Range<String.Index>, replacement: String,
+                        words: Int, phrases: [String])] = []
 
         for phrase in locale.discourseFillers.sorted(by: { $0.count > $1.count }) {
             let joined = phrase.map(NSRegularExpression.escapedPattern(for:))
@@ -60,7 +70,8 @@ enum FillerFilter {
             for match in matches(regex, in: input) {
                 guard let phraseRange = Range(match.range, in: input),
                       let context = fillerContext(for: phraseRange, in: input) else { continue }
-                removals.append((context.range, context.replacement, phrase.count))
+                removals.append((context.range, context.replacement, phrase.count,
+                                 [String(input[phraseRange])]))
             }
         }
 
@@ -77,7 +88,10 @@ enum FillerFilter {
             output.replaceSubrange(item.range, with: item.replacement)
         }
         return Result(text: compactWhitespace(output),
-                      removedWords: merged.reduce(0) { $0 + $1.words })
+                      removedWords: merged.reduce(0) { $0 + $1.words },
+                      edits: merged.flatMap { item in
+                          item.phrases.map { Edit(removed: $0, kept: nil) }
+                      })
     }
 
     private static func matches(_ regex: NSRegularExpression,
@@ -86,10 +100,13 @@ enum FillerFilter {
     }
 
     private static func mergeOverlapping(
-        _ removals: [(range: Range<String.Index>, replacement: String, words: Int)]
-    ) -> [(range: Range<String.Index>, replacement: String, words: Int)] {
+        _ removals: [(range: Range<String.Index>, replacement: String,
+                      words: Int, phrases: [String])]
+    ) -> [(range: Range<String.Index>, replacement: String,
+           words: Int, phrases: [String])] {
         let sorted = removals.sorted { $0.range.lowerBound < $1.range.lowerBound }
-        var result: [(range: Range<String.Index>, replacement: String, words: Int)] = []
+        var result: [(range: Range<String.Index>, replacement: String,
+                      words: Int, phrases: [String])] = []
         for item in sorted {
             guard let previous = result.last,
                   previous.range.upperBound > item.range.lowerBound else {
@@ -99,7 +116,8 @@ enum FillerFilter {
             result[result.count - 1] = (
                 previous.range.lowerBound..<max(previous.range.upperBound, item.range.upperBound),
                 previous.replacement.isEmpty || item.replacement.isEmpty ? "" : " ",
-                previous.words + item.words
+                previous.words + item.words,
+                previous.phrases + item.phrases
             )
         }
         return result

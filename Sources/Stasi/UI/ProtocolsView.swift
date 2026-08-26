@@ -323,6 +323,10 @@ struct ProtocolsView: View {
                     .font(Theme.Typo.kicker(size: 9.5))
                     .tracking(0.6)
                     .foregroundColor(Theme.Palette.archivgruen)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: 150)
                     .padding(.horizontal, 7)
                     .padding(.vertical, 2.5)
                     .background(RoundedRectangle(cornerRadius: 3).fill(Theme.Palette.chip))
@@ -342,15 +346,14 @@ struct ProtocolsView: View {
                     .background(RoundedRectangle(cornerRadius: 3)
                         .strokeBorder(Theme.Palette.linieSidebar, lineWidth: Theme.Metrics.hairline))
             }
-            if let badge = record.polish?.badgeText(
-                correctionCount: record.corrections.count
-            ) {
-                PolishBadge(text: badge)
-            }
+            PolishBadge(record: record)
         }
         .font(Theme.Typo.counter(10))
         .monospacedDigit()
         .foregroundColor(Theme.Palette.text3)
+        .lineLimit(1)
+        .truncationMode(.tail)
+        .fixedSize(horizontal: false, vertical: true)
     }
 
     private func wordsPerMinute(_ record: TranscriptionRecord) -> Int? {

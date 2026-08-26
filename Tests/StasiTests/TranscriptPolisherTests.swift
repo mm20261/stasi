@@ -123,12 +123,19 @@ final class TranscriptPolisherTests: XCTestCase {
     }
 
     func testBadgeNamesDictionaryCorrections() {
+        let summary = PolishSummary(level: .standard, changes: [
+            PolishChange(kind: .dictionary, count: 3,
+                         removed: "cloud code", kept: "Claude Code"),
+        ])
+
+        XCTAssertEqual(summary.badgeText(),
+                       "POLIERT · 3 KORREKTUREN")
+    }
+
+    func testEmptyChangeListNeverProducesBadge() {
         let summary = PolishSummary(level: .standard, changes: [])
 
-        XCTAssertEqual(summary.badgeText(correctionCount: 1),
-                       "POLIERT · 1 KORREKTUR")
-        XCTAssertEqual(summary.badgeText(correctionCount: 3),
-                       "POLIERT · 3 KORREKTUREN")
+        XCTAssertNil(summary.badgeText(correctionCount: 3))
     }
 
     func testTidyOnlyHasNoBadge() {
@@ -155,5 +162,51 @@ final class TranscriptPolisherTests: XCTestCase {
         XCTAssertGreaterThan(outcome.summary.stutterWordsRemoved, 0)
         XCTAssertGreaterThan(outcome.summary.selfCorrectionsResolved, 0)
         XCTAssertNotNil(outcome.summary.badgeText())
+    }
+
+    func testDetailSectionsGroupRemovedWordsSlipsAndDictionary() {
+        let outcome = TranscriptPolisher.polishSync(
+            "ähm wir wir treffen uns am Montag nein am Dienstag, quasi, bei cloud code",
+            locale: Locale(identifier: "de_DE"), entries: dictionary, level: .standard
+        )
+
+        XCTAssertEqual(outcome.summary.detailSections(corrections: outcome.corrections), [
+            PolishDetailSection(title: "Füllwörter entfernt", items: ["ähm", "quasi"]),
+            PolishDetailSection(title: "Versprecher", items: [
+                "„wir wir“ → „wir“",
+                "„am Montag“ → „am Dienstag“",
+            ]),
+            PolishDetailSection(title: "Wörterbuch", items: [
+                "„cloud code“ → „Claude Code“",
+            ]),
+        ])
+    }
+
+    func testCompactBadgeIsAlwaysSingleShortWord() {
+        let summary = PolishSummary(level: .standard, changes: [
+            PolishChange(kind: .hesitation, count: 2, removed: "ähm"),
+        ])
+
+        XCTAssertEqual(summary.compactBadgeText, "POLIERT")
+    }
+
+    func testOldPolishChangeJSONWithoutDetailsStillDecodes() throws {
+        let data = Data(#"{"level":"standard","changes":[{"kind":"hesitation","count":1}]}"#.utf8)
+
+        let summary = try JSONDecoder().decode(PolishSummary.self, from: data)
+
+        XCTAssertEqual(summary.hesitationWordsRemoved, 1)
+        XCTAssertNil(summary.changes.first?.removed)
+        XCTAssertNil(summary.changes.first?.kept)
+    }
+
+    func testTidyOnlyProducesNoDetails() {
+        let outcome = TranscriptPolisher.polishSync(
+            "  hallo welt  ", locale: Locale(identifier: "de_DE"),
+            entries: [], level: .standard
+        )
+
+        XCTAssertTrue(outcome.summary.detailSections(corrections: []).isEmpty)
+        XCTAssertNil(outcome.summary.badgeText())
     }
 }

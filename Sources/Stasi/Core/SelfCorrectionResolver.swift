@@ -2,9 +2,15 @@ import Foundation
 
 /// Konservativer Resolver für explizite Selbstkorrekturen innerhalb eines Satzes.
 enum SelfCorrectionResolver {
+    struct Edit: Equatable, Sendable {
+        let removed: String
+        let kept: String
+    }
+
     struct Result: Equatable, Sendable {
         let text: String
         let resolvedCount: Int
+        let edits: [Edit]
     }
 
     private enum Strength { case strong, weak }
@@ -25,12 +31,22 @@ enum SelfCorrectionResolver {
         let endsWithQuestion: Bool
     }
 
+    private struct FrameMatch {
+        let leftStart: Int
+        let length: Int
+    }
+
+    private struct Removal {
+        let range: Range<String.Index>
+        let edit: Edit
+    }
+
     static func resolve(_ input: String, locale: PolishLocale) -> Result {
         guard locale != .other, !input.isEmpty else {
-            return Result(text: input, resolvedCount: 0)
+            return Result(text: input, resolvedCount: 0, edits: [])
         }
 
-        var removals: [Range<String.Index>] = []
+        var removals: [Removal] = []
         for sentence in sentences(in: input) where !sentence.endsWithQuestion {
             let tokens = tokenize(input, in: sentence.range)
             guard tokens.count >= 3 else { continue }
@@ -50,9 +66,20 @@ enum SelfCorrectionResolver {
                     continue
                 }
 
-                if let start = matchingFrameStart(tokens: tokens, before: before,
-                                                  after: after, locale: locale) {
-                    removals.append(start..<tokens[after.lowerBound].range.lowerBound)
+                if let frame = matchingFrame(tokens: tokens, before: before,
+                                             after: after, locale: locale) {
+                    let leftRange = frame.leftStart..<marker.span.lowerBound
+                    let rightRange = after.startIndex..<(after.startIndex + frame.length)
+                    let removalRange = tokens[frame.leftStart].range.lowerBound..<tokens[
+                        after.lowerBound
+                    ].range.lowerBound
+                    removals.append(Removal(
+                        range: removalRange,
+                        edit: Edit(
+                            removed: phrase(tokens: tokens, range: leftRange, in: input),
+                            kept: phrase(tokens: tokens, range: rightRange, in: input)
+                        )
+                    ))
                     continue
                 }
 
@@ -63,17 +90,24 @@ enum SelfCorrectionResolver {
                       let leftClass = tokenClass(left.normalized, locale: locale),
                       leftClass == tokenClass(right.normalized, locale: locale)
                 else { continue }
-                removals.append(left.range.lowerBound..<right.range.lowerBound)
+                removals.append(Removal(
+                    range: left.range.lowerBound..<right.range.lowerBound,
+                    edit: Edit(removed: String(input[left.range]),
+                               kept: String(input[right.range]))
+                ))
             }
         }
 
-        guard !removals.isEmpty else { return Result(text: input, resolvedCount: 0) }
+        guard !removals.isEmpty else {
+            return Result(text: input, resolvedCount: 0, edits: [])
+        }
         let unique = nonOverlapping(removals)
         var output = input
-        for range in unique.reversed() {
-            output.replaceSubrange(range, with: "")
+        for removal in unique.reversed() {
+            output.replaceSubrange(removal.range, with: "")
         }
-        return Result(text: compactAfterRemoval(output), resolvedCount: unique.count)
+        return Result(text: compactAfterRemoval(output), resolvedCount: unique.count,
+                      edits: unique.map(\.edit))
     }
 
     private static func sentences(in input: String) -> [Sentence] {
@@ -142,9 +176,9 @@ enum SelfCorrectionResolver {
         return markers
     }
 
-    private static func matchingFrameStart(tokens: [Token], before: Range<Int>,
-                                           after: Range<Int>, locale: PolishLocale)
-        -> String.Index? {
+    private static func matchingFrame(tokens: [Token], before: Range<Int>,
+                                      after: Range<Int>, locale: PolishLocale)
+        -> FrameMatch? {
         let maximum = min(6, before.count, after.count)
         guard maximum >= 2 else { return nil }
 
@@ -165,7 +199,7 @@ enum SelfCorrectionResolver {
                 differingPosition = offset
             }
             if valid, differingPosition != nil {
-                return tokens[leftStart].range.lowerBound
+                return FrameMatch(leftStart: leftStart, length: length)
             }
         }
         return nil
@@ -185,15 +219,22 @@ enum SelfCorrectionResolver {
         return nil
     }
 
-    private static func nonOverlapping(_ ranges: [Range<String.Index>])
-        -> [Range<String.Index>] {
-        let sorted = ranges.sorted { $0.lowerBound < $1.lowerBound }
-        var result: [Range<String.Index>] = []
-        for range in sorted {
-            guard result.last.map({ $0.upperBound > range.lowerBound }) != true else { continue }
-            result.append(range)
+    private static func nonOverlapping(_ removals: [Removal]) -> [Removal] {
+        let sorted = removals.sorted { $0.range.lowerBound < $1.range.lowerBound }
+        var result: [Removal] = []
+        for removal in sorted {
+            guard result.last.map({ $0.range.upperBound > removal.range.lowerBound }) != true
+            else { continue }
+            result.append(removal)
         }
         return result
+    }
+
+    private static func phrase(tokens: [Token], range: Range<Int>,
+                               in input: String) -> String {
+        guard let first = tokens[safe: range.lowerBound],
+              let last = tokens[safe: range.index(before: range.upperBound)] else { return "" }
+        return String(input[first.range.lowerBound..<last.range.upperBound])
     }
 
     private static func compactAfterRemoval(_ input: String) -> String {
