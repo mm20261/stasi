@@ -14,6 +14,7 @@ struct DashboardView: View {
 
     @State private var playingId: UUID?
     @State private var heroCopied = false
+    @State private var rawTextRecord: TranscriptionRecord?
 
     @State private var player = AudioPlayerHelper()
     private var calendar: Calendar { .current }
@@ -61,6 +62,9 @@ struct DashboardView: View {
         }
         .frame(maxWidth: .infinity, alignment: .center)
         .onAppear { app.refreshPermissionState() }
+        .sheet(item: $rawTextRecord) { record in
+            RawTranscriptView(record: record, onCopy: { copyRawText(record) })
+        }
     }
 
     // MARK: Topbar (Suche)
@@ -234,10 +238,17 @@ struct DashboardView: View {
                     .buttonStyle(.plain)
                 }
 
-                Text(heroMeta(record))
-                    .font(Theme.Typo.counter(10.5))
-                    .monospacedDigit()
-                    .foregroundColor(Theme.Palette.text3)
+                HStack(spacing: 8) {
+                    Text(heroMeta(record))
+                    if let badge = record.polish?.badgeText(
+                        correctionCount: record.corrections.count
+                    ) {
+                        PolishBadge(text: badge)
+                    }
+                }
+                .font(Theme.Typo.counter(10.5))
+                .monospacedDigit()
+                .foregroundColor(Theme.Palette.text3)
 
                 Spacer()
 
@@ -257,6 +268,9 @@ struct DashboardView: View {
 
     private func heroMenu(_ record: TranscriptionRecord) -> some View {
         Menu {
+            Button("Rohtext anzeigen") { rawTextRecord = record }
+            Button("Rohtext kopieren") { copyRawText(record) }
+            Divider()
             Button("Audio extrahieren (.wav)") { extractAudio(record) }
             Button("Export als .txt") { export(record, asMarkdown: false) }
             Button("Export als .md") { export(record, asMarkdown: true) }
@@ -445,6 +459,11 @@ struct DashboardView: View {
         }
     }
 
+    private func copyRawText(_ record: TranscriptionRecord) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(record.rawText, forType: .string)
+    }
+
     private func export(_ record: TranscriptionRecord, asMarkdown: Bool) {
         let panel = NSSavePanel()
         panel.allowedContentTypes = [.plainText]
@@ -492,6 +511,12 @@ private struct EarlierRowView: View {
                 Text(record.targetApp)
                     .font(Theme.Typo.counter(10))
                     .foregroundColor(Theme.Palette.text3)
+            }
+
+            if let badge = record.polish?.badgeText(
+                correctionCount: record.corrections.count
+            ) {
+                PolishBadge(text: badge)
             }
 
             HStack(spacing: 2) {
@@ -543,6 +568,23 @@ private struct EarlierRowView: View {
     }
 
     @FocusState private var rowFocused: Bool
+}
+
+struct PolishBadge: View {
+    let text: String
+
+    var body: some View {
+        Text(text)
+            .font(Theme.Typo.counter(10))
+            .monospacedDigit()
+            .foregroundColor(Theme.Palette.text3)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 1.5)
+            .background(RoundedRectangle(cornerRadius: 3)
+                .strokeBorder(Theme.Palette.linieSidebar,
+                              lineWidth: Theme.Metrics.hairline))
+            .accessibilityLabel(text.capitalized)
+    }
 }
 
 // MARK: - Warnkarte „Berechtigung fehlt"

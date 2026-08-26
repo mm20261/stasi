@@ -33,6 +33,23 @@ struct PolishSummary: Codable, Equatable, Sendable {
         hesitationWordsRemoved + discourseFillerWordsRemoved
     }
 
+    /// Kurzes, belastbares UI-Label. Reine Interpunktions-/Whitespace-Glättung
+    /// zählt bewusst nicht als sichtbares „Poliert"-Ergebnis.
+    func badgeText(correctionCount: Int = 0) -> String? {
+        guard level == .standard else { return nil }
+        if fillerWordsRemoved > 0 {
+            return "POLIERT · −\(fillerWordsRemoved) FÜLLWÖRTER"
+        }
+        if stutterWordsRemoved > 0 || selfCorrectionsResolved > 0 {
+            return "POLIERT · VERSPRECHER"
+        }
+        if correctionCount > 0 {
+            let noun = correctionCount == 1 ? "KORREKTUR" : "KORREKTUREN"
+            return "POLIERT · \(correctionCount) \(noun)"
+        }
+        return nil
+    }
+
     private func count(_ kind: PolishChange.Kind) -> Int {
         changes.first(where: { $0.kind == kind })?.count ?? 0
     }

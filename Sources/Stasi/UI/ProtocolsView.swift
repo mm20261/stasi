@@ -342,13 +342,10 @@ struct ProtocolsView: View {
                     .background(RoundedRectangle(cornerRadius: 3)
                         .strokeBorder(Theme.Palette.linieSidebar, lineWidth: Theme.Metrics.hairline))
             }
-            if let polish = record.polish, polish.changedAnything {
-                Text("POLIERT · −\(polish.fillerWordsRemoved) FÜLLWÖRTER")
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 1.5)
-                    .background(RoundedRectangle(cornerRadius: 3)
-                        .strokeBorder(Theme.Palette.linieSidebar,
-                                      lineWidth: Theme.Metrics.hairline))
+            if let badge = record.polish?.badgeText(
+                correctionCount: record.corrections.count
+            ) {
+                PolishBadge(text: badge)
             }
         }
         .font(Theme.Typo.counter(10))
@@ -478,7 +475,7 @@ struct ProtocolsView: View {
     }
 }
 
-private struct RawTranscriptView: View {
+struct RawTranscriptView: View {
     let record: TranscriptionRecord
     let onCopy: () -> Void
 

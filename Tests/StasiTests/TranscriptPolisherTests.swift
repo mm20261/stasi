@@ -99,4 +99,61 @@ final class TranscriptPolisherTests: XCTestCase {
             configured: .standard, environment: [:]
         ), .standard)
     }
+
+    func testBadgePrefersRemovedFillerCount() {
+        let summary = PolishSummary(level: .standard, changes: [
+            PolishChange(kind: .hesitation, count: 1),
+            PolishChange(kind: .discourseFiller, count: 1),
+        ])
+
+        XCTAssertEqual(summary.badgeText(correctionCount: 3),
+                       "POLIERT · −2 FÜLLWÖRTER")
+    }
+
+    func testBadgeNamesStutterOrSelfCorrectionAsSlip() {
+        let stutter = PolishSummary(level: .standard, changes: [
+            PolishChange(kind: .stutter, count: 1),
+        ])
+        let selfCorrection = PolishSummary(level: .standard, changes: [
+            PolishChange(kind: .selfCorrection, count: 1),
+        ])
+
+        XCTAssertEqual(stutter.badgeText(), "POLIERT · VERSPRECHER")
+        XCTAssertEqual(selfCorrection.badgeText(), "POLIERT · VERSPRECHER")
+    }
+
+    func testBadgeNamesDictionaryCorrections() {
+        let summary = PolishSummary(level: .standard, changes: [])
+
+        XCTAssertEqual(summary.badgeText(correctionCount: 1),
+                       "POLIERT · 1 KORREKTUR")
+        XCTAssertEqual(summary.badgeText(correctionCount: 3),
+                       "POLIERT · 3 KORREKTUREN")
+    }
+
+    func testTidyOnlyHasNoBadge() {
+        let summary = PolishSummary(level: .standard, changes: [
+            PolishChange(kind: .textTidy, count: 1),
+        ])
+
+        XCTAssertNil(summary.badgeText())
+    }
+
+    func testOffNeverHasPolishBadge() {
+        let summary = PolishSummary(level: .off, changes: [])
+
+        XCTAssertNil(summary.badgeText(correctionCount: 3))
+    }
+
+    func testRelevantPassesRecordBadgeWorthyChanges() {
+        let outcome = TranscriptPolisher.polishSync(
+            "ähm wir wir treffen uns Montag nein Dienstag",
+            locale: Locale(identifier: "de_DE"), entries: [], level: .standard
+        )
+
+        XCTAssertGreaterThan(outcome.summary.hesitationWordsRemoved, 0)
+        XCTAssertGreaterThan(outcome.summary.stutterWordsRemoved, 0)
+        XCTAssertGreaterThan(outcome.summary.selfCorrectionsResolved, 0)
+        XCTAssertNotNil(outcome.summary.badgeText())
+    }
 }
