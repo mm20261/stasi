@@ -13,6 +13,10 @@ final class DictationSessionTests: XCTestCase {
         private(set) var stopCount = 0
         var startError: Error?
 
+        func ingestNativeBuffer(_ buffer: AVAudioPCMBuffer) {
+            latestLevel = AudioCapture.computeLevel(of: buffer)
+        }
+
         func start(outputFormat: AVAudioFormat,
                    recordTo url: URL?,
                    preferredMicUID: String?,
@@ -219,6 +223,36 @@ final class DictationSessionTests: XCTestCase {
         XCTAssertFalse(app.modelReady(for: english))
         let installedLocaleIDs = await spy.installedLocaleIDs()
         XCTAssertEqual(installedLocaleIDs, ["de_DE"])
+    }
+
+    func testLoudNativeBufferRaisesPolledDisplayLevel() async throws {
+        let format = try XCTUnwrap(AVAudioFormat(
+            commonFormat: .pcmFormatFloat32,
+            sampleRate: 48_000,
+            channels: 1,
+            interleaved: false
+        ))
+        let buffer = try XCTUnwrap(AVAudioPCMBuffer(
+            pcmFormat: format,
+            frameCapacity: 480
+        ))
+        buffer.frameLength = 480
+        for index in 0..<480 {
+            buffer.floatChannelData?[0][index] = 0.5 * sin(Float(index) * 0.25)
+        }
+        let audio = FakeAudioCapture()
+        audio.ingestNativeBuffer(buffer)
+        let measured = audio.latestLevel
+        let app = makeApp(audio: audio, engines: [FakeSpeechEngine()])
+        app.startDictation()
+        await waitUntil { audio.isRunning }
+
+        app.ingestLevelFromPoll()
+
+        XCTAssertGreaterThan(measured, 0.5)
+        XCTAssertGreaterThan(app.displayLevel, 0.5)
+        app.requestDiscard()
+        await waitUntil { app.phase == .idle }
     }
 
     func testFinishedDictationMergesLearnedCandidateUsingInjectedSpellChecker() async {

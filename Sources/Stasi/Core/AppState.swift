@@ -66,6 +66,8 @@ final class AppState {
 
     private var recordStart: Date?
     private var elapsedTimer: Timer?
+    private let levelTraceEnabled: Bool
+    @ObservationIgnored private var lastLevelTraceUptime: TimeInterval = 0
 
     // MARK: Command-Channel
     // Hotkey-Tap-Callbacks und @objc-Button-Thunks dürfen KEINE Tasks spawnen
@@ -152,6 +154,7 @@ final class AppState {
         self.spellChecker = spellChecker
         self.audioDirectory = audioDirectory ?? DictionaryStore.appSupportDirectory
             .appendingPathComponent("audio", isDirectory: true)
+        levelTraceEnabled = ProcessInfo.processInfo.environment["STASI_LEVEL_TRACE"] == "1"
         (commandStream, commandContinuation) = AsyncStream.makeStream(of: HotkeyCommand.self)
         accessibilityGranted = Permissions.accessibilityGranted
         listenEventGranted = Permissions.listenEventGranted
@@ -744,6 +747,14 @@ final class AppState {
         let raw = audio.latestLevel
         let clamped = min(max(raw, 0), 1)
         displayLevel = clamped > displayLevel ? clamped : max(clamped, displayLevel * 0.88)
+        if levelTraceEnabled {
+            let now = ProcessInfo.processInfo.systemUptime
+            if now - lastLevelTraceUptime >= 1 {
+                lastLevelTraceUptime = now
+                DebugLog.log(String(format: "STASI-LEVEL: raw=%.3f display=%.3f",
+                                    raw, displayLevel))
+            }
+        }
     }
 
     private func resetLevel() {
