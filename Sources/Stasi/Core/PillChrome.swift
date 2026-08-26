@@ -19,12 +19,12 @@ enum PillChrome {
     /// Panel-Breite: Buttons sind immer da.
     static func pillWidth(for source: RecordingSource, hasPartialText: Bool = false,
                           modelReady: Bool = true) -> CGFloat {
-        if hasPartialText { return 360 }
-        return modelReady ? 160 : 210
+        if hasPartialText { return 320 }
+        return modelReady ? 140 : 190
     }
 
     static func pillHeight(hasPartialText: Bool) -> CGFloat {
-        hasPartialText ? 58 : 26
+        hasPartialText ? 52 : 22
     }
 }
 
@@ -32,10 +32,10 @@ enum PillChrome {
 
 enum MicLevelBars {
     static let minHeight: CGFloat = 2
-    static let maxHeight: CGFloat = 16
+    static let maxHeight: CGFloat = 12
 
-    /// Level (0…1) + kleiner Balken-Jitter → Höhe 2…16 px.
-    /// Stille = flach (2 px), laut = voller Ausschlag (16 px).
+    /// Level (0…1) + kleiner Balken-Jitter → Höhe 2…12 px.
+    /// Stille = flach (2 px), laut = voller Ausschlag (12 px).
     static func height(level: Double, jitter: Double) -> CGFloat {
         let clamped = max(0, min(level, 1))
         let jittered = max(0, min(clamped + jitter * 0.15, 1))
