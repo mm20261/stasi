@@ -251,6 +251,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         guard let app else { return }
         pollTickCount += 1
+        app.checkPhaseWatchdog(now: now)
         app.ingestLevelFromPoll()
         statusBar.refresh()
         PillController.shared.sync(

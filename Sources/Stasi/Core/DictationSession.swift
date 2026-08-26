@@ -65,7 +65,15 @@ final class DictationSession {
             continuation?.finish()
             await feedTask?.value
             await speech.finish()
-            await consumeTask?.value
+            if let consumeTask {
+                let completed = await TranscriptionEngine.waitForFinalize(
+                    consumeTask,
+                    timeoutNanoseconds: 2_000_000_000
+                )
+                if !completed {
+                    DebugLog.log("STASI-APP: Session-Teardown – Consumer nach 2 s noch offen")
+                }
+            }
             if let audioURL {
                 try? FileManager.default.removeItem(at: audioURL)
             }

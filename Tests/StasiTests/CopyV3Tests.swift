@@ -74,6 +74,8 @@ final class CopyV3Tests: XCTestCase {
         XCTAssertEqual(Copy.toastCopied, "Kopiert — ⌘V")
         XCTAssertEqual(Copy.toastDiscarded, "Verworfen")
         XCTAssertEqual(Copy.toastNothingHeard, "Nichts gehört")
+        XCTAssertEqual(Copy.toastTranscriptionAborted,
+                       "Transkription abgebrochen – bitte erneut versuchen")
     }
 
     func testPillStatusTexts() {

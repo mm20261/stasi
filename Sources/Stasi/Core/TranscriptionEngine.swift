@@ -42,6 +42,8 @@ actor TranscriptionEngine: SpeechEngining {
     private var inputContinuation: AsyncStream<AnalyzerInput>.Continuation?
     private var outputContinuation: AsyncThrowingStream<TranscriptionChunk, Error>.Continuation?
     private var resultsTask: Task<Void, Never>?
+    private var finishTask: Task<Void, Never>?
+    private var didFinish = false
     private var retiredAnalyzers: [RetiredAnalyzer] = []
 
     /// Von der Engine festgeschriebener Text; volatile Ergebnisse werden nur
@@ -101,6 +103,7 @@ actor TranscriptionEngine: SpeechEngining {
         }
         finalizedText = ""
         latestText = ""
+        didFinish = false
 
         let (chunks, chunkContinuation) = AsyncThrowingStream<TranscriptionChunk, Error>.makeStream()
         outputContinuation = chunkContinuation
@@ -132,6 +135,22 @@ actor TranscriptionEngine: SpeechEngining {
 
     /// Session schließen, ausstehende finale Ergebnisse flushen.
     func finish() async {
+        if didFinish { return }
+        if let finishTask {
+            await finishTask.value
+            return
+        }
+        let task = Task { [weak self] in
+            guard let self else { return }
+            await self.performFinish()
+        }
+        finishTask = task
+        await task.value
+        finishTask = nil
+        didFinish = true
+    }
+
+    private func performFinish() async {
         inputContinuation?.finish()
         inputContinuation = nil
 
@@ -174,10 +193,32 @@ actor TranscriptionEngine: SpeechEngining {
                    resultsTask: resultsTask)
             return
         }
+
+        // Finalize war erfolgreich, aber Apples Ergebnis-Strom kann bei sehr
+        // kurzen Aufnahmen ohne Resultat offen bleiben. Letzte Resultate kurz
+        // abwarten, dann unseren Ausgabe-Strom garantiert schließen. Der
+        // resultsTask wird ausdrücklich nicht gecancelt.
+        let resultsCompleted: Bool
+        if let resultsTask {
+            resultsCompleted = await Self.waitForFinalize(
+                resultsTask,
+                timeoutNanoseconds: 1_000_000_000
+            )
+        } else {
+            resultsCompleted = true
+        }
+        finishOutput()
+        if !resultsCompleted {
+            DebugLog.log("STASI-SPEECH: Ergebnis-Strom nach 1 s noch offen – Ausgabe beendet")
+            retire(analyzer: analyzer,
+                   transcriber: transcriber,
+                   finalizeTask: finalizeTask,
+                   resultsTask: resultsTask)
+        }
     }
 
-    /// First-wins-Rennen ohne TaskGroup: Ein nicht-kooperativer Finalize-Task
-    /// darf den Scope nach dem Timeout nicht festhalten.
+    /// First-wins-Rennen ohne TaskGroup: Ein nicht-kooperativer Task darf den
+    /// Scope nach dem Timeout nicht festhalten und wird niemals gecancelt.
     nonisolated static func waitForFinalize<T: Sendable>(
         _ finalizeTask: Task<T, Never>,
         timeoutNanoseconds: UInt64 = 3_000_000_000

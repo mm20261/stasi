@@ -19,7 +19,13 @@ final class AppState {
         case injecting = "EINFÜGEN"
     }
 
-    private(set) var phase: Phase = .idle
+    private(set) var phase: Phase = .idle {
+        didSet {
+            guard oldValue != phase else { return }
+            phaseEnteredAt = Date()
+            if phase == .idle { watchdogRecoveryQueued = false }
+        }
+    }
     /// Woher kommt die laufende Aufnahme – steuert ✕/✓ in der Pill (v4).
     private(set) var recordingSource: RecordingSource = .pushToTalk
     var partialText: String = ""
@@ -67,7 +73,10 @@ final class AppState {
     private var recordStart: Date?
     private var elapsedTimer: Timer?
     private let levelTraceEnabled: Bool
+    private let consumeTimeoutNanoseconds: UInt64
     @ObservationIgnored private var lastLevelTraceUptime: TimeInterval = 0
+    @ObservationIgnored private var phaseEnteredAt = Date()
+    @ObservationIgnored private var watchdogRecoveryQueued = false
 
     // MARK: Command-Channel
     // Hotkey-Tap-Callbacks und @objc-Button-Thunks dürfen KEINE Tasks spawnen
@@ -77,6 +86,7 @@ final class AppState {
     enum HotkeyCommand: Sendable, Equatable {
         case press, release, discard, commit, handsFree, copyLast, insertLast, tapStopped
         case prepareModel(Locale)
+        case phaseWatchdog
     }
     nonisolated static let copyLastChord = HotkeyEngine.Combo(
         keyCode: 8,
@@ -112,6 +122,7 @@ final class AppState {
                 case .insertLast: insertLast()
                 case .tapStopped: tapInstalled = false
                 case .prepareModel(let locale): await prepareModel(for: locale)
+                case .phaseWatchdog: await recoverFromPhaseWatchdog()
                 }
             }
         }
@@ -142,6 +153,7 @@ final class AppState {
              )
              return misspelling.location == NSNotFound
          },
+         consumeTimeoutNanoseconds: UInt64 = 2_000_000_000,
          installHotkey: Bool = true,
          audioDirectory: URL? = nil) {
         self.settings = settings
@@ -152,6 +164,7 @@ final class AppState {
         self.requestMicrophone = requestMicrophone
         self.modelInstaller = modelInstaller
         self.spellChecker = spellChecker
+        self.consumeTimeoutNanoseconds = consumeTimeoutNanoseconds
         self.audioDirectory = audioDirectory ?? DictionaryStore.appSupportDirectory
             .appendingPathComponent("audio", isDirectory: true)
         levelTraceEnabled = ProcessInfo.processInfo.environment["STASI_LEVEL_TRACE"] == "1"
@@ -528,7 +541,15 @@ final class AppState {
             DebugLog.log("STASI-APP: Audio gedraint, finalisiere…")
             await session.speech.finish()
             guard session === self.currentSession else { return }
-            await session.consumeTask?.value
+            if let consumeTask = session.consumeTask {
+                let completed = await TranscriptionEngine.waitForFinalize(
+                    consumeTask,
+                    timeoutNanoseconds: self.consumeTimeoutNanoseconds
+                )
+                if !completed {
+                    DebugLog.log("STASI-APP: Consumer-Timeout – nutze letzten Text-Stand")
+                }
+            }
             guard session === self.currentSession else { return }
             session.consumeTask = nil
             session.setupTask = nil
@@ -569,6 +590,35 @@ final class AppState {
     func requestCommit() {
         guard phase == .recording else { return }
         stopDictation(commit: true)
+    }
+
+    /// Wird direkt aus dem bestehenden 20-Hz-Main-RunLoop-Poll gerufen.
+    /// Nur ein thread-sicheres Enqueue; kein Task entsteht im Timer-Callback.
+    func checkPhaseWatchdog(now: Date = Date(), timeout: TimeInterval = 15) {
+        guard phase == .transcribing || phase == .polishing else { return }
+        guard !watchdogRecoveryQueued,
+              now.timeIntervalSince(phaseEnteredAt) >= timeout else { return }
+        watchdogRecoveryQueued = true
+        DebugLog.log("STASI-WATCH: Phase \(phase.rawValue) hängt seit ≥15 s – Recovery")
+        enqueue(.phaseWatchdog)
+    }
+
+    private func recoverFromPhaseWatchdog() async {
+        guard phase == .transcribing || phase == .polishing else {
+            watchdogRecoveryQueued = false
+            return
+        }
+        let session = currentSession
+        currentSession = nil
+        resetLevel()
+        partialText = ""
+        stopElapsedTimer()
+        phase = .idle
+        onToast?(Copy.toastTranscriptionAborted, false)
+        if let session {
+            await session.teardown()
+        }
+        DebugLog.log("STASI-WATCH: Zustandsmaschine auf BEREIT zurückgesetzt")
     }
 
     private func finishTranscription(rawText: String,

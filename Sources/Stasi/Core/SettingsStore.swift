@@ -245,6 +245,7 @@ enum Copy {
     static let toastCopied = "Kopiert — ⌘V"
     static let toastDiscarded = "Verworfen"
     static let toastNothingHeard = "Nichts gehört"
+    static let toastTranscriptionAborted = "Transkription abgebrochen – bitte erneut versuchen"
 
     // Phasenstatus der AppKit-Pill
     static let pillTranscribing = "Transkribiere…"

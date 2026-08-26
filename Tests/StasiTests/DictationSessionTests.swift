@@ -50,6 +50,7 @@ final class DictationSessionTests: XCTestCase {
         var text = ""
         var finishDelayNanoseconds: UInt64 = 0
         var timeoutNanoseconds: UInt64?
+        var finishEndsResultStream = true
         private(set) var finalizeStillRunning = false
 
         init(text: String = "", startError: Error? = nil) {
@@ -60,6 +61,10 @@ final class DictationSessionTests: XCTestCase {
         func configureFinish(delay: UInt64, timeout: UInt64?) {
             finishDelayNanoseconds = delay
             timeoutNanoseconds = timeout
+        }
+
+        func configureFinishEndsResultStream(_ value: Bool) {
+            finishEndsResultStream = value
         }
 
         func metrics() -> Metrics {
@@ -97,8 +102,10 @@ final class DictationSessionTests: XCTestCase {
             finishCount += 1
             let delay = finishDelayNanoseconds
             guard delay > 0 else {
-                continuation?.finish()
-                continuation = nil
+                if finishEndsResultStream {
+                    continuation?.finish()
+                    continuation = nil
+                }
                 return
             }
 
@@ -125,8 +132,10 @@ final class DictationSessionTests: XCTestCase {
                 await finalizeTask.value
             }
             finalizeStillRunning = false
-            continuation?.finish()
-            continuation = nil
+            if finishEndsResultStream {
+                continuation?.finish()
+                continuation = nil
+            }
         }
 
         private func recordStreamCancellation() { streamCancellationCount += 1 }
@@ -186,6 +195,7 @@ final class DictationSessionTests: XCTestCase {
                          permission: @escaping @MainActor () async -> Bool = { true },
                          modelInstaller: @escaping @Sendable (Locale) async throws -> Void = { _ in },
                          spellChecker: @escaping @MainActor (String, String) -> Bool = { _, _ in true },
+                         consumeTimeoutNanoseconds: UInt64 = 2_000_000_000,
                          directory: URL? = nil) -> AppState {
         let root = directory ?? makeDirectory()
         let dictionary = DictionaryStore(directory: root.appendingPathComponent("dictionary"))
@@ -200,6 +210,7 @@ final class DictationSessionTests: XCTestCase {
             requestMicrophone: permission,
             modelInstaller: modelInstaller,
             spellChecker: spellChecker,
+            consumeTimeoutNanoseconds: consumeTimeoutNanoseconds,
             installHotkey: false,
             audioDirectory: root.appendingPathComponent("audio")
         )
@@ -465,6 +476,82 @@ final class DictationSessionTests: XCTestCase {
         XCTAssertLessThan(Date().timeIntervalSince(started), 3.5)
         XCTAssertEqual(app.history.records.first?.rawText, "Zwischenstand")
         XCTAssertTrue(metrics.finalizeStillRunning)
+    }
+
+    func testNonEndingResultStreamStillReturnsIdleAndUsesLatestText() async {
+        let audio = FakeAudioCapture()
+        let speech = FakeSpeechEngine(text: "Kurzer Zwischenstand")
+        await speech.configureFinishEndsResultStream(false)
+        let app = makeApp(
+            audio: audio,
+            engines: [speech],
+            consumeTimeoutNanoseconds: 20_000_000
+        )
+
+        app.startDictation()
+        await waitUntil { audio.isRunning && app.partialText == "Kurzer Zwischenstand" }
+        app.stopDictation(commit: true)
+        await waitUntil { app.phase == .idle }
+
+        let metrics = await speech.metrics()
+        XCTAssertEqual(app.history.records.first?.rawText, "Kurzer Zwischenstand")
+        XCTAssertEqual(metrics.streamCancellationCount, 0)
+    }
+
+    func testTwoImmediateCommittedDictationsBothReturnIdle() async {
+        let audio = FakeAudioCapture()
+        let first = FakeSpeechEngine(text: "Erstes kurzes Diktat")
+        await first.configureFinishEndsResultStream(false)
+        let second = FakeSpeechEngine(text: "Zweites kurzes Diktat")
+        let app = makeApp(
+            audio: audio,
+            engines: [first, second],
+            consumeTimeoutNanoseconds: 20_000_000
+        )
+
+        app.startDictation()
+        await waitUntil { audio.isRunning && app.partialText == "Erstes kurzes Diktat" }
+        app.stopDictation(commit: true)
+        await waitUntil { app.phase == .idle }
+
+        app.startDictation()
+        await waitUntil { audio.isRunning && app.partialText == "Zweites kurzes Diktat" }
+        app.stopDictation(commit: true)
+        await waitUntil { app.phase == .idle }
+
+        XCTAssertEqual(app.history.records.map(\.rawText), [
+            "Zweites kurzes Diktat", "Erstes kurzes Diktat",
+        ])
+        let firstMetrics = await first.metrics()
+        let secondMetrics = await second.metrics()
+        XCTAssertEqual(firstMetrics.streamCancellationCount, 0)
+        XCTAssertEqual(secondMetrics.streamCancellationCount, 0)
+    }
+
+    func testPhaseWatchdogRecoversHungTranscription() async {
+        let audio = FakeAudioCapture()
+        let speech = FakeSpeechEngine(text: "Hängender Text")
+        await speech.configureFinishEndsResultStream(false)
+        let app = makeApp(
+            audio: audio,
+            engines: [speech],
+            consumeTimeoutNanoseconds: 500_000_000
+        )
+        var toasts: [(String, Bool)] = []
+        app.onToast = { toasts.append(($0, $1)) }
+        app.startCommandLoop()
+
+        app.startDictation()
+        await waitUntil { audio.isRunning && app.partialText == "Hängender Text" }
+        app.stopDictation(commit: true)
+        await waitUntil { app.phase == .transcribing }
+        app.checkPhaseWatchdog(now: Date().addingTimeInterval(16))
+        await waitUntil { app.phase == .idle }
+
+        XCTAssertNil(app.currentSession)
+        XCTAssertFalse(audio.isRunning)
+        XCTAssertEqual(toasts.last?.0, Copy.toastTranscriptionAborted)
+        XCTAssertEqual(toasts.last?.1, false)
     }
 
     func testRecordUsesLocaleSnapshotFromSession() async {
