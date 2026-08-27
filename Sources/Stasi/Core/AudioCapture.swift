@@ -65,11 +65,29 @@ protocol AudioCapturing: AnyObject, Sendable {
     func start(outputFormat: AVAudioFormat,
                recordTo url: URL?,
                preferredMicUID: String?,
+               captureInitiallyActive: Bool,
                onRuntimeError: @escaping @Sendable (AudioCaptureRuntimeError) -> Void,
                onBuffer: @escaping @Sendable (AudioChunk) -> Void) throws
 
+    func activateCapture()
+
     @discardableResult
     func stop() async -> URL?
+}
+
+extension AudioCapturing {
+    func start(outputFormat: AVAudioFormat,
+               recordTo url: URL?,
+               preferredMicUID: String? = nil,
+               onRuntimeError: @escaping @Sendable (AudioCaptureRuntimeError) -> Void = { _ in },
+               onBuffer: @escaping @Sendable (AudioChunk) -> Void) throws {
+        try start(outputFormat: outputFormat,
+                  recordTo: url,
+                  preferredMicUID: preferredMicUID,
+                  captureInitiallyActive: true,
+                  onRuntimeError: onRuntimeError,
+                  onBuffer: onBuffer)
+    }
 }
 
 private let auhalInputCallback: AURenderCallback = {
@@ -140,6 +158,7 @@ final class AudioCapture: AudioCapturing, @unchecked Sendable {
     private var processingWorkerStarted = false
     private let runtimeErrorReporter = RuntimeErrorReporter()
     private let stateLock = NSLock()
+    private let captureActive = Atomic<Bool>(false)
     private var isRunningStorage = false
     private var isStoppingStorage = false
     var isRunning: Bool {
@@ -191,14 +210,16 @@ final class AudioCapture: AudioCapturing, @unchecked Sendable {
 
     func start(outputFormat: AVAudioFormat,
                recordTo url: URL?,
-               preferredMicUID: String? = nil,
-               onRuntimeError: @escaping @Sendable (AudioCaptureRuntimeError) -> Void = { _ in },
+               preferredMicUID: String?,
+               captureInitiallyActive: Bool,
+               onRuntimeError: @escaping @Sendable (AudioCaptureRuntimeError) -> Void,
                onBuffer: @escaping @Sendable (AudioChunk) -> Void) throws {
         stateLock.lock()
         defer { stateLock.unlock() }
         guard !isRunningStorage, !isStoppingStorage else {
             throw AudioCaptureError.alreadyRunning
         }
+        captureActive.store(captureInitiallyActive, ordering: .releasing)
         self.onBuffer = onBuffer
         self.outputFormat = outputFormat
         recordURL = url
@@ -276,8 +297,18 @@ final class AudioCapture: AudioCapturing, @unchecked Sendable {
             self.outputFormat = nil
             self.onBuffer = nil
             recordURL = nil
+            captureActive.store(false, ordering: .releasing)
             isRunningStorage = false
             throw error
+        }
+    }
+
+    /// Oeffnet nach erfolgreichem Hardware-Start die atomare Capture-Grenze.
+    /// Render-Puffer davor werden ohne Besitzkopie, Queue-Arbeit oder WAV-Schreibung verworfen.
+    func activateCapture() {
+        stateLock.withLock {
+            guard isRunningStorage, !isStoppingStorage else { return }
+            captureActive.store(true, ordering: .releasing)
         }
     }
 
@@ -287,6 +318,7 @@ final class AudioCapture: AudioCapturing, @unchecked Sendable {
     func stop() async -> URL? {
         let shouldStop = stateLock.withLock { () -> Bool in
             guard isRunningStorage else { return false }
+            captureActive.store(false, ordering: .releasing)
             isRunningStorage = false
             isStoppingStorage = true
             // Der Hardware-Teil bleibt synchron und beendet weitere Render-Callbacks,
@@ -662,6 +694,7 @@ final class AudioCapture: AudioCapturing, @unchecked Sendable {
     /// AVFoundation-Objektlebenszeiten hier nicht klein genug nachweisbar. Hinter
     /// der Besitzkopie ist der Backlog strikt auf `backlogCapacity` begrenzt.
     nonisolated private func enqueueRenderBuffer(_ buffer: AVAudioPCMBuffer) {
+        guard captureActive.load(ordering: .acquiring) else { return }
         guard !runtimeErrorReporter.hasReported else { return }
         guard let owned = Self.copy(buffer) else {
             runtimeErrorReporter.report(.bufferCopyFailed)

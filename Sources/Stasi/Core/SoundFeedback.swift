@@ -49,11 +49,16 @@ final class NSSoundCompletionPlayer: NSObject, NSSoundDelegate {
     private var continuation: CheckedContinuation<Void, Never>?
     private var sound: NSSound?
     private var lifetime: NSSoundCompletionPlayer?
+    private var cancelled = false
 
     static func play(_ sound: NSSound,
                      starter: @escaping Starter = { sound, _ in sound.play() }) async {
         let player = NSSoundCompletionPlayer()
-        await player.play(sound, starter: starter)
+        await withTaskCancellationHandler {
+            await player.play(sound, starter: starter)
+        } onCancel: {
+            Task { @MainActor in player.cancel() }
+        }
     }
 
     private func play(_ sound: NSSound, starter: @escaping Starter) async {
@@ -62,13 +67,19 @@ final class NSSoundCompletionPlayer: NSObject, NSSoundDelegate {
             self.sound = sound
             lifetime = self
             sound.delegate = self
-            if !starter(sound, self) {
+            if cancelled || Task.isCancelled || !starter(sound, self) {
                 finish()
             }
         }
     }
 
     func sound(_ sound: NSSound, didFinishPlaying finishedPlaying: Bool) {
+        finish()
+    }
+
+    private func cancel() {
+        cancelled = true
+        sound?.stop()
         finish()
     }
 

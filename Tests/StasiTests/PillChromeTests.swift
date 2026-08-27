@@ -78,6 +78,24 @@ final class PillChromeTests: XCTestCase {
     }
 
     @MainActor
+    func testNSSoundCompletionCancellationStopsWaitingAndClearsDelegate() async throws {
+        let sound = try XCTUnwrap(NSSound(named: "Tink"))
+        let started = expectation(description: "Starter wurde aufgerufen")
+        let task = Task { @MainActor in
+            await NSSoundCompletionPlayer.play(sound, starter: { _, _ in
+                started.fulfill()
+                return true
+            })
+        }
+
+        await fulfillment(of: [started], timeout: 1)
+        task.cancel()
+        await task.value
+
+        XCTAssertNil(sound.delegate)
+    }
+
+    @MainActor
     func testPreparingAndTimedOutSetupUseVisibleSpinner() {
         XCTAssertTrue(PillChrome.shouldShowSpinner(
             phase: .preparing,

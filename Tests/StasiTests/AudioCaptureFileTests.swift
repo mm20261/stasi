@@ -686,6 +686,52 @@ final class AudioCaptureFileTests: XCTestCase {
         XCTAssertEqual(buffer.frameLength, 0)
     }
 
+    func testSuspendedStartDropsBuffersBeforeActivationWithoutOwnershipOrWAVWrite() async throws {
+        let outputFormat = format()
+        let url = makeDirectory().appendingPathComponent("activation-boundary.wav")
+        let sinkBox = SinkBox()
+        let delivered = expectation(description: "Nur aktivierter Puffer erreicht Consumer")
+        let capture = AudioCapture(audioUnitHooks: AudioCapture.AudioUnitHooks(
+            configureInput: { _, _, sink in
+                sinkBox.store(sink)
+                return outputFormat
+            },
+            initialize: {}, start: {}, stop: {}, uninitialize: {}, dispose: {}
+        ))
+        try capture.start(
+            outputFormat: outputFormat,
+            recordTo: url,
+            preferredMicUID: nil,
+            captureInitiallyActive: false,
+            onRuntimeError: { _ in XCTFail("Kein Runtimefehler erwartet") }
+        ) { _ in delivered.fulfill() }
+        let sink = try XCTUnwrap(sinkBox.load())
+        let weakDiscarded = WeakBufferBox()
+        var discarded: AVAudioPCMBuffer? = try XCTUnwrap(AVAudioPCMBuffer(
+            pcmFormat: outputFormat,
+            frameCapacity: 16
+        ))
+        discarded?.frameLength = 16
+        weakDiscarded.value = discarded
+
+        sink(try XCTUnwrap(discarded))
+        discarded = nil
+        XCTAssertNil(weakDiscarded.value)
+
+        capture.activateCapture()
+        let active = try XCTUnwrap(AVAudioPCMBuffer(
+            pcmFormat: outputFormat,
+            frameCapacity: 16
+        ))
+        active.frameLength = 16
+        sink(active)
+        await fulfillment(of: [delivered], timeout: 1)
+        _ = await capture.stop()
+
+        let file = try AVAudioFile(forReading: url)
+        XCTAssertEqual(file.length, 16)
+    }
+
     func testInputCallbackDeliversBufferFromBackgroundThread() async throws {
         let outputFormat = format()
         let sinkBox = SinkBox()

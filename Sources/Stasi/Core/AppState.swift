@@ -459,8 +459,20 @@ final class AppState {
     }
 
     private func playSound(_ event: SoundEvent, for session: DictationSession) async {
-        guard session.claimSoundEvent(event), settings.soundOn else { return }
+        guard session.claimSoundEvent(event), session.soundFeedbackEnabled else { return }
         await soundFeedback.play(event)
+    }
+
+    private func playRecordingStartCue(for session: DictationSession,
+                                       health: DictationSessionHealth) async -> Bool {
+        if session.soundFeedbackEnabled {
+            await soundFeedback.play(.recordingStarted)
+        }
+        guard !Task.isCancelled,
+              health.audioRuntimeError == nil,
+              session === currentSession,
+              session.state == .settingUp else { return false }
+        return session.claimSoundEvent(.recordingStarted)
     }
 
     // MARK: Aufnahme-Steuerung
@@ -517,6 +529,7 @@ final class AppState {
             dictionaryEntries: dictionaryEntries,
             targetApplication: targetApplication,
             audioURL: audioURL,
+            soundFeedbackEnabled: settings.soundOn,
             speech: speechFactory(locale, biasWords),
             audio: audio
         )
@@ -593,19 +606,26 @@ final class AppState {
                     }
                 }
 
-                await self.playSound(.recordingStarted, for: session)
-                guard await self.setupShouldContinue(session) else { return }
-                session.updateTargetApplication(self.captureTargetApplication())
-                let recordingStartCandidate = self.now()
                 try session.audio.start(
                     outputFormat: format,
                     recordTo: session.audioURL,
                     preferredMicUID: self.settings.preferredMicUID,
+                    captureInitiallyActive: false,
                     onRuntimeError: { [weak self, weak session] error in
                         health.recordAudioRuntimeFailure(error)
                         health.closeSpeechIngress(audioContinuation)
                         Task { @MainActor in
                             guard let self, let session else { return }
+                            if session.state == .settingUp,
+                               let setupTask = session.setupTask {
+                                setupTask.cancel()
+                                Task { @MainActor [weak self, weak session] in
+                                    await setupTask.value
+                                    guard let self, let session else { return }
+                                    await self.handleAudioRuntimeError(error, session: session)
+                                }
+                                return
+                            }
                             await self.handleAudioRuntimeError(error, session: session)
                         }
                     }
@@ -616,6 +636,23 @@ final class AppState {
                     await self.handleAudioRuntimeError(runtimeError, session: session)
                     return
                 }
+                guard await self.setupShouldContinue(session) else { return }
+                let startCueCompleted = await self.playRecordingStartCue(for: session,
+                                                                         health: health)
+                guard !Task.isCancelled else { return }
+                if let runtimeError = health.audioRuntimeError {
+                    await self.handleAudioRuntimeError(runtimeError, session: session)
+                    return
+                }
+                guard await self.setupShouldContinue(session),
+                      startCueCompleted else { return }
+                if let runtimeError = health.audioRuntimeError {
+                    await self.handleAudioRuntimeError(runtimeError, session: session)
+                    return
+                }
+                session.updateTargetApplication(self.captureTargetApplication())
+                let recordingStartCandidate = self.now()
+                session.audio.activateCapture()
                 guard session.beginRecording() else { return }
                 self.recordStart = recordingStartCandidate
                 self.elapsed = 0

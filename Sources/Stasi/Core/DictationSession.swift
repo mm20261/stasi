@@ -28,6 +28,7 @@ final class DictationSession {
     let dictionaryEntries: [DictionaryEntry]
     private(set) var targetApplication: TargetApplication
     let audioURL: URL?
+    let soundFeedbackEnabled: Bool
     let speech: any SpeechEngining
     let audio: any AudioCapturing
     let health = DictationSessionHealth()
@@ -104,6 +105,7 @@ final class DictationSession {
          dictionaryEntries: [DictionaryEntry],
          targetApplication: TargetApplication,
          audioURL: URL?,
+         soundFeedbackEnabled: Bool = false,
          speech: any SpeechEngining,
          audio: any AudioCapturing) {
         self.id = id
@@ -111,6 +113,7 @@ final class DictationSession {
         self.dictionaryEntries = dictionaryEntries
         self.targetApplication = targetApplication
         self.audioURL = audioURL
+        self.soundFeedbackEnabled = soundFeedbackEnabled
         self.speech = speech
         self.audio = audio
     }
