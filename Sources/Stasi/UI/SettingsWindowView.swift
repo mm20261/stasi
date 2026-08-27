@@ -10,7 +10,7 @@ struct SettingsWindowView: View {
 
     @State private var recordingHotkey = false
     /// Während der Aufnahme erfasste Kombination (Vorschau bis „Übernehmen").
-    @State private var draftCombo: HotkeyEngine.Combo?
+    @State private var hotkeyDraft = HotkeyCaptureDraft()
     @State private var recordingHandsFreeKey = false
     @State private var draftHandsFreeKeyCode: UInt64?
 
@@ -147,7 +147,7 @@ struct SettingsWindowView: View {
                     .buttonStyle(GhostButtonStyle())
                 Button("Übernehmen") { commitHotkeyRecording() }
                     .buttonStyle(AccentButtonStyle())
-                    .disabled(draftCombo == nil || !Self.hasModifier(draftCombo!))
+                    .disabled(!canCommitHotkeyDraft)
             }
         }
         .padding(14)
@@ -162,12 +162,12 @@ struct SettingsWindowView: View {
 
     /// Keycap-Vorschau der aktuell gedrückten Kombination.
     private var currentDraftSymbols: [String] {
-        guard let combo = draftCombo else { return [] }
+        guard let combo = hotkeyDraft.combo else { return [] }
         return VirtualKey.display(combo).split(separator: " ").map(String.init)
     }
 
-    private static func hasModifier(_ combo: HotkeyEngine.Combo) -> Bool {
-        combo.flags != 0 || Self.isModifierKey(UInt16(clamping: Int(combo.keyCode)))
+    private var canCommitHotkeyDraft: Bool {
+        hotkeyDraft.isValidSelection
     }
 
     @State private var hotkeyCaptureMonitor: Any?
@@ -177,23 +177,9 @@ struct SettingsWindowView: View {
         guard hotkeyCaptureMonitor == nil else { return }
         cancelHandsFreeKeyRecording()
         recordingHotkey = true
-        draftCombo = app.currentCombo
+        hotkeyDraft = HotkeyCaptureDraft(combo: app.currentCombo)
         let target = HotkeyCaptureMonitorTarget { action in
-            switch action {
-            case .cancel:
-                // Esc bricht ab – Monitor bleibt aktiv bis „Abbrechen".
-                cancelHotkeyRecording()
-            case .modifier(let combo):
-                draftCombo = combo
-            case .modifierReleased(let keyCode):
-                if keyCode == 63 {
-                    // fn losgelassen → nichts
-                } else {
-                    draftCombo = nil // Modifier allein reicht nicht → Anzeige leeren
-                }
-            case .key(let combo):
-                draftCombo = combo
-            }
+            hotkeyDraft.process(action)
         }
         hotkeyCaptureTarget = target
         hotkeyCaptureMonitor = NSEvent.addLocalMonitorForEvents(
@@ -210,17 +196,13 @@ struct SettingsWindowView: View {
         hotkeyCaptureMonitor = nil
         hotkeyCaptureTarget = nil
         recordingHotkey = false
-        draftCombo = nil
+        hotkeyDraft = HotkeyCaptureDraft()
     }
 
     private func commitHotkeyRecording() {
-        guard let combo = draftCombo else { return }
+        guard canCommitHotkeyDraft, let combo = hotkeyDraft.combo else { return }
         app.applyHotkey(combo)
         cancelHotkeyRecording()
-    }
-
-    nonisolated static func isModifierKey(_ code: UInt16) -> Bool {
-        [54, 55, 56, 57, 58, 59, 60, 61, 62, 63].contains(Int(code))
     }
 
     private var handsFreeRow: some View {

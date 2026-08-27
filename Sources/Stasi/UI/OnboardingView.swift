@@ -8,7 +8,7 @@ struct OnboardingView: View {
 
     @State private var model = OnboardingModel()
     /// Live-Kombination aus Schritt 3.
-    @State private var draftCombo: HotkeyEngine.Combo?
+    @State private var hotkeyDraft = HotkeyCaptureDraft()
     @State private var captureMonitor: Any?
     @State private var captureTarget: HotkeyCaptureMonitorTarget?
     @State private var microphoneGranted = Permissions.microphoneGranted
@@ -220,7 +220,7 @@ struct OnboardingView: View {
             HStack(alignment: .top, spacing: 14) {
                 VStack(alignment: .leading, spacing: 10) {
                     HStack(spacing: 6) {
-                        KeyBadge(VirtualKey.display(draftCombo ?? app.currentCombo))
+                        KeyBadge(VirtualKey.display(hotkeyDraft.combo ?? app.currentCombo))
                         BlinkingCursor()
                     }
                     Text("Taste frei belegbar – Modifier plus Taste oder ein Modifier allein.")
@@ -248,7 +248,7 @@ struct OnboardingView: View {
 
             navButtons(backTitle: "Zurück", backAction: { removeMonitor(); model.back() },
                        primaryTitle: "Übernehmen", primaryAction: { commitHotkey(); model.next() },
-                       primaryDisabled: false)
+                       primaryDisabled: !hotkeyDraft.isValidSelection)
             Spacer()
         }
     }
@@ -371,15 +371,11 @@ struct OnboardingView: View {
 
     private func startCapture() {
         guard captureMonitor == nil else { return }
+        if hotkeyDraft.combo == nil {
+            hotkeyDraft = HotkeyCaptureDraft(combo: app.currentCombo)
+        }
         let target = HotkeyCaptureMonitorTarget { action in
-            switch action {
-            case .cancel:
-                draftCombo = nil
-            case .modifier(let combo), .key(let combo):
-                draftCombo = combo
-            case .modifierReleased:
-                break
-            }
+            hotkeyDraft.process(action)
         }
         captureTarget = target
         captureMonitor = NSEvent.addLocalMonitorForEvents(
@@ -398,9 +394,9 @@ struct OnboardingView: View {
     }
 
     private func commitHotkey() {
-        guard let combo = draftCombo else { return }
+        guard hotkeyDraft.isValidSelection, let combo = hotkeyDraft.combo else { return }
         app.applyHotkey(combo)
-        draftCombo = nil
+        hotkeyDraft = HotkeyCaptureDraft()
     }
 
     private func finishOnboarding() {

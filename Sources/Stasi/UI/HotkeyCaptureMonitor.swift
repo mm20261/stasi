@@ -34,6 +34,49 @@ enum HotkeyCaptureEvent: Sendable {
     }
 }
 
+struct HotkeyCaptureDraft: Equatable {
+    private(set) var combo: HotkeyEngine.Combo?
+    private(set) var isComplete: Bool
+    private var acceptsInitialReplacement = true
+
+    init(combo: HotkeyEngine.Combo? = nil) {
+        self.combo = combo
+        self.isComplete = combo?.flags != 0
+    }
+
+    var isValidSelection: Bool {
+        guard let combo else { return false }
+        if isComplete { return combo.flags != 0 }
+        return Self.isModifierKey(combo.keyCode)
+    }
+
+    mutating func process(_ event: HotkeyCaptureEvent) {
+        switch event {
+        case .cancel:
+            combo = nil
+            isComplete = false
+            acceptsInitialReplacement = false
+        case .modifier(let combo):
+            guard acceptsInitialReplacement || !isComplete else { return }
+            self.combo = combo
+            isComplete = false
+            acceptsInitialReplacement = false
+        case .modifierReleased(let keyCode):
+            acceptsInitialReplacement = false
+            guard !isComplete, keyCode != 63 else { return }
+            combo = nil
+        case .key(let combo):
+            self.combo = combo
+            isComplete = true
+            acceptsInitialReplacement = false
+        }
+    }
+
+    private static func isModifierKey(_ keyCode: UInt64) -> Bool {
+        [54, 55, 56, 57, 58, 59, 60, 61, 62, 63].contains(keyCode)
+    }
+}
+
 private final class HotkeyCaptureEventBox: NSObject, @unchecked Sendable {
     let event: HotkeyCaptureEvent
 

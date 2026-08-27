@@ -1,0 +1,125 @@
+import XCTest
+import CoreGraphics
+@testable import Stasi
+
+final class HotkeyCaptureDraftTests: XCTestCase {
+    func testCompleteComboSurvivesModifierRelease() {
+        let combo = HotkeyEngine.Combo(
+            keyCode: 40,
+            flags: CGEventFlags.maskCommand.rawValue
+        )
+        var draft = HotkeyCaptureDraft()
+
+        draft.process(.modifier(.init(keyCode: 55, flags: 0)))
+        draft.process(.key(combo))
+        draft.process(.modifierReleased(keyCode: 55))
+
+        XCTAssertEqual(draft.combo, combo)
+        XCTAssertTrue(draft.isComplete)
+    }
+
+    func testModifierOnlyDraftClearsOnRelease() {
+        var draft = HotkeyCaptureDraft()
+
+        draft.process(.modifier(.init(keyCode: 55, flags: 0)))
+        draft.process(.modifierReleased(keyCode: 55))
+
+        XCTAssertNil(draft.combo)
+        XCTAssertFalse(draft.isComplete)
+    }
+
+    func testFunctionModifierRemainsAValidFinalSelectionAfterRelease() {
+        let function = HotkeyEngine.Combo(keyCode: 63, flags: 0)
+        var draft = HotkeyCaptureDraft()
+
+        draft.process(.modifier(function))
+        draft.process(.modifierReleased(keyCode: 63))
+
+        XCTAssertEqual(draft.combo, function)
+        XCTAssertFalse(draft.isComplete)
+    }
+
+    func testCancelClearsCompleteCombo() {
+        var draft = HotkeyCaptureDraft()
+        draft.process(.key(.init(
+            keyCode: 40,
+            flags: CGEventFlags.maskCommand.rawValue
+        )))
+
+        draft.process(.cancel)
+
+        XCTAssertNil(draft.combo)
+        XCTAssertFalse(draft.isComplete)
+    }
+
+    func testRepeatedModifierEventDoesNotReplaceCompleteCombo() {
+        let combo = HotkeyEngine.Combo(
+            keyCode: 40,
+            flags: CGEventFlags.maskCommand.rawValue
+        )
+        var draft = HotkeyCaptureDraft()
+        draft.process(.key(combo))
+
+        draft.process(.modifier(.init(keyCode: 55, flags: 0)))
+
+        XCTAssertEqual(draft.combo, combo)
+        XCTAssertTrue(draft.isComplete)
+    }
+
+    func testRepeatedKeyEventKeepsCompleteCombo() {
+        let combo = HotkeyEngine.Combo(
+            keyCode: 40,
+            flags: CGEventFlags.maskCommand.rawValue
+        )
+        var draft = HotkeyCaptureDraft()
+
+        draft.process(.key(combo))
+        draft.process(.key(combo))
+
+        XCTAssertEqual(draft.combo, combo)
+        XCTAssertTrue(draft.isComplete)
+    }
+
+    func testCompleteComboWithModifierIsValidSelection() {
+        var draft = HotkeyCaptureDraft()
+
+        draft.process(.key(.init(
+            keyCode: 40,
+            flags: CGEventFlags.maskCommand.rawValue
+        )))
+
+        XCTAssertTrue(draft.isValidSelection)
+    }
+
+    func testModifierOnlyDraftIsValidWhileCaptured() {
+        var draft = HotkeyCaptureDraft()
+
+        draft.process(.modifier(.init(keyCode: 55, flags: 0)))
+
+        XCTAssertTrue(draft.isValidSelection)
+    }
+
+    func testBareKeyIsNotAValidSelection() {
+        var draft = HotkeyCaptureDraft()
+
+        draft.process(.key(.init(keyCode: 40, flags: 0)))
+
+        XCTAssertFalse(draft.isValidSelection)
+    }
+
+    func testInitialCompleteComboCanBeReplacedByFirstCapturedModifier() {
+        let initialCombo = HotkeyEngine.Combo(
+            keyCode: 40,
+            flags: CGEventFlags.maskCommand.rawValue
+        )
+        let replacement = HotkeyEngine.Combo(keyCode: 55, flags: 0)
+        var draft = HotkeyCaptureDraft(combo: initialCombo)
+        XCTAssertTrue(draft.isComplete)
+
+        draft.process(.modifier(replacement))
+
+        XCTAssertEqual(draft.combo, replacement)
+        XCTAssertFalse(draft.isComplete)
+        XCTAssertTrue(draft.isValidSelection)
+    }
+}
