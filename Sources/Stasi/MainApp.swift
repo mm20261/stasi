@@ -88,7 +88,7 @@ final class StatusBarController {
             let image: NSImage?
             switch phase {
             case .idle:
-                image = Bundle.module.url(forResource: "menubar", withExtension: "png")
+                image = StasiResources.bundle.url(forResource: "menubar", withExtension: "png")
                     .flatMap(NSImage.init(contentsOf:))
             case .preparing:
                 image = NSImage(systemSymbolName: "hourglass",
@@ -97,7 +97,7 @@ final class StatusBarController {
                 image = NSImage(systemSymbolName: "exclamationmark.arrow.trianglehead.2.clockwise.rotate.90",
                                 accessibilityDescription: "Neustart nötig")
             case .recording:
-                image = Bundle.module.url(forResource: "menubar-recording", withExtension: "png")
+                image = StasiResources.bundle.url(forResource: "menubar-recording", withExtension: "png")
                     .flatMap(NSImage.init(contentsOf:))
             case .transcribing:
                 image = NSImage(systemSymbolName: "ellipsis",

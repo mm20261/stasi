@@ -13,7 +13,7 @@ enum FontLoader {
 
     nonisolated static func registerBundledFonts() {
         for name in fontResourceNames {
-            guard let url = Bundle.module.url(forResource: name, withExtension: "ttf") else { continue }
+            guard let url = StasiResources.bundle.url(forResource: name, withExtension: "ttf") else { continue }
             CTFontManagerRegisterFontsForURL(url as CFURL, .process, nil)
         }
     }
