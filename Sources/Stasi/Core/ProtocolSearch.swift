@@ -120,9 +120,7 @@ enum ProtocolExporter {
                 var meta: [String] = []
                 if !record.targetApp.isEmpty { meta.append("→ \(record.targetApp)") }
                 if record.durationSecs > 0 {
-                    meta.append(String(format: "%.0f:%02d",
-                                       record.durationSecs / 60,
-                                       Int(record.durationSecs) % 60))
+                    meta.append(DurationFormatter.minutesAndSeconds(record.durationSecs))
                 }
                 meta.append("\(record.wordCount) Wörter")
                 meta.append(FileNumber.forRecord(id: record.id))

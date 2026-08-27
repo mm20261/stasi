@@ -317,8 +317,7 @@ struct OnboardingView: View {
     }
 
     private func trialFootnote(_ record: TranscriptionRecord) -> String {
-        let duration = String(format: "%.0f:%02d", record.durationSecs / 60,
-                              Int(record.durationSecs) % 60)
+        let duration = DurationFormatter.minutesAndSeconds(record.durationSecs)
         return "ERFASST · \(duration) · \(record.wordCount) WÖRTER · IN ZWISCHENABLAGE"
     }
 

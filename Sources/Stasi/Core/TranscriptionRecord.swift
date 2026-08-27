@@ -1,5 +1,12 @@
 import Foundation
 
+enum DurationFormatter {
+    static func minutesAndSeconds(_ interval: TimeInterval) -> String {
+        let total = max(0, Int(interval.rounded()))
+        return String(format: "%d:%02d", total / 60, total % 60)
+    }
+}
+
 // MARK: - TranscriptionRecord
 // Ein abgeschlossener Diktat-Vorgang inkl. Korrektur-Nachweis, Metadaten & Audio.
 

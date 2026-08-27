@@ -350,9 +350,8 @@ final class RecordingPillView: NSView {
 
     func update(level: Double, secs: TimeInterval, partialText: String, modelReady: Bool) {
         currentLevel = level
-        let total = Int(secs)
         timerLabel.stringValue = modelReady
-            ? String(format: "%d:%02d", total / 60, total % 60)
+            ? DurationFormatter.minutesAndSeconds(secs)
             : Copy.pillModelLoading
         let trimmed = partialText.trimmingCharacters(in: .whitespacesAndNewlines)
         let hasPartialText = !trimmed.isEmpty

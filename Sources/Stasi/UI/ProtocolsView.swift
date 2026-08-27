@@ -332,8 +332,7 @@ struct ProtocolsView: View {
                     .background(RoundedRectangle(cornerRadius: 3).fill(Theme.Palette.chip))
             }
             if record.durationSecs > 0 {
-                Text(String(format: "%.0f:%02d", record.durationSecs / 60,
-                            Int(record.durationSecs) % 60))
+                Text(DurationFormatter.minutesAndSeconds(record.durationSecs))
                 if let wpm = wordsPerMinute(record) {
                     Text("\(wpm) WPM")
                 }

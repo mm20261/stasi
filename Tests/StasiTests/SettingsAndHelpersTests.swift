@@ -286,6 +286,29 @@ final class VirtualKeyTests: XCTestCase {
     }
 }
 
+// MARK: - Diktatdauer-Formatierung
+
+final class DurationFormatterTests: XCTestCase {
+    func testFormatsRoundedMinutesAndSecondsAtBoundaries() {
+        let cases: [(input: TimeInterval, expected: String)] = [
+            (0.0, "0:00"),
+            (59.4, "0:59"),
+            (59.6, "1:00"),
+            (60.0, "1:00"),
+            (119.6, "2:00"),
+            (-1.0, "0:00"),
+        ]
+
+        for testCase in cases {
+            XCTAssertEqual(
+                DurationFormatter.minutesAndSeconds(testCase.input),
+                testCase.expected,
+                "input=\(testCase.input)"
+            )
+        }
+    }
+}
+
 // MARK: - DebugLog-Rotation
 
 final class DebugLogTests: XCTestCase {

@@ -158,6 +158,22 @@ final class ProtocolSearchTests: XCTestCase {
 
     // MARK: Sammelexport
 
+    func testMarkdownAllRoundsDurationBeforeFormattingMinutesAndSeconds() {
+        let record = TranscriptionRecord(
+            date: Date(),
+            localeID: "de",
+            rawText: "",
+            correctedText: "Grenzfall",
+            corrections: [],
+            durationSecs: 59.6
+        )
+
+        let markdown = ProtocolExporter.markdownAll([record])
+
+        XCTAssertTrue(markdown.contains(" · 1:00 · "))
+        XCTAssertFalse(markdown.contains(" · 1:59 · "))
+    }
+
     func testMarkdownAllContainsHeaderAndEntries() {
         var cal = calendar
         let today = cal.startOfDay(for: Date())
