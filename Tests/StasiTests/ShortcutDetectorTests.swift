@@ -71,13 +71,19 @@ final class ShortcutDetectorTests: XCTestCase {
             }
         }
         let settings = SettingsStore(defaults: defaults)
+        var startHotkeyCalls = 0
         let app = AppState(
             settings: settings,
             dictionary: DictionaryStore(directory: directory.appendingPathComponent("dictionary")),
             history: HistoryStore(directory: directory.appendingPathComponent("history")),
             installHotkey: false,
+            startHotkey: { _, _ in
+                startHotkeyCalls += 1
+                return true
+            },
             audioDirectory: directory.appendingPathComponent("audio")
         )
+        app.accessibilityGranted = true
         let combo = HotkeyEngine.Combo(
             keyCode: 49,
             flags: CGEventFlags.maskControl.rawValue | CGEventFlags.maskShift.rawValue
@@ -88,6 +94,43 @@ final class ShortcutDetectorTests: XCTestCase {
         XCTAssertEqual(settings.hotkeyCombo, combo)
         XCTAssertEqual(app.currentCombo, combo)
         XCTAssertEqual(UserDefaults.standard.data(forKey: standardKey), sentinel)
+        XCTAssertEqual(startHotkeyCalls, 0)
+        XCTAssertNil(app.hotkey)
+        XCTAssertFalse(app.tapInstalled)
+    }
+
+    @MainActor
+    func testApplyHotkeyPassesUpdatedComboToInjectedStarter() throws {
+        let suiteName = "ShortcutDetectorStarterTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let directory = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+            .appendingPathComponent(".build/test-artifacts/hotkey-starter-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        var startedCombos: [HotkeyEngine.Combo] = []
+        let app = AppState(
+            settings: SettingsStore(defaults: defaults),
+            dictionary: DictionaryStore(directory: directory.appendingPathComponent("dictionary")),
+            history: HistoryStore(directory: directory.appendingPathComponent("history")),
+            installHotkey: true,
+            startHotkey: { _, combo in
+                startedCombos.append(combo)
+                return true
+            },
+            audioDirectory: directory.appendingPathComponent("audio")
+        )
+        startedCombos.removeAll()
+        app.accessibilityGranted = true
+        let combo = HotkeyEngine.Combo(
+            keyCode: 49,
+            flags: CGEventFlags.maskAlternate.rawValue | CGEventFlags.maskCommand.rawValue
+        )
+
+        app.applyHotkey(combo)
+
+        XCTAssertEqual(startedCombos, [combo])
+        XCTAssertEqual(app.hotkey?.isOperational, false)
+        XCTAssertTrue(app.tapInstalled)
     }
 
     func testFnSingleTapDoesNotFire() {

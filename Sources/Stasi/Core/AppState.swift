@@ -39,6 +39,8 @@ final class AppState {
     let dictionary: DictionaryStore
     let history: any HistoryStoring
     private let audioFactory: AudioCaptureFactory
+    private let hotkeyInstallationEnabled: Bool
+    private let startHotkey: @MainActor (HotkeyEngine, HotkeyEngine.Combo) -> Bool
     private let speechFactory: @MainActor (Locale, [String]) -> any SpeechEngining
     private let requestMicrophone: @MainActor () async -> Bool
     private let modelInstaller: @Sendable (Locale) async throws -> Void
@@ -173,6 +175,9 @@ final class AppState {
          consumeTimeoutNanoseconds: UInt64 = 2_000_000_000,
          minimumPushToTalkDuration: TimeInterval = PillChrome.presentationDelay,
          installHotkey: Bool = true,
+         startHotkey: @escaping @MainActor (HotkeyEngine, HotkeyEngine.Combo) -> Bool = { engine, _ in
+             engine.start()
+         },
          audioDirectory: URL? = nil,
          audioRecoveryStore: AudioRecoveryStore? = nil,
          revealRecoveryFile: @escaping @MainActor (URL) -> Void = { url in
@@ -188,6 +193,8 @@ final class AppState {
         self.dictionary = dictionary ?? DictionaryStore()
         self.history = history ?? HistoryStore()
         self.audioFactory = audioFactory
+        self.hotkeyInstallationEnabled = installHotkey
+        self.startHotkey = startHotkey
         self.speechFactory = speechFactory
         self.requestMicrophone = requestMicrophone
         self.modelInstaller = modelInstaller
@@ -232,6 +239,7 @@ final class AppState {
     // MARK: Hotkey
 
     private func installTap() {
+        guard hotkeyInstallationEnabled else { return }
         // Debug-Notausstieg: Start ohne Event-Tap (STASI_NO_TAP=1 setzen)
         guard ProcessInfo.processInfo.environment["STASI_NO_TAP"] == nil else {
             NSLog("STASI-HK: Tap übersprungen (STASI_NO_TAP gesetzt)")
@@ -262,7 +270,7 @@ final class AppState {
             self?.enqueue(command)
         }
         hk.onTapStopped = { [weak self] in self?.enqueue(.tapStopped) }
-        if hk.start() {
+        if startHotkey(hk, currentCombo) {
             hotkey = hk
             tapInstalled = true
         }
