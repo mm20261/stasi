@@ -313,7 +313,7 @@ Co-Authored-By: Claude <noreply@anthropic.com>"
 - [ ] **Step 1: Erfasse die aktuell unerwünschten Treffer**
 
 ```bash
-grep -nE 'arm64-apple-macosx|Mac17,8|64 GB|<bisherige-private-e-mail>' README.md AGENTS.md || true
+grep -nE '\.build/[^ ]+/debug/StasiPackageTests\.xctest|Mac17,8|64 GB|<bisherige-private-e-mail>' README.md AGENTS.md || true
 ```
 
 Speichere die erwarteten Treffer im Arbeitsprotokoll. Keine Produktionsänderung.
@@ -334,7 +334,7 @@ Behalte nur sachliche Mindestanforderungen aus `Package.swift`, beispielsweise m
 - [ ] **Step 4: Prüfe die Doku**
 
 ```bash
-! grep -nE 'arm64-apple-macosx|Mac17,8|64 GB|<bisherige-private-e-mail>' README.md AGENTS.md
+! grep -nE '\.build/[^ ]+/debug/StasiPackageTests\.xctest|Mac17,8|64 GB|<bisherige-private-e-mail>' README.md AGENTS.md
 ```
 
 Expected: kein Treffer.
@@ -570,8 +570,8 @@ Expected: alles erfolgreich.
 
 ```bash
 ! git ls-files | grep -E '(^|/)(\.DS_Store|\.build/|build/)'
-! git grep -n 'arm64-apple-macosx'
-! git grep -n 'api.github.com/repos/leomcguire/stasi'
+! git grep -n "$(printf '%s%s' 'arm64-apple-' 'macosx')"
+! git grep -n "$(printf '%s%s' 'api.github.com/repos/' 'leomcguire/stasi')"
 ! git grep -n '<bisherige-private-e-mail>' -- ':!docs/superpowers/**'
 ! git grep -n 'Mac17,8\|64 GB' -- README.md AGENTS.md
 ```
