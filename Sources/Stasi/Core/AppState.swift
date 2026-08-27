@@ -3,6 +3,46 @@ import SwiftUI
 import AppKit
 import AVFoundation
 
+@MainActor
+final class NSSoundCompletionPlayer: NSObject, NSSoundDelegate {
+    typealias Starter = @MainActor (NSSound, NSSoundDelegate) -> Bool
+
+    private var continuation: CheckedContinuation<Void, Never>?
+    private var sound: NSSound?
+    private var lifetime: NSSoundCompletionPlayer?
+
+    static func play(_ sound: NSSound,
+                     starter: @escaping Starter = { sound, _ in sound.play() }) async {
+        let player = NSSoundCompletionPlayer()
+        await player.play(sound, starter: starter)
+    }
+
+    private func play(_ sound: NSSound, starter: @escaping Starter) async {
+        await withCheckedContinuation { continuation in
+            self.continuation = continuation
+            self.sound = sound
+            lifetime = self
+            sound.delegate = self
+            if !starter(sound, self) {
+                finish()
+            }
+        }
+    }
+
+    func sound(_ sound: NSSound, didFinishPlaying finishedPlaying: Bool) {
+        finish()
+    }
+
+    private func finish() {
+        guard let continuation else { return }
+        self.continuation = nil
+        sound?.delegate = nil
+        sound = nil
+        lifetime = nil
+        continuation.resume()
+    }
+}
+
 // MARK: - AppState
 // Zentrale State-Machine: idle → recording → transcribing → polishing → injecting → idle.
 // Hotkey-Modi: Push-to-talk (halten) oder Umschalten (togglen).
@@ -209,11 +249,8 @@ final class AppState {
          },
          now: @escaping @MainActor () -> Date = { Date() },
          playStartCue: @escaping @MainActor () async -> Void = {
-             guard let sound = NSSound(named: "Tink"), sound.play() else { return }
-             let duration = max(0, sound.duration)
-             if duration > 0 {
-                 try? await Task.sleep(nanoseconds: UInt64(duration * 1_000_000_000))
-             }
+             guard let sound = NSSound(named: "Tink") else { return }
+             await NSSoundCompletionPlayer.play(sound)
          }) {
         self.settings = settings
         self.dictionary = dictionary ?? DictionaryStore()
@@ -484,7 +521,25 @@ final class AppState {
         )
     }
 
+    private func setupShouldContinue(_ session: DictationSession) async -> Bool {
+        guard session === currentSession else { return false }
+        switch session.state {
+        case .settingUp:
+            return true
+        case .stopping:
+            await teardown(session)
+            finishAbortedSession(session)
+            return false
+        case .recording, .finished:
+            return false
+        }
+    }
+
     func startDictation(source: RecordingSource = .pushToTalk) {
+        if phase == .setupTimedOut {
+            onToast?("Die Aufnahmevorbereitung antwortet nicht. Bitte Stasi neu starten.", false)
+            return
+        }
         if phase == .preparing {
             stopDictation()
             return
@@ -526,8 +581,7 @@ final class AppState {
                 // die Audio-Hardware ohne Recht anzufassen hängt sonst den
                 // Main-Thread in der synchronen TCC-Abfrage fest.
                 let microphoneGranted = await self.requestMicrophone()
-                guard session === self.currentSession else { return }
-                guard session.state == .settingUp else { return }
+                guard await self.setupShouldContinue(session) else { return }
                 guard microphoneGranted else {
                     DebugLog.log("STASI-APP: startDictation abgebrochen – Mikrofon-Recht fehlt")
                     self.onToast?("Mikrofon-Zugriff fehlt – in Systemeinstellungen erlauben", false)
@@ -543,21 +597,17 @@ final class AppState {
                 }
 
                 let resolvedLocale = try await session.speech.resolvedLocale(for: session.locale)
-                guard session === self.currentSession else { return }
-                guard session.state == .settingUp else { return }
+                guard await self.setupShouldContinue(session) else { return }
                 session.applyResolvedLocale(resolvedLocale)
 
                 await self.prepareModel(for: resolvedLocale)
-                guard session === self.currentSession else { return }
-                guard session.state == .settingUp else { return }
+                guard await self.setupShouldContinue(session) else { return }
 
                 let chunks = try await session.speech.start()
-                guard session === self.currentSession else { return }
-                guard session.state == .settingUp else { return }
+                guard await self.setupShouldContinue(session) else { return }
                 self.modelReadyByLocale[session.locale.identifier] = true
                 let format = await session.speech.preferredInputFormat()
-                guard session === self.currentSession else { return }
-                guard session.state == .settingUp else { return }
+                guard await self.setupShouldContinue(session) else { return }
                 guard let format else {
                     throw TranscriptionError.noAudioFormat
                 }
@@ -591,8 +641,7 @@ final class AppState {
                 }
 
                 await self.playStartSound()
-                guard session === self.currentSession,
-                      session.state == .settingUp else { return }
+                guard await self.setupShouldContinue(session) else { return }
                 session.updateTargetApplication(self.captureTargetApplication())
                 let recordingStartCandidate = self.now()
                 try session.audio.start(
@@ -621,8 +670,13 @@ final class AppState {
                 DebugLog.log("STASI-APP: audio.start fertig – Aufnahme läuft")
             } catch {
                 DebugLog.log("STASI-APP: startDictation FEHLER: \(error.localizedDescription)")
-                guard session === self.currentSession,
-                      session.state == .settingUp else { return }
+                guard session === self.currentSession else { return }
+                if session.state == .stopping {
+                    await self.teardown(session)
+                    self.finishAbortedSession(session)
+                    return
+                }
+                guard session.state == .settingUp else { return }
                 await self.teardown(session)
                 self.onToast?(error.localizedDescription, false)
                 self.finishAbortedSession(session)
@@ -638,13 +692,6 @@ final class AppState {
         session.state = .stopping
         if timedOut {
             phase = .setupTimedOut
-        }
-        Task { @MainActor [weak self, weak session] in
-            guard let self, let session else { return }
-            await session.setupTask?.value
-            guard session === self.currentSession else { return }
-            await self.teardown(session)
-            self.finishAbortedSession(session)
         }
     }
 
@@ -823,10 +870,15 @@ final class AppState {
     }
 
     private func recoverFromPhaseWatchdog() async {
-        if phase == .preparing,
-           let session = currentSession,
-           session.state == .settingUp {
-            requestSetupStop(session, intent: .discard, timedOut: true)
+        if phase == .preparing, let session = currentSession {
+            if session.state == .settingUp {
+                requestSetupStop(session, intent: .discard, timedOut: true)
+            } else if session.state == .stopping {
+                phase = .setupTimedOut
+            } else {
+                watchdogRecoveryQueued = false
+                return
+            }
             onToast?("Die Aufnahmevorbereitung antwortet nicht. Bitte Stasi neu starten.", false)
             return
         }
@@ -1039,6 +1091,8 @@ final class AppState {
             startDictation(source: .handsFree)
         } else if phase == .preparing {
             stopDictation()
+        } else if phase == .setupTimedOut {
+            onToast?("Die Aufnahmevorbereitung antwortet nicht. Bitte Stasi neu starten.", false)
         } else if phase == .recording {
             requestCommit()
         }

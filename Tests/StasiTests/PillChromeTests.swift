@@ -47,6 +47,37 @@ final class PillChromeTests: XCTestCase {
     }
 
     @MainActor
+    func testNSSoundCompletionWaitsForDelegateSignalExactlyOnce() async throws {
+        let sound = try XCTUnwrap(NSSound(named: "Tink"))
+        var events: [String] = []
+        var signalTask: Task<Void, Never>?
+
+        await NSSoundCompletionPlayer.play(sound, starter: { sound, delegate in
+            XCTAssertTrue(sound.delegate === delegate)
+            events.append("starter")
+            signalTask = Task { @MainActor in
+                await Task.yield()
+                events.append("signal")
+                delegate.sound?(sound, didFinishPlaying: true)
+                delegate.sound?(sound, didFinishPlaying: true)
+            }
+            return true
+        })
+        events.append("completed")
+        await signalTask?.value
+
+        XCTAssertEqual(events, ["starter", "signal", "completed"])
+        XCTAssertNil(sound.delegate)
+    }
+
+    @MainActor
+    func testNSSoundCompletionReturnsImmediatelyWhenPlayFails() async throws {
+        let sound = try XCTUnwrap(NSSound(named: "Tink"))
+        await NSSoundCompletionPlayer.play(sound, starter: { _, _ in false })
+        XCTAssertNil(sound.delegate)
+    }
+
+    @MainActor
     func testPreparingAndTimedOutSetupUseVisibleSpinner() {
         XCTAssertTrue(PillChrome.shouldShowSpinner(
             phase: .preparing,

@@ -249,6 +249,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         pollTick()
     }
 
+    static func updateRecordingElapsed(_ app: AppState) {
+        app.updateElapsedFromPoll()
+    }
+
     private func pollTick() {
         // Stall-Watchdog: main thread hängt? → logarithmisch sichtbar machen
         let now = Date()
@@ -262,7 +266,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         pollTickCount += 1
         app.applyPendingPermissionStateFromPoll()
         app.checkPhaseWatchdog(now: now)
-        app.updateElapsedFromPoll(now: now)
+        Self.updateRecordingElapsed(app)
         app.ingestLevelFromPoll()
         statusBar.refresh()
         PillController.shared.sync(

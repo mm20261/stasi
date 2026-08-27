@@ -1306,6 +1306,7 @@ final class DictationSessionTests: XCTestCase {
         let speech = FakeSpeechEngine()
         await speech.blockStart()
         let app = makeApp(audio: audio, engines: [speech])
+        app.startCommandLoop()
 
         app.handsFreeToggle()
         await waitUntil { await speech.hasEnteredStart() }
@@ -1317,6 +1318,14 @@ final class DictationSessionTests: XCTestCase {
         XCTAssertEqual(app.phase, .preparing)
         XCTAssertEqual(audio.startCount, 0)
         XCTAssertEqual(audio.stopCount, 0)
+        let metricsBeforeTimeout = await speech.metrics()
+        XCTAssertEqual(metricsBeforeTimeout.finishCount, 0)
+
+        app.checkPhaseWatchdog(now: Date().addingTimeInterval(16))
+        await waitUntil { app.phase == .setupTimedOut }
+        XCTAssertEqual(audio.stopCount, 0)
+        let metricsWhileBlocked = await speech.metrics()
+        XCTAssertEqual(metricsWhileBlocked.finishCount, 0)
 
         await speech.unblockStart()
         await waitUntil { app.phase == .idle && app.currentSession == nil }
@@ -1449,6 +1458,26 @@ final class DictationSessionTests: XCTestCase {
         app.stopDictation()
         await waitUntil { app.phase == .idle }
         XCTAssertTrue(history.records.isEmpty)
+    }
+
+    func testProductionPollUsesAppStatesInjectedRecordingClock() async {
+        let audio = FakeAudioCapture()
+        let clock = FakeClock()
+        let app = makeApp(
+            audio: audio,
+            engines: [FakeSpeechEngine()],
+            now: { clock.now }
+        )
+
+        app.startDictation()
+        await waitUntil { audio.isRunning }
+        clock.advance(by: 0.4)
+
+        AppDelegate.updateRecordingElapsed(app)
+
+        XCTAssertEqual(app.elapsed, 0.4, accuracy: 0.001)
+        app.requestDiscard()
+        await waitUntil { app.phase == .idle }
     }
 
     func testStartCueFinishesBeforeAudioActivationWithoutPublishingRecording() async {
