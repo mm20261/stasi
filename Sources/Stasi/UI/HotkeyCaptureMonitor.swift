@@ -4,7 +4,7 @@ enum HotkeyCaptureEvent: Sendable {
     case cancel
     case modifier(HotkeyEngine.Combo)
     case modifierReleased(keyCode: UInt16)
-    case key(HotkeyEngine.Combo)
+    case key(HotkeyEngine.Combo, isRepeat: Bool = false)
 
     nonisolated static func parse(_ event: NSEvent) -> HotkeyCaptureEvent? {
         switch event.type {
@@ -23,7 +23,10 @@ enum HotkeyCaptureEvent: Sendable {
             if event.modifierFlags.contains(.control) { flags |= CGEventFlags.maskControl.rawValue }
             if event.modifierFlags.contains(.option) { flags |= CGEventFlags.maskAlternate.rawValue }
             if event.modifierFlags.contains(.shift) { flags |= CGEventFlags.maskShift.rawValue }
-            return .key(HotkeyEngine.Combo(keyCode: UInt64(event.keyCode), flags: flags))
+            return .key(
+                HotkeyEngine.Combo(keyCode: UInt64(event.keyCode), flags: flags),
+                isRepeat: event.isARepeat
+            )
         default:
             return nil
         }
@@ -57,15 +60,23 @@ struct HotkeyCaptureDraft: Equatable {
             isComplete = false
             acceptsInitialReplacement = false
         case .modifier(let combo):
-            guard acceptsInitialReplacement || !isComplete else { return }
+            if isComplete,
+               !acceptsInitialReplacement,
+               let current = self.combo,
+               let modifierFlag = Self.modifierFlag(for: combo.keyCode),
+               current.flags & modifierFlag != 0 {
+                return
+            }
             self.combo = combo
             isComplete = false
             acceptsInitialReplacement = false
         case .modifierReleased(let keyCode):
+            guard !isComplete else { return }
             acceptsInitialReplacement = false
-            guard !isComplete, keyCode != 63 else { return }
+            guard keyCode != 63 else { return }
             combo = nil
-        case .key(let combo):
+        case .key(let combo, let isRepeat):
+            guard !isRepeat || self.combo == nil else { return }
             self.combo = combo
             isComplete = true
             acceptsInitialReplacement = false
@@ -74,6 +85,17 @@ struct HotkeyCaptureDraft: Equatable {
 
     private static func isModifierKey(_ keyCode: UInt64) -> Bool {
         [54, 55, 56, 57, 58, 59, 60, 61, 62, 63].contains(keyCode)
+    }
+
+    private static func modifierFlag(for keyCode: UInt64) -> UInt64? {
+        switch keyCode {
+        case 54, 55: CGEventFlags.maskCommand.rawValue
+        case 56, 60: CGEventFlags.maskShift.rawValue
+        case 58, 61: CGEventFlags.maskAlternate.rawValue
+        case 59, 62: CGEventFlags.maskControl.rawValue
+        case 63: CGEventFlags.maskSecondaryFn.rawValue
+        default: nil
+        }
     }
 }
 

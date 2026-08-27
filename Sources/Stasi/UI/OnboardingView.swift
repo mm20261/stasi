@@ -209,6 +209,11 @@ struct OnboardingView: View {
     }
 
     // Schritt 3 – Tastenkombination
+    static func hotkeyPreviewText(for draft: HotkeyCaptureDraft) -> String {
+        guard let combo = draft.combo else { return "" }
+        return VirtualKey.display(combo)
+    }
+
     private var hotkeyStep: some View {
         VStack(alignment: .leading, spacing: 0) {
             Text("Welche Taste hält das Mikrofon offen?")
@@ -220,7 +225,7 @@ struct OnboardingView: View {
             HStack(alignment: .top, spacing: 14) {
                 VStack(alignment: .leading, spacing: 10) {
                     HStack(spacing: 6) {
-                        KeyBadge(VirtualKey.display(hotkeyDraft.combo ?? app.currentCombo))
+                        KeyBadge(Self.hotkeyPreviewText(for: hotkeyDraft))
                         BlinkingCursor()
                     }
                     Text("Taste frei belegbar – Modifier plus Taste oder ein Modifier allein.")

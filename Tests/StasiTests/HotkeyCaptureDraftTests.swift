@@ -122,4 +122,97 @@ final class HotkeyCaptureDraftTests: XCTestCase {
         XCTAssertFalse(draft.isComplete)
         XCTAssertTrue(draft.isValidSelection)
     }
+
+    @MainActor
+    func testOnboardingPreviewIsEmptyAfterCancel() {
+        var draft = HotkeyCaptureDraft(combo: .init(
+            keyCode: 40,
+            flags: CGEventFlags.maskCommand.rawValue
+        ))
+        draft.process(.cancel)
+
+        XCTAssertEqual(OnboardingView.hotkeyPreviewText(for: draft), "")
+    }
+
+    @MainActor
+    func testOnboardingPreviewIsEmptyAfterIncompleteModifierRelease() {
+        var draft = HotkeyCaptureDraft()
+        draft.process(.modifier(.init(keyCode: 55, flags: 0)))
+        draft.process(.modifierReleased(keyCode: 55))
+
+        XCTAssertEqual(OnboardingView.hotkeyPreviewText(for: draft), "")
+    }
+
+    func testSettingsEscapeStopsCaptureUIAndRequestsMonitorRemoval() {
+        let currentCombo = HotkeyEngine.Combo(
+            keyCode: 40,
+            flags: CGEventFlags.maskCommand.rawValue
+        )
+        var state = SettingsHotkeyCaptureState()
+        state.begin(with: currentCombo)
+
+        let effect = state.process(.cancel)
+
+        XCTAssertEqual(effect, .removeMonitor)
+        XCTAssertFalse(state.isRecording)
+        XCTAssertNil(state.draft.combo)
+    }
+
+    func testNewOptionPressReplacesCapturedCommandKeyCombo() {
+        let optionOnly = HotkeyEngine.Combo(keyCode: 58, flags: 0)
+        var draft = HotkeyCaptureDraft()
+        draft.process(.key(.init(
+            keyCode: 40,
+            flags: CGEventFlags.maskCommand.rawValue
+        )))
+        draft.process(.modifierReleased(keyCode: 55))
+
+        draft.process(.modifier(optionOnly))
+
+        XCTAssertEqual(draft.combo, optionOnly)
+        XCTAssertFalse(draft.isComplete)
+    }
+
+    func testNewCommandPressReplacesBareKeyDraft() {
+        let commandOnly = HotkeyEngine.Combo(keyCode: 55, flags: 0)
+        var draft = HotkeyCaptureDraft()
+        draft.process(.key(.init(keyCode: 40, flags: 0)))
+
+        draft.process(.modifier(commandOnly))
+
+        XCTAssertEqual(draft.combo, commandOnly)
+        XCTAssertFalse(draft.isComplete)
+        XCTAssertTrue(draft.isValidSelection)
+    }
+
+    func testInitialComboReleaseDoesNotConsumeFirstModifierReplacement() {
+        let initialCombo = HotkeyEngine.Combo(
+            keyCode: 40,
+            flags: CGEventFlags.maskCommand.rawValue
+        )
+        let commandOnly = HotkeyEngine.Combo(keyCode: 55, flags: 0)
+        var draft = HotkeyCaptureDraft(combo: initialCombo)
+
+        draft.process(.modifierReleased(keyCode: 55))
+        draft.process(.modifier(commandOnly))
+
+        XCTAssertEqual(draft.combo, commandOnly)
+        XCTAssertFalse(draft.isComplete)
+    }
+
+    func testBareKeyAutoRepeatDoesNotOverwriteCompletedCombo() {
+        let commandK = HotkeyEngine.Combo(
+            keyCode: 40,
+            flags: CGEventFlags.maskCommand.rawValue
+        )
+        var draft = HotkeyCaptureDraft()
+        draft.process(.key(commandK))
+        draft.process(.modifierReleased(keyCode: 55))
+
+        draft.process(.key(.init(keyCode: 40, flags: 0), isRepeat: true))
+
+        XCTAssertEqual(draft.combo, commandK)
+        XCTAssertTrue(draft.isComplete)
+        XCTAssertTrue(draft.isValidSelection)
+    }
 }

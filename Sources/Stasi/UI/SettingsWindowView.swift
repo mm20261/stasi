@@ -4,13 +4,39 @@ import AppKit
 
 // MARK: - Einstellungen (v3: 6 Sektionen, Spalte 620)
 
+enum SettingsHotkeyCaptureEffect: Equatable {
+    case none
+    case removeMonitor
+}
+
+struct SettingsHotkeyCaptureState: Equatable {
+    private(set) var isRecording = false
+    private(set) var draft = HotkeyCaptureDraft()
+
+    mutating func begin(with combo: HotkeyEngine.Combo) {
+        isRecording = true
+        draft = HotkeyCaptureDraft(combo: combo)
+    }
+
+    mutating func process(_ event: HotkeyCaptureEvent) -> SettingsHotkeyCaptureEffect {
+        draft.process(event)
+        guard case .cancel = event else { return .none }
+        isRecording = false
+        return .removeMonitor
+    }
+
+    mutating func stop() {
+        isRecording = false
+        draft = HotkeyCaptureDraft()
+    }
+}
+
 struct SettingsWindowView: View {
     @Environment(AppState.self) private var app
     @Environment(SettingsStore.self) private var settings
 
-    @State private var recordingHotkey = false
     /// Während der Aufnahme erfasste Kombination (Vorschau bis „Übernehmen").
-    @State private var hotkeyDraft = HotkeyCaptureDraft()
+    @State private var hotkeyCaptureState = SettingsHotkeyCaptureState()
     @State private var recordingHandsFreeKey = false
     @State private var draftHandsFreeKeyCode: UInt64?
 
@@ -102,10 +128,10 @@ struct SettingsWindowView: View {
                         .foregroundColor(Theme.Palette.text2)
                 }
                 Spacer()
-                KeyBadge(recordingHotkey ? "…" : VirtualKey.display(app.currentCombo))
-                    .opacity(recordingHotkey ? 0.4 : 1)
+                KeyBadge(hotkeyCaptureState.isRecording ? "…" : VirtualKey.display(app.currentCombo))
+                    .opacity(hotkeyCaptureState.isRecording ? 0.4 : 1)
                 Button("ÄNDERN") {
-                    if !recordingHotkey { beginHotkeyRecording() }
+                    if !hotkeyCaptureState.isRecording { beginHotkeyRecording() }
                 }
                 .font(Theme.Typo.kicker(size: 10.5))
                 .tracking(0.8)
@@ -115,7 +141,7 @@ struct SettingsWindowView: View {
             .padding(.horizontal, 16)
             .padding(.vertical, 13)
 
-            if recordingHotkey {
+            if hotkeyCaptureState.isRecording {
                 recorderField
                     .padding(.horizontal, 10)
                     .padding(.bottom, 12)
@@ -162,12 +188,12 @@ struct SettingsWindowView: View {
 
     /// Keycap-Vorschau der aktuell gedrückten Kombination.
     private var currentDraftSymbols: [String] {
-        guard let combo = hotkeyDraft.combo else { return [] }
+        guard let combo = hotkeyCaptureState.draft.combo else { return [] }
         return VirtualKey.display(combo).split(separator: " ").map(String.init)
     }
 
     private var canCommitHotkeyDraft: Bool {
-        hotkeyDraft.isValidSelection
+        hotkeyCaptureState.draft.isValidSelection
     }
 
     @State private var hotkeyCaptureMonitor: Any?
@@ -176,10 +202,11 @@ struct SettingsWindowView: View {
     private func beginHotkeyRecording() {
         guard hotkeyCaptureMonitor == nil else { return }
         cancelHandsFreeKeyRecording()
-        recordingHotkey = true
-        hotkeyDraft = HotkeyCaptureDraft(combo: app.currentCombo)
+        hotkeyCaptureState.begin(with: app.currentCombo)
         let target = HotkeyCaptureMonitorTarget { action in
-            hotkeyDraft.process(action)
+            if hotkeyCaptureState.process(action) == .removeMonitor {
+                cancelHotkeyRecording()
+            }
         }
         hotkeyCaptureTarget = target
         hotkeyCaptureMonitor = NSEvent.addLocalMonitorForEvents(
@@ -195,12 +222,11 @@ struct SettingsWindowView: View {
         if let monitor = hotkeyCaptureMonitor { NSEvent.removeMonitor(monitor) }
         hotkeyCaptureMonitor = nil
         hotkeyCaptureTarget = nil
-        recordingHotkey = false
-        hotkeyDraft = HotkeyCaptureDraft()
+        hotkeyCaptureState.stop()
     }
 
     private func commitHotkeyRecording() {
-        guard canCommitHotkeyDraft, let combo = hotkeyDraft.combo else { return }
+        guard canCommitHotkeyDraft, let combo = hotkeyCaptureState.draft.combo else { return }
         app.applyHotkey(combo)
         cancelHotkeyRecording()
     }
