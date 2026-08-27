@@ -331,8 +331,6 @@ final class AppState {
         }
     }
 
-    static let hotkeyDefaultsKey = "stasi.hotkey.combo"
-
     nonisolated static func hotkeyCommand(for chord: HotkeyEngine.Combo) -> HotkeyCommand? {
         switch chord {
         case copyLastChord: .copyLast
@@ -342,9 +340,7 @@ final class AppState {
     }
 
     func applyHotkey(_ combo: HotkeyEngine.Combo) {
-        if let data = try? JSONEncoder().encode(combo) {
-            UserDefaults.standard.set(data, forKey: Self.hotkeyDefaultsKey)
-        }
+        settings.hotkeyCombo = combo
         reinstallHotkey()
     }
 
@@ -405,13 +401,7 @@ final class AppState {
         modelReadyByLocale[key] = ready
     }
 
-    var currentCombo: HotkeyEngine.Combo {
-        if let data = UserDefaults.standard.data(forKey: Self.hotkeyDefaultsKey),
-           let c = try? JSONDecoder().decode(HotkeyEngine.Combo.self, from: data) {
-            return c
-        }
-        return .defaultPTT
-    }
+    var currentCombo: HotkeyEngine.Combo { settings.hotkeyCombo }
 
     /// Modus-abhängige Auswertung (Push-to-talk vs. Umschalten)
     private func hotkeyPressed() {

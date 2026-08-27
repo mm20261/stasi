@@ -51,6 +51,45 @@ final class ShortcutDetectorTests: XCTestCase {
         XCTAssertNil(AppState.hotkeyCommand(for: .defaultPTT))
     }
 
+    @MainActor
+    func testApplyHotkeyUsesInjectedSettingsWithoutChangingStandardDefaults() throws {
+        let suiteName = "ShortcutDetectorTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let directory = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+            .appendingPathComponent(".build/test-artifacts/hotkey-persistence-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let standardKey = "stasi.hotkey.combo"
+        let previousStandardValue = UserDefaults.standard.object(forKey: standardKey)
+        let sentinel = try JSONEncoder().encode(HotkeyEngine.Combo.defaultPTT)
+        UserDefaults.standard.set(sentinel, forKey: standardKey)
+        defer {
+            if let previousStandardValue {
+                UserDefaults.standard.set(previousStandardValue, forKey: standardKey)
+            } else {
+                UserDefaults.standard.removeObject(forKey: standardKey)
+            }
+        }
+        let settings = SettingsStore(defaults: defaults)
+        let app = AppState(
+            settings: settings,
+            dictionary: DictionaryStore(directory: directory.appendingPathComponent("dictionary")),
+            history: HistoryStore(directory: directory.appendingPathComponent("history")),
+            installHotkey: false,
+            audioDirectory: directory.appendingPathComponent("audio")
+        )
+        let combo = HotkeyEngine.Combo(
+            keyCode: 49,
+            flags: CGEventFlags.maskControl.rawValue | CGEventFlags.maskShift.rawValue
+        )
+
+        app.applyHotkey(combo)
+
+        XCTAssertEqual(settings.hotkeyCombo, combo)
+        XCTAssertEqual(app.currentCombo, combo)
+        XCTAssertEqual(UserDefaults.standard.data(forKey: standardKey), sentinel)
+    }
+
     func testFnSingleTapDoesNotFire() {
         var d = ShortcutDetector()
         d.handsFreeEnabled = true

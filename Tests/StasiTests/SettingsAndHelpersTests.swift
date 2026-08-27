@@ -1,5 +1,6 @@
 import XCTest
 import AVFoundation
+import CoreGraphics
 import SwiftUI
 @testable import Stasi
 
@@ -80,6 +81,32 @@ final class SettingsStoreTests: XCTestCase {
         settings.hotkeyMode = .toggle
         let reloaded = SettingsStore(defaults: defaults)
         XCTAssertEqual(reloaded.hotkeyMode, .toggle)
+    }
+
+    func testHotkeyPersistsInInjectedSettingsStore() throws {
+        let combo = HotkeyEngine.Combo(
+            keyCode: 49,
+            flags: CGEventFlags.maskAlternate.rawValue | CGEventFlags.maskShift.rawValue
+        )
+        let settings = SettingsStore(defaults: defaults)
+
+        settings.hotkeyCombo = combo
+
+        let reloaded = SettingsStore(defaults: defaults)
+        XCTAssertEqual(reloaded.hotkeyCombo, combo)
+        XCTAssertEqual(
+            try JSONDecoder().decode(
+                HotkeyEngine.Combo.self,
+                from: XCTUnwrap(defaults.data(forKey: "stasi.hotkey.combo"))
+            ),
+            combo
+        )
+    }
+
+    func testInvalidStoredHotkeyFallsBackToDefault() {
+        defaults.set(Data("bad".utf8), forKey: "stasi.hotkey.combo")
+
+        XCTAssertEqual(SettingsStore(defaults: defaults).hotkeyCombo, .defaultPTT)
     }
 
     func testHandsFreePersistence() {

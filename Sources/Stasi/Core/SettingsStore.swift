@@ -50,6 +50,8 @@ final class SettingsStore {
         ("Grün", 0x2D6A4F), ("Violett", 0x5B4A8A),
     ]
 
+    private static let hotkeyDefaultsKey = "stasi.hotkey.combo"
+
     private let d: UserDefaults
     private let autostartHandler: (Bool) throws -> Void
     private var isRevertingAutostart = false
@@ -70,6 +72,10 @@ final class SettingsStore {
         avatarPath = defaults.string(forKey: "stasi.avatarPath")
         if let raw = defaults.string(forKey: "stasi.hotkeyMode"),
            let m = HotkeyMode(rawValue: raw) { hotkeyMode = m }
+        if let data = defaults.data(forKey: Self.hotkeyDefaultsKey),
+           let combo = try? JSONDecoder().decode(HotkeyEngine.Combo.self, from: data) {
+            hotkeyCombo = combo
+        }
         handsFreeOn = defaults.object(forKey: "stasi.handsFreeOn") as? Bool ?? true
         if let number = defaults.object(forKey: "stasi.handsFree.keyCode") as? NSNumber,
            VirtualKey.isHandsFreeModifier(number.uint64Value) {
@@ -117,6 +123,14 @@ final class SettingsStore {
 
     var hotkeyMode: HotkeyMode = .pushToTalk {
         didSet { d.set(hotkeyMode.rawValue, forKey: "stasi.hotkeyMode") }
+    }
+
+    var hotkeyCombo: HotkeyEngine.Combo = .defaultPTT {
+        didSet {
+            if let data = try? JSONEncoder().encode(hotkeyCombo) {
+                d.set(data, forKey: Self.hotkeyDefaultsKey)
+            }
+        }
     }
 
     var handsFreeOn: Bool = true {
