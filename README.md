@@ -112,3 +112,9 @@ Debug-Log: `~/Library/Application Support/Stasi/debug.log`
 ## Roadmap-Ideen
 
 - Sprach-Auto-Umschalter, Snippets, lokale LLM-Politur, whisper.cpp-Fallback
+
+## Lizenz
+
+Der Quellcode steht unter der MIT-Lizenz. Siehe `LICENSE`.
+Die mitgelieferten Geist-Schriften stehen unter der SIL Open Font License 1.1.
+Der vollständige Text liegt unter `Sources/Stasi/Resources/Licenses/Geist-OFL-1.1.txt`.

@@ -10,6 +10,8 @@ fi
 
 APP="$APP_OUTPUT_DIR/Stasi.app"
 RESOURCE_BUNDLE="$APP/Contents/Resources/Stasi_Stasi.bundle"
+MIT_FILE="$RESOURCE_BUNDLE/MIT.txt"
+OFL_FILE="$RESOURCE_BUNDLE/Geist-OFL-1.1.txt"
 ARTIFACT_ROOT="$ROOT/.build/test-artifacts"
 CLEAN_ROOM=""
 CLEAN_APP=""
@@ -64,6 +66,10 @@ test -f "$RESOURCE_BUNDLE/Geist.ttf"
 test -f "$RESOURCE_BUNDLE/GeistMono.ttf"
 test -f "$RESOURCE_BUNDLE/menubar.png"
 test -f "$RESOURCE_BUNDLE/menubar-recording.png"
+test -f "$MIT_FILE"
+test -f "$OFL_FILE"
+grep -q 'MIT License' "$MIT_FILE"
+grep -q 'SIL OPEN FONT LICENSE Version 1.1' "$OFL_FILE"
 
 codesign --verify --deep --strict --verbose=2 "$APP"
 
@@ -100,7 +106,9 @@ printf '%s\n' \
     > "$SANDBOX_PROFILE"
 
 "$SANDBOX_EXEC" -f "$SANDBOX_PROFILE" /usr/bin/cksum \
-    "$CLEAN_APP/Contents/Resources/Stasi_Stasi.bundle/Geist.ttf" >/dev/null
+    "$CLEAN_APP/Contents/Resources/Stasi_Stasi.bundle/Geist.ttf" \
+    "$CLEAN_APP/Contents/Resources/Stasi_Stasi.bundle/MIT.txt" \
+    "$CLEAN_APP/Contents/Resources/Stasi_Stasi.bundle/Geist-OFL-1.1.txt" >/dev/null
 "$SANDBOX_EXEC" -f "$SANDBOX_PROFILE" /usr/bin/touch \
     "$TEST_HOME/.sandbox-write-probe"
 if "$SANDBOX_EXEC" -f "$SANDBOX_PROFILE" /usr/bin/cksum \
