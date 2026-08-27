@@ -70,7 +70,7 @@ final class DictationSessionTests: XCTestCase {
             onRuntimeError?(error)
         }
 
-        func stop() -> URL? {
+        func stop() async -> URL? {
             stopCount += 1
             onStop?()
             isRunning = false

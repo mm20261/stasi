@@ -582,7 +582,7 @@ final class AppState {
                 return
             }
 
-            let recordedURL = session.audio.stop()
+            let recordedURL = await session.audio.stop()
             // Erst alle gepufferten Chunks in die Engine drainen, DANN
             // finalisieren – sonst fehlt das Satzende.
             session.audioContinuation?.finish()

@@ -86,7 +86,7 @@ final class DictationSession {
         let task = Task { @MainActor in
             var stoppedURL: URL?
             if !resourcesAlreadyFinished {
-                stoppedURL = audio.stop()
+                stoppedURL = await audio.stop()
                 continuation?.finish()
                 await feedTask?.value
                 await speech.finish()

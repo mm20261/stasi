@@ -129,7 +129,7 @@ final class AudioCaptureFileTests: XCTestCase {
         )
     }
 
-    func testWAVExistsBeforeInputConfiguration() throws {
+    func testWAVExistsBeforeInputConfiguration() async throws {
         let url = makeDirectory().appendingPathComponent("before-input.wav")
         let existedBeforeInput = LockedFlag()
         let outputFormat = format()
@@ -140,10 +140,10 @@ final class AudioCaptureFileTests: XCTestCase {
         try capture.start(outputFormat: outputFormat, recordTo: url) { _ in }
 
         XCTAssertTrue(existedBeforeInput.get())
-        _ = capture.stop()
+        _ = await capture.stop()
     }
 
-    func testConfiguresInputOnlyIO() throws {
+    func testConfiguresInputOnlyIO() async throws {
         let outputFormat = format()
         let configurationBox = ConfigurationBox()
         let capture = AudioCapture(audioUnitHooks: hooks(
@@ -156,10 +156,10 @@ final class AudioCaptureFileTests: XCTestCase {
         XCTAssertEqual(configurationBox.load(), .inputOnly)
         XCTAssertTrue(configurationBox.load()?.inputEnabled == true)
         XCTAssertTrue(configurationBox.load()?.outputEnabled == false)
-        _ = capture.stop()
+        _ = await capture.stop()
     }
 
-    func testWAVIsOpenAfterStart() throws {
+    func testWAVIsOpenAfterStart() async throws {
         let url = makeDirectory().appendingPathComponent("open.wav")
         let outputFormat = format()
         let capture = AudioCapture(audioUnitHooks: hooks(format: outputFormat))
@@ -169,10 +169,10 @@ final class AudioCaptureFileTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: url.path))
         XCTAssertTrue(capture.hasOpenOutputFile)
         XCTAssertTrue(capture.isRunning)
-        _ = capture.stop()
+        _ = await capture.stop()
     }
 
-    func testStopClosesFileAndDisposesAudioUnit() throws {
+    func testStopClosesFileAndDisposesAudioUnit() async throws {
         let url = makeDirectory().appendingPathComponent("closed.wav")
         let outputFormat = format()
         var teardownOrder: [String] = []
@@ -184,7 +184,7 @@ final class AudioCaptureFileTests: XCTestCase {
         ))
         try capture.start(outputFormat: outputFormat, recordTo: url) { _ in }
 
-        let returnedURL = capture.stop()
+        let returnedURL = await capture.stop()
 
         XCTAssertEqual(returnedURL, url)
         XCTAssertFalse(capture.hasOpenOutputFile)
@@ -212,7 +212,7 @@ final class AudioCaptureFileTests: XCTestCase {
         XCTAssertEqual(teardownOrder, ["uninitialize", "dispose"])
     }
 
-    func testSecondStartWhileRunningThrowsAlreadyRunning() throws {
+    func testSecondStartWhileRunningThrowsAlreadyRunning() async throws {
         let outputFormat = format()
         let capture = AudioCapture(audioUnitHooks: hooks(format: outputFormat))
         try capture.start(outputFormat: outputFormat, recordTo: nil) { _ in }
@@ -224,10 +224,10 @@ final class AudioCaptureFileTests: XCTestCase {
                 return XCTFail("Erwartet alreadyRunning, erhalten: \(error)")
             }
         }
-        _ = capture.stop()
+        _ = await capture.stop()
     }
 
-    func testSecondStartAfterStopCreatesFreshAudioUnitLifecycle() throws {
+    func testSecondStartAfterStopCreatesFreshAudioUnitLifecycle() async throws {
         let outputFormat = format()
         var startCount = 0
         var disposeCount = 0
@@ -238,16 +238,16 @@ final class AudioCaptureFileTests: XCTestCase {
         ))
 
         try capture.start(outputFormat: outputFormat, recordTo: nil) { _ in }
-        _ = capture.stop()
+        _ = await capture.stop()
         try capture.start(outputFormat: outputFormat, recordTo: nil) { _ in }
-        _ = capture.stop()
+        _ = await capture.stop()
 
         XCTAssertEqual(startCount, 2)
         XCTAssertEqual(disposeCount, 2)
         XCTAssertFalse(capture.isRunning)
     }
 
-    func testNativeFormatDifferentFromTargetCreatesConverter() throws {
+    func testNativeFormatDifferentFromTargetCreatesConverter() async throws {
         let targetFormat = format()
         let nativeFormat = try XCTUnwrap(AVAudioFormat(
             commonFormat: .pcmFormatFloat32,
@@ -260,7 +260,7 @@ final class AudioCaptureFileTests: XCTestCase {
         try capture.start(outputFormat: targetFormat, recordTo: nil) { _ in }
 
         XCTAssertTrue(capture.hasConverter)
-        _ = capture.stop()
+        _ = await capture.stop()
     }
 
     func testDifferentFormatsWithUnavailableConverterTearDownAudioUnitAndCloseFile() throws {
@@ -549,10 +549,10 @@ final class AudioCaptureFileTests: XCTestCase {
         }
 
         await fulfillment(of: [received], timeout: 1)
-        _ = capture.stop()
+        _ = await capture.stop()
     }
 
-    func testProcessingOwnsRenderBufferBeforeAsynchronousWorkBegins() throws {
+    func testProcessingOwnsRenderBufferBeforeAsynchronousWorkBegins() async throws {
         let outputFormat = try XCTUnwrap(AVAudioFormat(
             commonFormat: .pcmFormatFloat32,
             sampleRate: 48_000,
@@ -597,16 +597,118 @@ final class AudioCaptureFileTests: XCTestCase {
         renderBuffer.floatChannelData?[0][0] = 0.75
         allowProcessing.signal()
 
-        wait(for: [received], timeout: 1)
+        await fulfillment(of: [received], timeout: 1)
         XCTAssertEqual(samples.values, [0.25])
-        _ = capture.stop()
+        _ = await capture.stop()
+    }
+
+    func testProducerConsumerConcurrencyDoesNotReportBacklogWhileCapacityRemains() async throws {
+        let outputFormat = try XCTUnwrap(AVAudioFormat(
+            commonFormat: .pcmFormatFloat32,
+            sampleRate: 48_000,
+            channels: 1,
+            interleaved: false
+        ))
+        let sinkBox = SinkBox()
+        let consumerEntered = DispatchSemaphore(value: 0)
+        let allowConsumer = DispatchSemaphore(value: 0)
+        let didBlockConsumer = LockedFlag()
+        let delivered = expectation(description: "Beide Puffer verarbeitet")
+        delivered.expectedFulfillmentCount = 2
+        let errorSpy = ErrorSpy()
+        let capture = AudioCapture(
+            audioUnitHooks: AudioCapture.AudioUnitHooks(
+                configureInput: { _, _, sink in
+                    sinkBox.store(sink)
+                    return outputFormat
+                },
+                initialize: {}, start: {}, stop: {}, uninitialize: {}, dispose: {}
+            ),
+            backlogCapacity: 2,
+            beforeBacklogDequeue: {
+                guard !didBlockConsumer.get() else { return }
+                didBlockConsumer.set(true)
+                consumerEntered.signal()
+                allowConsumer.wait()
+            }
+        )
+        try capture.start(
+            outputFormat: outputFormat,
+            recordTo: nil,
+            onRuntimeError: { error in errorSpy.record(error) }
+        ) { _ in delivered.fulfill() }
+        let renderBuffer = try XCTUnwrap(AVAudioPCMBuffer(
+            pcmFormat: outputFormat,
+            frameCapacity: 16
+        ))
+        renderBuffer.frameLength = 16
+        let sink = try XCTUnwrap(sinkBox.load())
+
+        sink(renderBuffer)
+        XCTAssertEqual(consumerEntered.wait(timeout: .now() + 1), .success)
+        sink(renderBuffer)
+        allowConsumer.signal()
+
+        await fulfillment(of: [delivered], timeout: 1)
+        XCTAssertTrue(errorSpy.values.isEmpty)
+        _ = await capture.stop()
+    }
+
+    func testStopSuspendsMainActorWhileWorkerDrains() async throws {
+        let outputFormat = format()
+        let sinkBox = SinkBox()
+        let processingEntered = DispatchSemaphore(value: 0)
+        let allowProcessing = DispatchSemaphore(value: 0)
+        let audioUnitStopped = expectation(description: "AudioUnit synchron gestoppt")
+        let markerRan = expectation(description: "MainActor bleibt frei")
+        let fallbackReleasedWorker = LockedFlag()
+        let markerSawFallback = LockedFlag()
+        let capture = AudioCapture(
+            audioUnitHooks: AudioCapture.AudioUnitHooks(
+                configureInput: { _, _, sink in
+                    sinkBox.store(sink)
+                    return outputFormat
+                },
+                initialize: {}, start: {},
+                stop: { audioUnitStopped.fulfill() },
+                uninitialize: {}, dispose: {}
+            ),
+            beforeProcessing: {
+                processingEntered.signal()
+                allowProcessing.wait()
+            }
+        )
+        try capture.start(outputFormat: outputFormat, recordTo: nil) { _ in }
+        let renderBuffer = try XCTUnwrap(AVAudioPCMBuffer(
+            pcmFormat: outputFormat,
+            frameCapacity: 16
+        ))
+        renderBuffer.frameLength = 16
+        try XCTUnwrap(sinkBox.load())(renderBuffer)
+        XCTAssertEqual(processingEntered.wait(timeout: .now() + 1), .success)
+
+        DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + 0.5) {
+            fallbackReleasedWorker.set(true)
+            allowProcessing.signal()
+        }
+        let stopTask = Task { @MainActor in await capture.stop() }
+        await fulfillment(of: [audioUnitStopped], timeout: 1)
+        Task { @MainActor in
+            markerSawFallback.set(fallbackReleasedWorker.get())
+            markerRan.fulfill()
+            allowProcessing.signal()
+        }
+
+        await fulfillment(of: [markerRan], timeout: 1)
+        XCTAssertFalse(markerSawFallback.get())
+        _ = await stopTask.value
     }
 
     func testDefaultProcessingBacklogCapacityIsExactly64Chunks() {
         XCTAssertEqual(AudioCapture.defaultBacklogCapacity, 64)
     }
 
-    func testFullProcessingBacklogReportsExactlyOnce() throws {
+    func testFullProcessingBacklogReportsExactlyOnce() async throws {
         let outputFormat = try XCTUnwrap(AVAudioFormat(
             commonFormat: .pcmFormatFloat32,
             sampleRate: 48_000,
@@ -656,13 +758,13 @@ final class AudioCaptureFileTests: XCTestCase {
         sink(renderBuffer)
         sink(renderBuffer)
 
-        wait(for: [errorReported], timeout: 1)
+        await fulfillment(of: [errorReported], timeout: 1)
         XCTAssertEqual(errorSpy.values, [.processingBacklog])
         allowProcessing.signal()
-        _ = capture.stop()
+        _ = await capture.stop()
     }
 
-    func testProcessingFailureReportsExactlyOnce() throws {
+    func testProcessingFailureReportsExactlyOnce() async throws {
         let outputFormat = format()
         let sinkBox = SinkBox()
         let errorReported = expectation(description: "Verarbeitungsfehler gemeldet")
@@ -695,9 +797,9 @@ final class AudioCaptureFileTests: XCTestCase {
         sink(renderBuffer)
         sink(renderBuffer)
 
-        wait(for: [errorReported], timeout: 1)
+        await fulfillment(of: [errorReported], timeout: 1)
         XCTAssertEqual(errorSpy.values, [.conversionFailed("test")])
-        _ = capture.stop()
+        _ = await capture.stop()
     }
 
     func testComputeLevelAndCopyFromBackgroundThread() throws {
