@@ -70,6 +70,23 @@ cat > "$CONTENTS/Info.plist" <<PLIST
 </plist>
 PLIST
 
+if [[ -n "${STASI_RELEASE_API_URL:-}" ]]; then
+    if [[ "$STASI_RELEASE_API_URL" == *$'\n'* || "$STASI_RELEASE_API_URL" == *$'\r'* ]]; then
+        echo "STASI_RELEASE_API_URL darf keine Zeilenumbrüche enthalten." >&2
+        exit 1
+    fi
+
+    # PlistBuddy erhält den Wert als ein zitiertes Argument. Backslashes und
+    # Anführungszeichen werden für dessen Kommando-Parser separat maskiert.
+    PLIST_VALUE=${STASI_RELEASE_API_URL//\\/\\\\}
+    PLIST_VALUE=${PLIST_VALUE//\"/\\\"}
+    if /usr/libexec/PlistBuddy -c "Print :STASI_RELEASE_API_URL" "$CONTENTS/Info.plist" >/dev/null 2>&1; then
+        /usr/libexec/PlistBuddy -c "Set :STASI_RELEASE_API_URL \"$PLIST_VALUE\"" "$CONTENTS/Info.plist"
+    else
+        /usr/libexec/PlistBuddy -c "Add :STASI_RELEASE_API_URL string \"$PLIST_VALUE\"" "$CONTENTS/Info.plist"
+    fi
+fi
+
 echo "▸ Icon…"
 ICON_PNG_DIR="$ROOT/import/design_handoff_stasi/icons/anthrazit"
 if [ -d "$ICON_PNG_DIR" ]; then

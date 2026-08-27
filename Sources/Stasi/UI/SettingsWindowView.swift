@@ -756,7 +756,9 @@ struct SettingsWindowView: View {
     // MARK: ÜBER (inkl. Update-Prüfung)
 
     private var ueberSection: some View {
-        section("ÜBER") {
+        let presentation = UpdateStatusPresentation(status: updater.status)
+
+        return section("ÜBER") {
             HStack(spacing: 10) {
                 Text("V \(AppVersion.display) · AKTE \(AppVersion.akte)")
                     .font(Theme.Typo.counter(12).weight(.bold))
@@ -778,12 +780,11 @@ struct SettingsWindowView: View {
                             .strokeBorder(Theme.Palette.linieSidebar, lineWidth: Theme.Metrics.hairline))
                 }
                 .buttonStyle(.plain)
+                .disabled(updater.isChecking)
 
-                if let available = updater.state.availableVersion {
-                    Button("UPDATE AUF V \(available)") {
-                        if let url = updater.state.releaseURL {
-                            NSWorkspace.shared.open(url)
-                        }
+                if case let .updateAvailable(version, url, _) = updater.status {
+                    Button("UPDATE AUF V \(version)") {
+                        NSWorkspace.shared.open(url)
                     }
                         .font(Theme.Typo.kicker(size: 10.5))
                         .tracking(0.8)
@@ -794,7 +795,6 @@ struct SettingsWindowView: View {
                         .background(RoundedRectangle(cornerRadius: 5)
                             .fill(Theme.Palette.stempelrot))
                         .buttonStyle(.plain)
-                        .disabled(updater.state.releaseURL == nil)
                 }
             }
             .padding(.horizontal, 16)
@@ -802,15 +802,20 @@ struct SettingsWindowView: View {
 
             // Statuszeile
             HStack(spacing: 7) {
-                Circle()
-                    .fill(Theme.Palette.archivgruen)
-                    .frame(width: 6, height: 6)
-                Text(UpdateChecker.statusText(lastChecked: updater.state.lastChecked,
-                                              available: updater.state.availableVersion))
+                if presentation.showsProgress {
+                    ProgressView()
+                        .controlSize(.small)
+                        .frame(width: 10, height: 10)
+                } else {
+                    Circle()
+                        .fill(updateStatusColor(for: presentation.colorRole))
+                        .frame(width: 6, height: 6)
+                }
+                Text(presentation.text)
                     .font(Theme.Typo.counter(10))
                     .monospacedDigit()
                     .textCase(.uppercase)
-                    .foregroundColor(Theme.Palette.text3)
+                    .foregroundColor(updateStatusColor(for: presentation.colorRole))
                 Spacer()
             }
             .padding(.horizontal, 16)
@@ -824,6 +829,19 @@ struct SettingsWindowView: View {
                 .lineHeight()
                 .padding(.horizontal, 16)
                 .padding(.vertical, 13)
+        }
+    }
+
+    private func updateStatusColor(for role: UpdateStatusPresentation.ColorRole) -> Color {
+        switch role {
+        case .neutral:
+            Theme.Palette.text3
+        case .success:
+            Theme.Palette.archivgruen
+        case .updateAvailable:
+            Theme.Palette.stempelrot
+        case .warning:
+            Theme.Palette.warning
         }
     }
 }

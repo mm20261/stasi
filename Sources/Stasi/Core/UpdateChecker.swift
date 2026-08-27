@@ -10,12 +10,30 @@ enum AppVersion {
     static let akte = "001"
 }
 
-// MARK: - UpdateChecker (v4)
-// Ersetzt den GitHub-Link in „Über": „Aktuelle Version prüfen" fragt die
-// Release-Quelle ab, schreibt Zeitstempel und Ergebnis in die Statuszeile.
-// Persistiert über UserDefaults (injizierbar für Tests).
+// MARK: - Release-Quelle
 
-// MARK: Release-Quelle
+enum ReleaseConfiguration {
+    private static let repositoryAPIURLKey = "STASI_RELEASE_API_URL"
+
+    static var repositoryAPIURL: URL? {
+        repositoryAPIURL(infoDictionary: Bundle.main.infoDictionary)
+    }
+
+    static func repositoryAPIURL(infoDictionary: [String: Any]?) -> URL? {
+        guard let rawValue = infoDictionary?[repositoryAPIURLKey] as? String else {
+            return nil
+        }
+        let value = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !value.isEmpty,
+              let url = URL(string: value),
+              let scheme = url.scheme?.lowercased(),
+              ["http", "https"].contains(scheme),
+              url.host != nil else {
+            return nil
+        }
+        return url
+    }
+}
 
 struct ReleaseInfo: Equatable, Sendable {
     /// Roher Versions-Tag der Veröffentlichung („v0.10").
@@ -24,16 +42,10 @@ struct ReleaseInfo: Equatable, Sendable {
 }
 
 protocol ReleaseFetching: Sendable {
-    func fetchLatestRelease() async throws -> ReleaseInfo
+    func fetchLatestRelease(from repositoryURL: URL) async throws -> ReleaseInfo
 }
 
 struct GitHubReleaseFetcher: ReleaseFetching {
-    let url: URL
-
-    init(repoAPIURL: URL = URL(string: "https://api.github.com/repos/leomcguire/stasi/releases/latest")!) {
-        self.url = repoAPIURL
-    }
-
     struct Payload: Decodable {
         let tagName: String
         let htmlURL: URL
@@ -43,10 +55,11 @@ struct GitHubReleaseFetcher: ReleaseFetching {
             case htmlURL = "html_url"
         }
     }
+
     enum FetchError: Error { case badStatus }
 
-    func fetchLatestRelease() async throws -> ReleaseInfo {
-        var request = URLRequest(url: url)
+    func fetchLatestRelease(from repositoryURL: URL) async throws -> ReleaseInfo {
+        var request = URLRequest(url: repositoryURL)
         request.timeoutInterval = 10
         request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
         let (data, response) = try await URLSession.shared.data(for: request)
@@ -58,7 +71,7 @@ struct GitHubReleaseFetcher: ReleaseFetching {
     }
 }
 
-// MARK: Versionsvergleich (numerisch, nicht lexikografisch!)
+// MARK: - Versionsvergleich (numerisch, nicht lexikografisch!)
 
 enum VersionComparator {
     /// „v0.10" → [0, 10]; „V1.2.3" → [1, 2, 3]
@@ -89,75 +102,216 @@ enum VersionComparator {
     }
 }
 
-// MARK: Checker
+// MARK: - Expliziter Checkstatus und pure UI-Ableitung
+
+enum UpdateCheckStatus: Equatable {
+    case neverChecked
+    case checking
+    case upToDate(Date)
+    case updateAvailable(version: String, url: URL, checkedAt: Date)
+    case failed(message: String)
+}
+
+struct UpdateStatusPresentation: Equatable {
+    enum ColorRole: Equatable {
+        case neutral
+        case success
+        case updateAvailable
+        case warning
+    }
+
+    let text: String
+    let colorRole: ColorRole
+    let showsProgress: Bool
+
+    init(text: String, colorRole: ColorRole, showsProgress: Bool) {
+        self.text = text
+        self.colorRole = colorRole
+        self.showsProgress = showsProgress
+    }
+
+    init(status: UpdateCheckStatus, now: Date = Date(), calendar: Calendar = .current) {
+        switch status {
+        case .neverChecked:
+            self.init(text: "NOCH NIE GEPRÜFT", colorRole: .neutral, showsProgress: false)
+        case .checking:
+            self.init(text: "PRÜFUNG LÄUFT …", colorRole: .neutral, showsProgress: true)
+        case let .upToDate(checkedAt):
+            self.init(
+                text: UpdateStatusFormatter.statusText(
+                    lastChecked: checkedAt,
+                    available: nil,
+                    now: now,
+                    calendar: calendar
+                ),
+                colorRole: .success,
+                showsProgress: false
+            )
+        case let .updateAvailable(version, _, checkedAt):
+            self.init(
+                text: UpdateStatusFormatter.statusText(
+                    lastChecked: checkedAt,
+                    available: version,
+                    now: now,
+                    calendar: calendar
+                ),
+                colorRole: .updateAvailable,
+                showsProgress: false
+            )
+        case let .failed(message):
+            self.init(text: message, colorRole: .warning, showsProgress: false)
+        }
+    }
+}
+
+private enum UpdateStatusFormatter {
+    static func statusText(
+        lastChecked: Date?,
+        available: String?,
+        now: Date,
+        calendar: Calendar
+    ) -> String {
+        guard let lastChecked else { return "NOCH NIE GEPRÜFT" }
+
+        var text: String
+        if calendar.isDate(lastChecked, inSameDayAs: now) {
+            text = "ZULETZT GEPRÜFT: HEUTE, \(timeText(lastChecked, timeZone: calendar.timeZone))"
+        } else if let yesterday = calendar.date(byAdding: .day, value: -1, to: now),
+                  calendar.isDate(lastChecked, inSameDayAs: yesterday) {
+            text = "ZULETZT GEPRÜFT: GESTERN"
+        } else {
+            let formatter = DateFormatter()
+            formatter.locale = Locale(identifier: "de_DE")
+            formatter.timeZone = calendar.timeZone
+            formatter.setLocalizedDateFormatFromTemplate("dd. MMMM")
+            text = "ZULETZT GEPRÜFT: \(formatter.string(from: lastChecked).uppercased())"
+        }
+        if let available {
+            text += " · V \(available) LIEGT BEREIT"
+        }
+        return text
+    }
+
+    private static func timeText(_ date: Date, timeZone: TimeZone) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "de_DE")
+        formatter.timeZone = timeZone
+        formatter.dateFormat = "HH:mm"
+        return formatter.string(from: date)
+    }
+}
+
+// MARK: - Checker
 
 @MainActor
 @Observable
 final class UpdateChecker {
     struct State: Equatable {
+        /// Zeitpunkt des letzten erfolgreichen Checks.
         var lastChecked: Date?
         /// Normalisierte Version (ohne „v"), nil = keine neue verfügbar.
         var availableVersion: String?
-        /// Zielseite der verfügbaren GitHub-Veröffentlichung.
+        /// Zielseite der verfügbaren Veröffentlichung.
         var releaseURL: URL?
-
-        static func == (lhs: State, rhs: State) -> Bool {
-            lhs.availableVersion == rhs.availableVersion
-                && lhs.releaseURL == rhs.releaseURL
-                && (lhs.lastChecked.map { $0.timeIntervalSince1970 } ?? -1
-                    == rhs.lastChecked.map { $0.timeIntervalSince1970 } ?? -1)
-        }
     }
 
     private(set) var state: State
-    private(set) var isChecking = false
+    private(set) var status: UpdateCheckStatus
     let currentVersion: String
-    private var fetcher: ReleaseFetching
+
+    var isChecking: Bool {
+        if case .checking = status { return true }
+        return false
+    }
+
+    private var fetcher: any ReleaseFetching
+    private let repositoryURL: URL?
     private let defaults: UserDefaults
+    private let now: () -> Date
 
     private static let lastCheckedKey = "stasi.update.lastChecked"
     private static let availableKey = "stasi.update.available"
     private static let releaseURLKey = "stasi.update.releaseURL"
 
-    init(fetcher: ReleaseFetching = GitHubReleaseFetcher(),
-         defaults: UserDefaults = .standard,
-         currentVersion: String? = nil) {
+    init(
+        fetcher: any ReleaseFetching = GitHubReleaseFetcher(),
+        repositoryURL: URL? = ReleaseConfiguration.repositoryAPIURL,
+        defaults: UserDefaults = .standard,
+        currentVersion: String? = nil,
+        now: @escaping () -> Date = Date.init
+    ) {
         self.fetcher = fetcher
+        self.repositoryURL = repositoryURL
         self.defaults = defaults
         self.currentVersion = currentVersion ?? AppVersion.display
+        self.now = now
+
         let lastChecked = defaults.object(forKey: Self.lastCheckedKey) as? Date
         let available = defaults.string(forKey: Self.availableKey)
         let releaseURL = defaults.string(forKey: Self.releaseURLKey).flatMap(URL.init(string:))
-        state = State(lastChecked: lastChecked,
-                      availableVersion: available,
-                      releaseURL: releaseURL)
+        let initialState = State(
+            lastChecked: lastChecked,
+            availableVersion: available,
+            releaseURL: releaseURL
+        )
+        state = initialState
+        if let lastChecked, let available, let releaseURL {
+            status = .updateAvailable(
+                version: available,
+                url: releaseURL,
+                checkedAt: lastChecked
+            )
+        } else if let lastChecked {
+            status = .upToDate(lastChecked)
+        } else {
+            status = .neverChecked
+        }
     }
 
-    func replaceFetcher(_ newFetcher: ReleaseFetching) {
+    func replaceFetcher(_ newFetcher: any ReleaseFetching) {
         fetcher = newFetcher
     }
 
     func check() async {
         guard !isChecking else { return }
-        isChecking = true
-        defer { isChecking = false }
-        do {
-            let release = try await fetcher.fetchLatestRelease()
-            let newer = VersionComparator.isNewer(release.version, than: currentVersion)
-            state.availableVersion = newer ? VersionComparator.display(release.version) : nil
-            state.releaseURL = newer ? release.url : nil
-        } catch {
-            // Netz-/API-Fehler: Zeitstempel setzen, letztes Ergebnis behalten.
-            DebugLog.log("STASI-APP: Update-Check fehlgeschlagen: \(error.localizedDescription)")
+        status = .checking
+
+        guard let repositoryURL else {
+            status = .failed(message: "Update-Prüfung nicht konfiguriert.")
+            return
         }
-        state.lastChecked = Date()
-        persist()
+
+        do {
+            let release = try await fetcher.fetchLatestRelease(from: repositoryURL)
+            let checkedAt = now()
+            let newer = VersionComparator.isNewer(release.version, than: currentVersion)
+
+            state.lastChecked = checkedAt
+            if newer {
+                let version = VersionComparator.display(release.version)
+                state.availableVersion = version
+                state.releaseURL = release.url
+                status = .updateAvailable(
+                    version: version,
+                    url: release.url,
+                    checkedAt: checkedAt
+                )
+            } else {
+                state.availableVersion = nil
+                state.releaseURL = nil
+                status = .upToDate(checkedAt)
+            }
+            persistSuccessfulCheck()
+        } catch {
+            DebugLog.log("STASI-APP: Update-Check fehlgeschlagen: \(error.localizedDescription)")
+            status = .failed(message: "Update-Prüfung fehlgeschlagen.")
+        }
     }
 
-    private func persist() {
-        if let lastChecked = state.lastChecked {
-            defaults.set(lastChecked, forKey: Self.lastCheckedKey)
-        }
+    private func persistSuccessfulCheck() {
+        guard let lastChecked = state.lastChecked else { return }
+        defaults.set(lastChecked, forKey: Self.lastCheckedKey)
+
         if let available = state.availableVersion {
             defaults.set(available, forKey: Self.availableKey)
         } else {
@@ -170,34 +324,17 @@ final class UpdateChecker {
         }
     }
 
-    // MARK: Statuszeile
-
-    /// „ZULETZT GEPRÜFT: HEUTE, 09:12 · V 0.10 LIEGT BEREIT"
-    static func statusText(lastChecked: Date?, available: String?,
-                           now: Date = Date(), calendar: Calendar = .current) -> String {
-        guard let lastChecked else { return "NOCH NIE GEPRÜFT" }
-        var text: String
-        if calendar.isDateInToday(lastChecked) {
-            text = "ZULETZT GEPRÜFT: HEUTE, \(timeText(lastChecked))"
-        } else if calendar.isDateInYesterday(lastChecked) {
-            text = "ZULETZT GEPRÜFT: GESTERN"
-        } else {
-            formatter.locale = Locale(identifier: "de_DE")
-            formatter.setLocalizedDateFormatFromTemplate("dd. MMMM")
-            text = "ZULETZT GEPRÜFT: \(formatter.string(from: lastChecked).uppercased())"
-        }
-        if let available {
-            text += " · V \(available) LIEGT BEREIT"
-        }
-        return text
-    }
-
-    private static var formatter = DateFormatter()
-
-    private static func timeText(_ date: Date) -> String {
-        let f = DateFormatter()
-        f.locale = Locale(identifier: "de_DE")
-        f.setLocalizedDateFormatFromTemplate("HH:mm")
-        return f.string(from: date)
+    static func statusText(
+        lastChecked: Date?,
+        available: String?,
+        now: Date = Date(),
+        calendar: Calendar = .current
+    ) -> String {
+        UpdateStatusFormatter.statusText(
+            lastChecked: lastChecked,
+            available: available,
+            now: now,
+            calendar: calendar
+        )
     }
 }
