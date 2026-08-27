@@ -39,6 +39,7 @@ final class DictationSessionTests: XCTestCase {
         private(set) var stopCount = 0
         var startError: Error?
         var stoppedURL: URL?
+        var onStop: (() -> Void)?
 
         func ingestNativeBuffer(_ buffer: AVAudioPCMBuffer) {
             latestLevel = AudioCapture.computeLevel(of: buffer)
@@ -55,8 +56,22 @@ final class DictationSessionTests: XCTestCase {
 
         func stop() -> URL? {
             stopCount += 1
+            onStop?()
             isRunning = false
             return stoppedURL
+        }
+    }
+
+    @MainActor
+    private final class AudioFactorySpy {
+        private(set) var captures: [FakeAudioCapture] = []
+        var configureCapture: ((FakeAudioCapture, Int) -> Void)?
+
+        func make() -> any AudioCapturing {
+            let capture = FakeAudioCapture()
+            configureCapture?(capture, captures.count)
+            captures.append(capture)
+            return capture
         }
     }
 
@@ -225,7 +240,8 @@ final class DictationSessionTests: XCTestCase {
         return settings
     }
 
-    private func makeApp(audio: FakeAudioCapture,
+    private func makeApp(audio: FakeAudioCapture = FakeAudioCapture(),
+                         audioFactory: AudioCaptureFactory? = nil,
                          engines: [FakeSpeechEngine],
                          permission: @escaping @MainActor () async -> Bool = { true },
                          modelInstaller: @escaping @Sendable (Locale) async throws -> Void = { _ in },
@@ -244,7 +260,7 @@ final class DictationSessionTests: XCTestCase {
             settings: makeSettings(),
             dictionary: dictionary,
             history: history,
-            audio: audio,
+            audioFactory: audioFactory ?? { audio },
             speechFactory: { _, _ in remaining.removeFirst() },
             requestMicrophone: permission,
             modelInstaller: modelInstaller,
@@ -501,9 +517,9 @@ final class DictationSessionTests: XCTestCase {
     }
 
     func testCompletionAndDiscardStaySilentWhileErrorsStillToast() async {
-        let audio = FakeAudioCapture()
+        let factory = AudioFactorySpy()
         let app = makeApp(
-            audio: audio,
+            audioFactory: { factory.make() },
             engines: [
                 FakeSpeechEngine(text: "Erfolgreiches Diktat"),
                 FakeSpeechEngine(text: "Wird verworfen"),
@@ -514,17 +530,17 @@ final class DictationSessionTests: XCTestCase {
         app.onToast = { toasts.append(($0, $1)) }
 
         app.startDictation()
-        await waitUntil { audio.isRunning }
+        await waitUntil { factory.captures.first?.isRunning == true }
         app.stopDictation(commit: true)
         await waitUntil { app.phase == .idle }
 
         app.startDictation()
-        await waitUntil { audio.isRunning }
+        await waitUntil { factory.captures.count == 2 && factory.captures[1].isRunning }
         app.requestDiscard()
         await waitUntil { app.phase == .idle }
 
         app.startDictation()
-        await waitUntil { audio.isRunning }
+        await waitUntil { factory.captures.count == 3 && factory.captures[2].isRunning }
         app.stopDictation(commit: true)
         await waitUntil { app.phase == .idle }
 
@@ -640,24 +656,91 @@ final class DictationSessionTests: XCTestCase {
         XCTAssertEqual(metrics.streamCancellationCount, 0)
     }
 
+    func testEachDictationUsesFreshAudioCapture() async {
+        let factory = AudioFactorySpy()
+        let app = makeApp(
+            audioFactory: { factory.make() },
+            engines: [FakeSpeechEngine(), FakeSpeechEngine()]
+        )
+
+        app.startDictation()
+        await waitUntil { factory.captures.first?.isRunning == true }
+        app.requestDiscard()
+        await waitUntil { app.phase == .idle }
+
+        app.startDictation()
+        await waitUntil { factory.captures.count == 2 && factory.captures[1].isRunning }
+
+        XCTAssertEqual(factory.captures.count, 2)
+        XCTAssertFalse(factory.captures[0] === factory.captures[1])
+        app.requestDiscard()
+        await waitUntil { app.phase == .idle }
+    }
+
+    func testShortTapBlocksNewSessionUntilTeardownCompletes() async {
+        let factory = AudioFactorySpy()
+        let stopEntered = DispatchSemaphore(value: 0)
+        let allowStopToFinish = DispatchSemaphore(value: 0)
+        factory.configureCapture = { capture, index in
+            guard index == 0 else { return }
+            capture.onStop = {
+                stopEntered.signal()
+                allowStopToFinish.wait()
+            }
+        }
+        let app = makeApp(
+            audioFactory: { factory.make() },
+            engines: [FakeSpeechEngine(), FakeSpeechEngine()],
+            minimumPushToTalkDuration: 60
+        )
+
+        app.startDictation()
+        await waitUntil { factory.captures.first?.isRunning == true }
+        DispatchQueue.global(qos: .userInitiated).async {
+            stopEntered.wait()
+            Thread.sleep(forTimeInterval: 0.1)
+            allowStopToFinish.signal()
+        }
+
+        app.stopDictation(commit: true)
+        XCTAssertEqual(app.phase, .idle)
+        app.startDictation()
+        XCTAssertEqual(factory.captures.count, 1)
+
+        await waitUntil {
+            app.startDictation()
+            return factory.captures.count == 2 && factory.captures[1].isRunning
+        }
+
+        app.requestDiscard()
+        await waitUntil { app.phase == .idle }
+    }
+
     func testTwoImmediateCommittedDictationsBothReturnIdle() async {
-        let audio = FakeAudioCapture()
+        let factory = AudioFactorySpy()
         let first = FakeSpeechEngine(text: "Erstes kurzes Diktat")
         await first.configureFinishEndsResultStream(false)
         let second = FakeSpeechEngine(text: "Zweites kurzes Diktat")
         let app = makeApp(
-            audio: audio,
+            audioFactory: { factory.make() },
             engines: [first, second],
             consumeTimeoutNanoseconds: 20_000_000
         )
 
         app.startDictation()
-        await waitUntil { audio.isRunning && app.partialText == "Erstes kurzes Diktat" }
+        await waitUntil {
+            factory.captures.first?.isRunning == true
+                && app.partialText == "Erstes kurzes Diktat"
+        }
         app.stopDictation(commit: true)
         await waitUntil { app.phase == .idle }
 
         app.startDictation()
-        await waitUntil { audio.isRunning && app.partialText == "Zweites kurzes Diktat" }
+        await waitUntil {
+            factory.captures.count == 2
+                && factory.captures[1].isRunning
+                && app.partialText == "Zweites kurzes Diktat"
+        }
         app.stopDictation(commit: true)
         await waitUntil { app.phase == .idle }
 
@@ -712,21 +795,28 @@ final class DictationSessionTests: XCTestCase {
     }
 
     func testSecondSessionStartsWhileFirstFinalizeRests() async {
-        let audio = FakeAudioCapture()
+        let factory = AudioFactorySpy()
         let first = FakeSpeechEngine(text: "Erstes Diktat")
         await first.configureFinish(delay: 1_000_000_000, timeout: 50_000_000)
         let second = FakeSpeechEngine(text: "Zweites Diktat")
-        let app = makeApp(audio: audio, engines: [first, second])
+        let app = makeApp(
+            audioFactory: { factory.make() },
+            engines: [first, second]
+        )
 
         app.startDictation()
-        await waitUntil { audio.isRunning }
+        await waitUntil { factory.captures.first?.isRunning == true }
         app.stopDictation(commit: true)
         await waitUntil { app.phase == .idle }
         let firstMetrics = await first.metrics()
         XCTAssertTrue(firstMetrics.finalizeStillRunning)
 
         app.startDictation()
-        await waitUntil { await second.metrics().startCount == 1 }
+        await waitUntil {
+            guard factory.captures.count == 2,
+                  factory.captures[1].isRunning else { return false }
+            return await second.metrics().startCount == 1
+        }
 
         XCTAssertEqual(app.phase, .recording)
         XCTAssertNotNil(app.currentSession)

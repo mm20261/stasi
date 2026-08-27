@@ -14,6 +14,34 @@ struct AudioChunk: @unchecked Sendable {
 
 /// Schmale Capture-Schnittstelle, damit der Session-Lebenszyklus ohne echte
 /// Mikrofon-Hardware getestet werden kann.
+typealias AudioCaptureFactory = @MainActor () -> any AudioCapturing
+
+enum AudioCaptureError: LocalizedError {
+    case alreadyRunning
+    case componentUnavailable
+    case noInputDevice
+    case invalidInputFormat
+    case invalidMaximumFrames
+    case audioUnit(operation: String, status: OSStatus)
+
+    var errorDescription: String? {
+        switch self {
+        case .alreadyRunning:
+            return "Die Audioaufnahme läuft bereits."
+        case .componentUnavailable:
+            return "Die input-only AUHAL ist nicht verfuegbar."
+        case .noInputDevice:
+            return "Kein Audio-Eingabegeraet verfuegbar."
+        case .invalidInputFormat:
+            return "Das Eingabeformat des Mikrofons ist ungueltig."
+        case .invalidMaximumFrames:
+            return "Die AUHAL meldet keine gueltige maximale Slice-Groesse."
+        case let .audioUnit(operation, status):
+            return "AudioUnit-Fehler bei \(operation) (OSStatus \(status))."
+        }
+    }
+}
+
 protocol AudioCapturing: AnyObject, Sendable {
     var isRunning: Bool { get }
     var latestLevel: Double { get }
@@ -67,29 +95,6 @@ final class AudioCapture: AudioCapturing, @unchecked Sendable {
         let dispose: () -> Void
     }
 
-    private enum CaptureError: LocalizedError {
-        case componentUnavailable
-        case noInputDevice
-        case invalidInputFormat
-        case invalidMaximumFrames
-        case audioUnit(operation: String, status: OSStatus)
-
-        var errorDescription: String? {
-            switch self {
-            case .componentUnavailable:
-                return "Die input-only AUHAL ist nicht verfuegbar."
-            case .noInputDevice:
-                return "Kein Audio-Eingabegeraet verfuegbar."
-            case .invalidInputFormat:
-                return "Das Eingabeformat des Mikrofons ist ungueltig."
-            case .invalidMaximumFrames:
-                return "Die AUHAL meldet keine gueltige maximale Slice-Groesse."
-            case let .audioUnit(operation, status):
-                return "AudioUnit-Fehler bei \(operation) (OSStatus \(status))."
-            }
-        }
-    }
-
     private static let inputElement: AudioUnitElement = 1
     private static let outputElement: AudioUnitElement = 0
     private static let requestedMaximumFrames: UInt32 = 4_096
@@ -106,7 +111,13 @@ final class AudioCapture: AudioCapturing, @unchecked Sendable {
     private nonisolated(unsafe) var outputFormat: AVAudioFormat?
     private nonisolated(unsafe) var onBuffer: (@Sendable (AudioChunk) -> Void)?
     private let renderDiagnostics = RenderDiagnostics()
-    private(set) var isRunning = false
+    private let stateLock = NSLock()
+    private var isRunningStorage = false
+    var isRunning: Bool {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        return isRunningStorage
+    }
 
     // WAV-Mitschrieb: ausschliesslich eigene Puffer, auf serialer Queue.
     private let writeQueue = DispatchQueue(label: "app.stasi.audio.write")
@@ -135,7 +146,9 @@ final class AudioCapture: AudioCapturing, @unchecked Sendable {
                recordTo url: URL?,
                preferredMicUID: String? = nil,
                onBuffer: @escaping @Sendable (AudioChunk) -> Void) throws {
-        guard !isRunning else { return }
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        guard !isRunningStorage else { throw AudioCaptureError.alreadyRunning }
         self.onBuffer = onBuffer
         self.outputFormat = outputFormat
         recordURL = url
@@ -183,7 +196,7 @@ final class AudioCapture: AudioCapturing, @unchecked Sendable {
                 try check(AudioOutputUnitStart(try requireAudioUnit()), operation: "Start")
             }
             audioUnitStarted = true
-            isRunning = true
+            isRunningStorage = true
             DebugLog.log("STASI-AUDIO: Input-only AUHAL laeuft – Client \(native.sampleRate) Hz -> Engine \(outputFormat.sampleRate) Hz")
         } catch {
             teardownAudioUnit()
@@ -192,7 +205,7 @@ final class AudioCapture: AudioCapturing, @unchecked Sendable {
             self.outputFormat = nil
             self.onBuffer = nil
             recordURL = nil
-            isRunning = false
+            isRunningStorage = false
             throw error
         }
     }
@@ -201,9 +214,11 @@ final class AudioCapture: AudioCapturing, @unchecked Sendable {
     /// ausschreiben und liefert die Datei-URL.
     @discardableResult
     func stop() -> URL? {
-        guard isRunning else { return nil }
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        guard isRunningStorage else { return nil }
         teardownAudioUnit()
-        isRunning = false
+        isRunningStorage = false
         converter = nil
         outputFormat = nil
         onBuffer = nil
@@ -229,12 +244,12 @@ final class AudioCapture: AudioCapturing, @unchecked Sendable {
             componentFlagsMask: 0
         )
         guard let component = AudioComponentFindNext(nil, &description) else {
-            throw CaptureError.componentUnavailable
+            throw AudioCaptureError.componentUnavailable
         }
 
         var instance: AudioUnit?
         try check(AudioComponentInstanceNew(component, &instance), operation: "Instanz erzeugen")
-        guard let instance else { throw CaptureError.componentUnavailable }
+        guard let instance else { throw AudioCaptureError.componentUnavailable }
         audioUnit = instance
 
         // Output zuerst abschalten, solange die Unit noch nicht initialisiert
@@ -249,7 +264,7 @@ final class AudioCapture: AudioCapturing, @unchecked Sendable {
                          operation: "Input aktivieren")
 
         guard let deviceID = MicrophoneScanner.inputDeviceID(preferredUID: preferredMicUID)
-        else { throw CaptureError.noInputDevice }
+        else { throw AudioCaptureError.noInputDevice }
         var selectedDevice = deviceID
         try setProperty(&selectedDevice,
                         id: kAudioOutputUnitProperty_CurrentDevice,
@@ -313,7 +328,7 @@ final class AudioCapture: AudioCapturing, @unchecked Sendable {
         )
         guard let inputBuffer = AVAudioPCMBuffer(pcmFormat: clientFormat,
                                                  frameCapacity: capacity)
-        else { throw CaptureError.invalidInputFormat }
+        else { throw AudioCaptureError.invalidInputFormat }
         self.inputBuffer = inputBuffer
 
         var callback = AURenderCallbackStruct(
@@ -349,7 +364,7 @@ final class AudioCapture: AudioCapturing, @unchecked Sendable {
     ) throws -> (hardware: AVAudioFormat, client: AVAudioFormat) {
         let hardwareResult = readHardwareFormat(kAudioUnitScope_Input, inputElement)
         guard hardwareResult.status == noErr else {
-            throw CaptureError.audioUnit(operation: "Natives Hardwareformat lesen",
+            throw AudioCaptureError.audioUnit(operation: "Natives Hardwareformat lesen",
                                          status: hardwareResult.status)
         }
 
@@ -361,13 +376,13 @@ final class AudioCapture: AudioCapturing, @unchecked Sendable {
                                                sampleRate: hardwareFormat.sampleRate,
                                                channels: hardwareFormat.channelCount,
                                                interleaved: false)
-        else { throw CaptureError.invalidInputFormat }
+        else { throw AudioCaptureError.invalidInputFormat }
 
         let setStatus = setClientFormat(clientFormat.streamDescription.pointee,
                                         kAudioUnitScope_Output,
                                         inputElement)
         guard setStatus == noErr else {
-            throw CaptureError.audioUnit(operation: "Float32-Clientformat setzen",
+            throw AudioCaptureError.audioUnit(operation: "Float32-Clientformat setzen",
                                          status: setStatus)
         }
         return (hardwareFormat, clientFormat)
@@ -381,20 +396,20 @@ final class AudioCapture: AudioCapturing, @unchecked Sendable {
         set: (_ requested: UInt32) -> OSStatus,
         get: () -> (status: OSStatus, value: UInt32)
     ) throws -> AVAudioFrameCount {
-        guard requested > 0 else { throw CaptureError.invalidMaximumFrames }
+        guard requested > 0 else { throw AudioCaptureError.invalidMaximumFrames }
 
         let setStatus = set(requested)
         guard setStatus == noErr else {
-            throw CaptureError.audioUnit(operation: "MaximumFramesPerSlice setzen",
+            throw AudioCaptureError.audioUnit(operation: "MaximumFramesPerSlice setzen",
                                          status: setStatus)
         }
 
         let effective = get()
         guard effective.status == noErr else {
-            throw CaptureError.audioUnit(operation: "MaximumFramesPerSlice lesen",
+            throw AudioCaptureError.audioUnit(operation: "MaximumFramesPerSlice lesen",
                                          status: effective.status)
         }
-        guard effective.value > 0 else { throw CaptureError.invalidMaximumFrames }
+        guard effective.value > 0 else { throw AudioCaptureError.invalidMaximumFrames }
         return AVAudioFrameCount(max(requested, effective.value))
     }
 
@@ -428,13 +443,13 @@ final class AudioCapture: AudioCapturing, @unchecked Sendable {
     }
 
     private func requireAudioUnit() throws -> AudioUnit {
-        guard let audioUnit else { throw CaptureError.componentUnavailable }
+        guard let audioUnit else { throw AudioCaptureError.componentUnavailable }
         return audioUnit
     }
 
     private func check(_ status: OSStatus, operation: String) throws {
         guard status == noErr else {
-            throw CaptureError.audioUnit(operation: operation, status: status)
+            throw AudioCaptureError.audioUnit(operation: operation, status: status)
         }
     }
 

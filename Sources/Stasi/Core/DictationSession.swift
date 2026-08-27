@@ -27,6 +27,13 @@ final class DictationSession {
     var state: State = .settingUp
 
     private var teardownTask: Task<Void, Never>?
+    private var shouldPreserveAudioFile = false
+
+    var teardownStarted: Bool { teardownTask != nil }
+
+    func preserveAudioFile() {
+        shouldPreserveAudioFile = true
+    }
 
     init(id: UUID = UUID(),
          locale: Locale,
@@ -52,26 +59,31 @@ final class DictationSession {
             return
         }
 
-        state = .stopping
+        let resourcesAlreadyFinished = state == .finished
+        if !resourcesAlreadyFinished {
+            state = .stopping
+        }
         let audio = self.audio
         let continuation = audioContinuation
         let feedTask = self.feedTask
         let speech = self.speech
         let consumeTask = self.consumeTask
-        let audioURL = self.audioURL
+        let audioURL = shouldPreserveAudioFile ? nil : self.audioURL
 
         let task = Task { @MainActor in
-            _ = audio.stop()
-            continuation?.finish()
-            await feedTask?.value
-            await speech.finish()
-            if let consumeTask {
-                let completed = await TranscriptionEngine.waitForFinalize(
-                    consumeTask,
-                    timeoutNanoseconds: 2_000_000_000
-                )
-                if !completed {
-                    DebugLog.log("STASI-APP: Session-Teardown – Consumer nach 2 s noch offen")
+            if !resourcesAlreadyFinished {
+                _ = audio.stop()
+                continuation?.finish()
+                await feedTask?.value
+                await speech.finish()
+                if let consumeTask {
+                    let completed = await TranscriptionEngine.waitForFinalize(
+                        consumeTask,
+                        timeoutNanoseconds: 2_000_000_000
+                    )
+                    if !completed {
+                        DebugLog.log("STASI-APP: Session-Teardown – Consumer nach 2 s noch offen")
+                    }
                 }
             }
             if let audioURL {

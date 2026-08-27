@@ -38,7 +38,7 @@ final class AppState {
     let settings: SettingsStore
     let dictionary: DictionaryStore
     let history: any HistoryStoring
-    let audio: any AudioCapturing
+    private let audioFactory: AudioCaptureFactory
     private let speechFactory: @MainActor (Locale, [String]) -> any SpeechEngining
     private let requestMicrophone: @MainActor () async -> Bool
     private let modelInstaller: @Sendable (Locale) async throws -> Void
@@ -50,6 +50,7 @@ final class AppState {
     @ObservationIgnored private var modelPreparationTasks: [String: Task<Bool, Never>] = [:]
     @ObservationIgnored private var knownWordCache: [String: Bool] = [:]
     private(set) var currentSession: DictationSession?
+    private var teardownInProgress = false
     var hotkey: HotkeyEngine?
     /// Tap wurde angelegt (says nichts über Event-Lieferung!)
     private(set) var tapInstalled = false
@@ -145,7 +146,7 @@ final class AppState {
     init(settings: SettingsStore,
          dictionary: DictionaryStore? = nil,
          history: (any HistoryStoring)? = nil,
-         audio: any AudioCapturing = AudioCapture(),
+         audioFactory: @escaping AudioCaptureFactory = { AudioCapture() },
          speechFactory: @escaping @MainActor (Locale, [String]) -> any SpeechEngining = {
              TranscriptionEngine(locale: $0, biasWords: $1)
          },
@@ -180,7 +181,7 @@ final class AppState {
         self.settings = settings
         self.dictionary = dictionary ?? DictionaryStore()
         self.history = history ?? HistoryStore()
-        self.audio = audio
+        self.audioFactory = audioFactory
         self.speechFactory = speechFactory
         self.requestMicrophone = requestMicrophone
         self.modelInstaller = modelInstaller
@@ -425,7 +426,7 @@ final class AppState {
     // MARK: Aufnahme-Steuerung
 
     func startDictation(source: RecordingSource = .pushToTalk) {
-        guard phase == .idle else { return }
+        guard phase == .idle, !teardownInProgress else { return }
         partialText = ""
         discardRequested = false
         commitRequested = false
@@ -441,6 +442,7 @@ final class AppState {
         let targetApp = NSWorkspace.shared.frontmostApplication?.localizedName ?? ""
         try? FileManager.default.createDirectory(at: audioDirectory, withIntermediateDirectories: true)
         let audioURL = audioDirectory.appendingPathComponent("\(UUID().uuidString).wav")
+        let audio = audioFactory()
         let session = DictationSession(
             locale: locale,
             dictionaryEntries: dictionaryEntries,
@@ -472,8 +474,7 @@ final class AppState {
                             Permissions.openSystemSettings("Privacy_Microphone")
                         }
                     }
-                    await session.teardown()
-                    guard session === self.currentSession else { return }
+                    await self.teardown(session)
                     self.finishAbortedSession(session)
                     return
                 }
@@ -529,8 +530,7 @@ final class AppState {
             } catch {
                 DebugLog.log("STASI-APP: startDictation FEHLER: \(error.localizedDescription)")
                 guard session === self.currentSession else { return }
-                await session.teardown()
-                guard session === self.currentSession else { return }
+                await self.teardown(session)
                 self.onToast?(error.localizedDescription, false)
                 self.finishAbortedSession(session)
             }
@@ -568,8 +568,7 @@ final class AppState {
 
             guard session.audio.isRunning else {
                 DebugLog.log("STASI-APP: Kurz-Tipp während Setup")
-                await session.teardown()
-                guard session === self.currentSession else { return }
+                await self.teardown(session)
                 self.finishAbortedSession(session)
                 return
             }
@@ -622,8 +621,7 @@ final class AppState {
             guard let self, let session else { return }
             await session.setupTask?.value
             guard session === self.currentSession else { return }
-            await session.teardown()
-            guard session === self.currentSession else { return }
+            await self.teardown(session)
             self.finishAbortedSession(session)
         }
     }
@@ -633,6 +631,7 @@ final class AppState {
     /// ohne Status-Pill, Toast oder Historieneintrag zu erzeugen.
     private func silentlyAbortShortPushToTalk(_ session: DictationSession) {
         DebugLog.log("STASI-APP: PTT-Kurztipp <250 ms – still verworfen")
+        teardownInProgress = true
         session.state = .stopping
         currentSession = nil
         resetLevel()
@@ -640,7 +639,7 @@ final class AppState {
         elapsed = 0
         recordStart = nil
         phase = .idle
-        Task { await session.teardown() }
+        Task { await self.teardown(session) }
     }
 
     func requestCommit() {
@@ -671,7 +670,7 @@ final class AppState {
         phase = .idle
         onToast?(Copy.toastTranscriptionAborted, false)
         if let session {
-            await session.teardown()
+            await self.teardown(session)
         }
         DebugLog.log("STASI-WATCH: Zustandsmaschine auf BEREIT zurückgesetzt")
     }
@@ -706,10 +705,7 @@ final class AppState {
         let trimmed = outcome.text
 
         guard !trimmed.isEmpty else {
-            if let audioURLSnapshot {
-                try? FileManager.default.removeItem(at: audioURLSnapshot)
-            }
-            currentSession = nil
+            await teardown(session)
             partialText = ""
             phase = .idle
             onToast?(Copy.toastNothingHeard, false)
@@ -731,7 +727,8 @@ final class AppState {
             try history.insert(newRecord)
         } catch {
             DebugLog.log("STASI-APP: Verlauf speichern fehlgeschlagen: \(error.localizedDescription)")
-            currentSession = nil
+            session.preserveAudioFile()
+            await teardown(session)
             partialText = ""
             phase = .idle
             onToast?("Verlauf konnte nicht gespeichert werden. Die Audiodatei bleibt erhalten.", false)
@@ -752,7 +749,8 @@ final class AppState {
         )
         dictionary.mergeLearned(learned)
 
-        currentSession = nil
+        session.preserveAudioFile()
+        await teardown(session)
         phase = .injecting
         partialText = trimmed
         // Auto-Kopieren: Das letzte Protokoll liegt immer in der Zwischenablage,
@@ -780,8 +778,21 @@ final class AppState {
         }
     }
 
+    private func teardown(_ session: DictationSession) async {
+        if session.teardownStarted {
+            await session.teardown()
+            return
+        }
+        teardownInProgress = true
+        defer { teardownInProgress = false }
+        await session.teardown()
+        if currentSession === session {
+            currentSession = nil
+        }
+    }
+
     private func finishAbortedSession(_ session: DictationSession) {
-        guard session === currentSession else { return }
+        guard currentSession == nil || session === currentSession else { return }
         currentSession = nil
         resetLevel()
         partialText = ""
@@ -882,7 +893,7 @@ final class AppState {
     /// VU-Ballistik: schneller Anschlag, träges Zurückfallen.
     /// Wird aus dem Main-Poll gerufen (keine Tasks aus dem Render-Thread).
     func ingestLevelFromPoll() {
-        guard phase == .recording else { return }
+        guard phase == .recording, let audio = currentSession?.audio else { return }
         let raw = audio.latestLevel
         let clamped = min(max(raw, 0), 1)
         displayLevel = clamped > displayLevel ? clamped : max(clamped, displayLevel * 0.88)

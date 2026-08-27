@@ -178,6 +178,21 @@ final class AudioCaptureFileTests: XCTestCase {
         XCTAssertEqual(teardownOrder, ["uninitialize", "dispose"])
     }
 
+    func testSecondStartWhileRunningThrowsAlreadyRunning() throws {
+        let outputFormat = format()
+        let capture = AudioCapture(audioUnitHooks: hooks(format: outputFormat))
+        try capture.start(outputFormat: outputFormat, recordTo: nil) { _ in }
+
+        XCTAssertThrowsError(
+            try capture.start(outputFormat: outputFormat, recordTo: nil) { _ in }
+        ) { error in
+            guard case AudioCaptureError.alreadyRunning = error else {
+                return XCTFail("Erwartet alreadyRunning, erhalten: \(error)")
+            }
+        }
+        _ = capture.stop()
+    }
+
     func testSecondStartAfterStopCreatesFreshAudioUnitLifecycle() throws {
         let outputFormat = format()
         var startCount = 0
