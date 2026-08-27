@@ -13,10 +13,51 @@ struct TranscriptionChunk: Sendable {
 /// Schmale Speech-Schnittstelle für einen austauschbaren Session-Besitzer.
 /// Der Produktions-Typ bleibt ein eigener actor; Tests verwenden Fakes.
 protocol SpeechEngining: Sendable {
+    func resolvedLocale(for requested: Locale) async throws -> Locale
     func preferredInputFormat() async -> AVAudioFormat?
     func start() async throws -> AsyncThrowingStream<TranscriptionChunk, Error>
     func feed(_ chunk: AudioChunk) async
     func finish() async
+}
+
+enum SpeechLocaleResolution {
+    static func resolve(requested: Locale, supportedEquivalent: Locale?) throws -> Locale {
+        guard let supportedEquivalent else {
+            throw TranscriptionError.unsupportedLocale(requested.identifier)
+        }
+        return supportedEquivalent
+    }
+}
+
+actor SpeechRetirementLimiter {
+    private let limit: Int
+    private var reservedSlots = 0
+
+    init(limit: Int) {
+        precondition(limit > 0)
+        self.limit = limit
+    }
+
+    func reserve() throws {
+        guard reservedSlots < limit else {
+            throw TranscriptionError.tooManyRetiredAnalyzers
+        }
+        reservedSlots += 1
+    }
+
+    func release() {
+        guard reservedSlots > 0 else { return }
+        reservedSlots -= 1
+    }
+
+    func releaseAfterNaturalCompletion(
+        finalizeTask: Task<Bool, Never>,
+        resultsTask: Task<Void, Never>?
+    ) async {
+        _ = await finalizeTask.value
+        await resultsTask?.value
+        release()
+    }
 }
 
 // MARK: - TranscriptionEngine
@@ -26,6 +67,8 @@ protocol SpeechEngining: Sendable {
 // Korruption, "Arbeit verschwindet"-Hänger). Auf dem eigenen Executor läuft
 // sie isoliert auf dem eigenen Executor.
 actor TranscriptionEngine: SpeechEngining {
+    private static let retirementLimiter = SpeechRetirementLimiter(limit: 2)
+
     private struct RetiredAnalyzer {
         let id: UUID
         let analyzer: SpeechAnalyzer
@@ -37,6 +80,8 @@ actor TranscriptionEngine: SpeechEngining {
     private let locale: Locale
     private let biasWords: [String]
 
+    private var actualLocale: Locale?
+    private var ownsRetirementSlot = false
     private var transcriber: SpeechTranscriber?
     private var analyzer: SpeechAnalyzer?
     private var inputContinuation: AsyncStream<AnalyzerInput>.Continuation?
@@ -65,14 +110,35 @@ actor TranscriptionEngine: SpeechEngining {
         guard SpeechTranscriber.isAvailable else {
             throw TranscriptionError.engineUnavailable
         }
-        let resolved = await SpeechTranscriber.supportedLocale(equivalentTo: locale)
-            ?? Locale(identifier: "en-US")
+        let equivalent = await SpeechTranscriber.supportedLocale(equivalentTo: locale)
+        let resolved = try SpeechLocaleResolution.resolve(
+            requested: locale,
+            supportedEquivalent: equivalent
+        )
         try await ensureModelInstalled(for: makeTranscriber(locale: resolved))
+    }
+
+    func resolvedLocale(for requested: Locale) async throws -> Locale {
+        guard SpeechTranscriber.isAvailable else {
+            throw TranscriptionError.engineUnavailable
+        }
+        if requested.identifier == locale.identifier, let actualLocale {
+            return actualLocale
+        }
+        let equivalent = await SpeechTranscriber.supportedLocale(equivalentTo: requested)
+        let resolved = try SpeechLocaleResolution.resolve(
+            requested: requested,
+            supportedEquivalent: equivalent
+        )
+        if requested.identifier == locale.identifier {
+            actualLocale = resolved
+        }
+        return resolved
     }
 
     /// Wunschformat der Engine – AudioCapture konvertiert dorthin.
     func preferredInputFormat() async -> AVAudioFormat? {
-        let module = transcriber ?? Self.makeTranscriber(locale: locale)
+        let module = transcriber ?? Self.makeTranscriber(locale: actualLocale ?? locale)
         return await SpeechAnalyzer.bestAvailableAudioFormat(compatibleWith: [module])
     }
 
@@ -83,49 +149,75 @@ actor TranscriptionEngine: SpeechEngining {
             throw TranscriptionError.engineUnavailable
         }
 
-        let resolved = await SpeechTranscriber.supportedLocale(equivalentTo: locale)
-            ?? Locale(identifier: "en-US")
+        let resolved = try await resolvedLocale(for: locale)
+        try await Self.retirementLimiter.reserve()
+        ownsRetirementSlot = true
 
         let transcriber = Self.makeTranscriber(locale: resolved)
         self.transcriber = transcriber
 
-        try await Self.ensureModelInstalled(for: transcriber)
+        do {
+            try await Self.ensureModelInstalled(for: transcriber)
 
-        let (inputStream, inputContinuation) = AsyncStream<AnalyzerInput>.makeStream()
-        self.inputContinuation = inputContinuation
+            let (inputStream, inputContinuation) = AsyncStream<AnalyzerInput>.makeStream()
+            self.inputContinuation = inputContinuation
 
-        let analyzer = SpeechAnalyzer(modules: [transcriber])
-        self.analyzer = analyzer
-        if !biasWords.isEmpty {
-            let context = AnalysisContext()
-            context.contextualStrings[.general] = biasWords
-            try? await analyzer.setContext(context)
-        }
-        finalizedText = ""
-        latestText = ""
-        didFinish = false
-
-        let (chunks, chunkContinuation) = AsyncThrowingStream<TranscriptionChunk, Error>.makeStream()
-        outputContinuation = chunkContinuation
-
-        // Ergebnis-Strom in unseren einfacheren Chunk-Strom umleiten.
-        resultsTask = Task { [weak self] in
-            do {
-                for try await result in transcriber.results {
-                    guard let self else { break }
-                    let snapshot = await self.absorb(result)
-                    await self.publish(snapshot)
-                }
-                await self?.finishOutput()
-            } catch {
-                DebugLog.log("STASI-SPEECH: Ergebnis-Strom Fehler: \(error.localizedDescription)")
-                await self?.finishOutput(throwing: error)
+            let analyzer = SpeechAnalyzer(modules: [transcriber])
+            self.analyzer = analyzer
+            if !biasWords.isEmpty {
+                let context = AnalysisContext()
+                context.contextualStrings[.general] = biasWords
+                try? await analyzer.setContext(context)
             }
-        }
+            finalizedText = ""
+            latestText = ""
+            didFinish = false
 
-        try await analyzer.start(inputSequence: inputStream)
-        DebugLog.log("STASI-SPEECH: SpeechAnalyzer läuft (\(resolved.identifier))")
-        return chunks
+            let (chunks, chunkContinuation) = AsyncThrowingStream<TranscriptionChunk, Error>.makeStream()
+            outputContinuation = chunkContinuation
+
+            // Ergebnis-Strom in unseren einfacheren Chunk-Strom umleiten.
+            resultsTask = Task { [weak self] in
+                do {
+                    for try await result in transcriber.results {
+                        guard let self else { break }
+                        let snapshot = await self.absorb(result)
+                        await self.publish(snapshot)
+                    }
+                    await self?.finishOutput()
+                } catch {
+                    DebugLog.log("STASI-SPEECH: Ergebnis-Strom Fehler: \(error.localizedDescription)")
+                    await self?.finishOutput(throwing: error)
+                }
+            }
+
+            do {
+                try await analyzer.start(inputSequence: inputStream)
+            } catch {
+                inputContinuation.finish()
+                self.inputContinuation = nil
+                finishOutput(throwing: error)
+                let resultsTask = self.resultsTask
+                self.analyzer = nil
+                self.transcriber = nil
+                self.resultsTask = nil
+                retire(
+                    analyzer: analyzer,
+                    transcriber: transcriber,
+                    finalizeTask: Task { true },
+                    resultsTask: resultsTask
+                )
+                throw error
+            }
+            DebugLog.log("STASI-SPEECH: SpeechAnalyzer läuft (\(resolved.identifier))")
+            return chunks
+        } catch {
+            if ownsRetirementSlot {
+                await releaseRetirementSlot()
+            }
+            self.transcriber = nil
+            throw error
+        }
     }
 
     /// Einen Audio-Puffer (bereits im `preferredInputFormat`) einspeisen.
@@ -156,6 +248,9 @@ actor TranscriptionEngine: SpeechEngining {
 
         guard let analyzer, let transcriber else {
             finishOutput()
+            if ownsRetirementSlot {
+                await releaseRetirementSlot()
+            }
             return
         }
 
@@ -214,6 +309,8 @@ actor TranscriptionEngine: SpeechEngining {
                    transcriber: transcriber,
                    finalizeTask: finalizeTask,
                    resultsTask: resultsTask)
+        } else {
+            await releaseRetirementSlot()
         }
     }
 
@@ -268,6 +365,8 @@ actor TranscriptionEngine: SpeechEngining {
                         transcriber: SpeechTranscriber,
                         finalizeTask: Task<Bool, Never>,
                         resultsTask: Task<Void, Never>?) {
+        guard ownsRetirementSlot else { return }
+        ownsRetirementSlot = false
         let id = UUID()
         retiredAnalyzers.append(
             RetiredAnalyzer(id: id,
@@ -279,10 +378,18 @@ actor TranscriptionEngine: SpeechEngining {
         // Der Task hält diesen Engine-actor absichtlich stark: Nach dem
         // Session-Ende gäbe es sonst keinen Besitzer mehr für die Retirees.
         Task { [self] in
-            _ = await finalizeTask.value
-            await resultsTask?.value
+            await Self.retirementLimiter.releaseAfterNaturalCompletion(
+                finalizeTask: finalizeTask,
+                resultsTask: resultsTask
+            )
             self.removeRetiredAnalyzer(id: id)
         }
+    }
+
+    private func releaseRetirementSlot() async {
+        guard ownsRetirementSlot else { return }
+        ownsRetirementSlot = false
+        await Self.retirementLimiter.release()
     }
 
     private func removeRetiredAnalyzer(id: UUID) {
@@ -338,6 +445,8 @@ private final class FirstWins: @unchecked Sendable {
 enum TranscriptionError: LocalizedError {
     case engineUnavailable
     case noAudioFormat
+    case unsupportedLocale(String)
+    case tooManyRetiredAnalyzers
 
     var errorDescription: String? {
         switch self {
@@ -345,6 +454,10 @@ enum TranscriptionError: LocalizedError {
             return "SpeechTranscriber ist auf diesem Gerät nicht verfügbar."
         case .noAudioFormat:
             return "Kein kompatibles Audio-Format für die Speech-Engine."
+        case .unsupportedLocale(let identifier):
+            return "Die Sprache „\(identifier)“ wird nicht unterstützt. Wähle in den Einstellungen eine unterstützte Sprache."
+        case .tooManyRetiredAnalyzers:
+            return "Zwei frühere Speech-Analyzer reagieren noch nicht. Bitte starte Stasi neu, bevor du weiter diktierst."
         }
     }
 }

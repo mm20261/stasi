@@ -107,6 +107,7 @@ final class DictationSessionTests: XCTestCase {
         private(set) var streamCancellationCount = 0
         var startError: Error?
         var text = ""
+        var localeToResolve: Locale?
         var finishDelayNanoseconds: UInt64 = 0
         var timeoutNanoseconds: UInt64?
         var finishEndsResultStream = true
@@ -114,9 +115,16 @@ final class DictationSessionTests: XCTestCase {
         private var shouldBlockNextFeed = false
         private var blockedFeedContinuation: CheckedContinuation<Void, Never>?
 
-        init(text: String = "", startError: Error? = nil) {
+        init(text: String = "",
+             startError: Error? = nil,
+             resolvedLocale: Locale? = nil) {
             self.text = text
             self.startError = startError
+            localeToResolve = resolvedLocale
+        }
+
+        func resolvedLocale(for requested: Locale) async throws -> Locale {
+            localeToResolve ?? requested
         }
 
         func configureFinish(delay: UInt64, timeout: UInt64?) {
@@ -957,6 +965,25 @@ final class DictationSessionTests: XCTestCase {
         await waitUntil { !app.history.records.isEmpty }
 
         XCTAssertEqual(app.history.records.first?.localeID, "de_DE")
+    }
+
+    func testResolvedSpeechLocaleDeterminesSessionAndRecordMetadata() async {
+        let audio = FakeAudioCapture()
+        let speech = FakeSpeechEngine(
+            text: "Aufgelöste Locale",
+            resolvedLocale: Locale(identifier: "de-DE")
+        )
+        let app = makeApp(audio: audio, engines: [speech])
+        app.settings.language = "de_CH"
+
+        app.startDictation()
+        await waitUntil { audio.isRunning }
+
+        XCTAssertEqual(app.currentSession?.locale.identifier, "de-DE")
+        app.stopDictation(commit: true)
+        await waitUntil { !app.history.records.isEmpty }
+
+        XCTAssertEqual(app.history.records.first?.localeID, "de-DE")
     }
 
     func testSecondSessionStartsWhileFirstFinalizeRests() async {

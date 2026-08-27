@@ -479,7 +479,12 @@ final class AppState {
                     return
                 }
 
-                await self.prepareModel(for: session.locale)
+                let resolvedLocale = try await session.speech.resolvedLocale(for: session.locale)
+                guard session === self.currentSession else { return }
+                guard session.state == .settingUp else { return }
+                session.applyResolvedLocale(resolvedLocale)
+
+                await self.prepareModel(for: resolvedLocale)
                 guard session === self.currentSession else { return }
                 guard session.state == .settingUp else { return }
 

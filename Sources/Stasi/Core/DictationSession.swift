@@ -13,7 +13,7 @@ final class DictationSession {
     }
 
     let id: UUID
-    let locale: Locale
+    private(set) var locale: Locale
     let dictionaryEntries: [DictionaryEntry]
     let targetApp: String
     let audioURL: URL?
@@ -34,6 +34,11 @@ final class DictationSession {
     private(set) var recoveredAudioURL: URL?
 
     var teardownStarted: Bool { teardownTask != nil }
+
+    func applyResolvedLocale(_ locale: Locale) {
+        guard state == .settingUp else { return }
+        self.locale = locale
+    }
 
     func preserveAudioFile() {
         shouldPreserveAudioFile = true
