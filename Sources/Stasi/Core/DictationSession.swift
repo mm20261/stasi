@@ -40,6 +40,7 @@ final class DictationSession {
     private(set) var completionIntent: CompletionIntent = .active
 
     private var teardownTask: Task<Void, Never>?
+    private var audioStopTask: Task<URL?, Never>?
     private var shouldPreserveAudioFile = false
     private var shouldRecoverClosedAudioFile = false
     private var runtimeFailureHandled = false
@@ -85,6 +86,20 @@ final class DictationSession {
         self.audio = audio
     }
 
+    /// Alle Abschluss- und Fehlerpfade teilen sich genau einen Audio-Stop und
+    /// dessen Ergebnis. So kann ein Runtimefehler während des Worker-Drains die
+    /// vom ersten Stop gelieferte Recovery-URL nicht durch einen zweiten Stop
+    /// verlieren.
+    func stopAudioOnce() async -> URL? {
+        if let audioStopTask {
+            return await audioStopTask.value
+        }
+        let audio = self.audio
+        let task = Task { @MainActor in await audio.stop() }
+        audioStopTask = task
+        return await task.value
+    }
+
     /// Vollständiger Fehler-/Abbruchpfad. Mehrfache oder gleichzeitig
     /// eintreffende Aufrufe teilen sich denselben Aufräum-Task.
     func teardown() async {
@@ -97,7 +112,6 @@ final class DictationSession {
         if !resourcesAlreadyFinished {
             state = .stopping
         }
-        let audio = self.audio
         let continuation = audioContinuation
         let feedTask = self.feedTask
         let speech = self.speech
@@ -107,9 +121,8 @@ final class DictationSession {
         let recoverClosedAudio = shouldRecoverClosedAudioFile
 
         let task = Task { @MainActor in
-            var stoppedURL: URL?
+            let stoppedURL = await self.stopAudioOnce()
             if !resourcesAlreadyFinished {
-                stoppedURL = await audio.stop()
                 self.health.closeSpeechIngress(continuation)
                 await feedTask?.value
                 await speech.finish()

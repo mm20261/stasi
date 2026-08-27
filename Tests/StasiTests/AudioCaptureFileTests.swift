@@ -96,20 +96,66 @@ final class AudioCaptureFileTests: XCTestCase {
         }
     }
 
-    private final class UInt64Samples: @unchecked Sendable {
-        private let lock = NSLock()
-        private var storage: [UInt64] = []
-
-        var values: [UInt64] {
-            lock.lock()
-            defer { lock.unlock() }
-            return storage
+    private final class CallbackMetrics: @unchecked Sendable {
+        struct Sample {
+            let frames: AVAudioFrameCount
+            let nanoseconds: UInt64
         }
 
-        func record(_ value: UInt64) {
+        private let lock = NSLock()
+        private var samplesStorage: [Sample] = []
+        private var outstanding = 0
+        private var maximumOutstandingStorage = 0
+
+        var samples: [Sample] {
             lock.lock()
-            storage.append(value)
+            defer { lock.unlock() }
+            return samplesStorage
+        }
+
+        var maximumOutstanding: Int {
+            lock.lock()
+            defer { lock.unlock() }
+            return maximumOutstandingStorage
+        }
+
+        func beginCallback() {
+            lock.lock()
+            outstanding += 1
+            maximumOutstandingStorage = max(maximumOutstandingStorage, outstanding)
             lock.unlock()
+        }
+
+        func record(frames: AVAudioFrameCount, nanoseconds: UInt64) {
+            lock.lock()
+            samplesStorage.append(Sample(frames: frames, nanoseconds: nanoseconds))
+            lock.unlock()
+        }
+
+        func finishConsumption() {
+            lock.lock()
+            outstanding -= 1
+            lock.unlock()
+        }
+    }
+
+    private final class OneShotBoolContinuation: @unchecked Sendable {
+        private let lock = NSLock()
+        private var continuation: CheckedContinuation<Bool, Never>?
+
+        init(_ continuation: CheckedContinuation<Bool, Never>) {
+            self.continuation = continuation
+        }
+
+        nonisolated func resume(returning value: Bool) {
+            lock.lock()
+            guard let continuation else {
+                lock.unlock()
+                return
+            }
+            self.continuation = nil
+            lock.unlock()
+            continuation.resume(returning: value)
         }
     }
 
@@ -730,7 +776,11 @@ final class AudioCaptureFileTests: XCTestCase {
         _ = await capture.stop()
     }
 
-    func testRenderCopyStressAcrossVariableFrameLengthsMeetsCallbackBudget() async throws {
+    /// Synthetische Evidenz für Besitzkopie und Queue-Aufnahme, kein Beweis für
+    /// echte AUHAL-Deadline-Treue unter Systemlast. Der Consumer wird pro Burst
+    /// erst nach allen Producer-Callbacks freigegeben; es gibt kein Slice-für-Slice-
+    /// Handshake wie im früheren, irreführend serialisierten Stresstest.
+    func testRenderCopyBurstsAcrossVariableFrameLengthsMeetSliceDeadlines() async throws {
         let outputFormat = try XCTUnwrap(AVAudioFormat(
             commonFormat: .pcmFormatFloat32,
             sampleRate: 48_000,
@@ -738,9 +788,10 @@ final class AudioCaptureFileTests: XCTestCase {
             interleaved: false
         ))
         let sinkBox = SinkBox()
-        let delivered = DispatchSemaphore(value: 0)
+        let allowProcessing = DispatchSemaphore(value: 0)
+        let delivered = DispatchGroup()
         let errorSpy = ErrorSpy()
-        let durations = UInt64Samples()
+        let metrics = CallbackMetrics()
         let capture = AudioCapture(
             audioUnitHooks: AudioCapture.AudioUnitHooks(
                 configureInput: { _, _, sink in
@@ -748,13 +799,17 @@ final class AudioCaptureFileTests: XCTestCase {
                     return outputFormat
                 },
                 initialize: {}, start: {}, stop: {}, uninitialize: {}, dispose: {}
-            )
+            ),
+            beforeProcessing: { allowProcessing.wait() }
         )
         try capture.start(
             outputFormat: outputFormat,
             recordTo: nil,
             onRuntimeError: { error in errorSpy.record(error) }
-        ) { _ in delivered.signal() }
+        ) { _ in
+            metrics.finishConsumption()
+            delivered.leave()
+        }
         let frameLengths: [AVAudioFrameCount] = [64, 128, 256, 512, 1_024, 2_048, 4_096]
         let buffers = try frameLengths.map { length in
             let buffer = try XCTUnwrap(AVAudioPCMBuffer(
@@ -765,24 +820,66 @@ final class AudioCaptureFileTests: XCTestCase {
             return buffer
         }
         let sink = try XCTUnwrap(sinkBox.load())
+        let burstCount = 32
+        let slicesPerBurst = 32
 
-        for index in 0..<1_000 {
-            let started = DispatchTime.now().uptimeNanoseconds
-            sink(buffers[index % buffers.count])
-            durations.record(DispatchTime.now().uptimeNanoseconds - started)
-            XCTAssertEqual(delivered.wait(timeout: .now() + 0.25), .success)
+        burstLoop: for burst in 0..<burstCount {
+            for offset in 0..<slicesPerBurst {
+                let index = burst * slicesPerBurst + offset
+                let buffer = buffers[index % buffers.count]
+                delivered.enter()
+                metrics.beginCallback()
+                let started = DispatchTime.now().uptimeNanoseconds
+                sink(buffer)
+                metrics.record(
+                    frames: buffer.frameLength,
+                    nanoseconds: DispatchTime.now().uptimeNanoseconds - started
+                )
+            }
+            for _ in 0..<slicesPerBurst {
+                allowProcessing.signal()
+            }
+            let drained = await withCheckedContinuation { continuation in
+                let resolver = OneShotBoolContinuation(continuation)
+                delivered.notify(queue: .main) {
+                    resolver.resume(returning: true)
+                }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+                    resolver.resume(returning: false)
+                }
+            }
+            guard drained else {
+                XCTFail("Audio-Consumer hat Burst \(burst + 1) nicht ohne Runtime-/Backlogfehler gedraint")
+                break burstLoop
+            }
         }
 
-        let sorted = durations.values.sorted()
-        let percentile99 = sorted[min(sorted.count - 1, Int(Double(sorted.count) * 0.99))]
-        print("STASI-AUDIO-STRESS: 1000 variable slices, p99 callback \(Double(percentile99) / 1_000_000) ms")
+        _ = await capture.stop()
+        let samples = metrics.samples
+        let percentileIndex = max(0, Int(ceil(Double(samples.count) * 0.99)) - 1)
+        let percentile99 = samples.map(\.nanoseconds).sorted()[percentileIndex]
+        let normalizedP99 = samples.map { sample in
+            let sliceDeadline = Double(sample.frames) / outputFormat.sampleRate * 1_000_000_000
+            return Double(sample.nanoseconds) / sliceDeadline
+        }.sorted()[percentileIndex]
+        let smallestSliceDeadline = UInt64(
+            Double(try XCTUnwrap(frameLengths.min())) / outputFormat.sampleRate * 1_000_000_000
+        )
+        print(
+            "STASI-AUDIO-BURST: \(samples.count) variable slices, "
+                + "p99 callback \(Double(percentile99) / 1_000_000) ms, "
+                + "p99 deadline utilization \(normalizedP99)"
+        )
+        XCTAssertEqual(samples.count, burstCount * slicesPerBurst)
+        XCTAssertGreaterThanOrEqual(metrics.maximumOutstanding, slicesPerBurst)
         XCTAssertLessThan(
             percentile99,
-            10_000_000,
-            "p99 Render-Besitzkopie \(Double(percentile99) / 1_000_000) ms; 10-ms-Budget überschritten"
+            smallestSliceDeadline,
+            "p99 Besitzkopie muss unter der kleinsten Slice-Deadline "
+                + "(\(Double(smallestSliceDeadline) / 1_000_000) ms) bleiben"
         )
-        XCTAssertTrue(errorSpy.values.isEmpty)
-        _ = await capture.stop()
+        XCTAssertLessThan(normalizedP99, 1)
+        XCTAssertTrue(errorSpy.values.isEmpty, "Runtime-/Backlogfehler: \(errorSpy.values)")
     }
 
     func testFinishedBacklogReturnsClosedAndReleasesLateProducer() throws {

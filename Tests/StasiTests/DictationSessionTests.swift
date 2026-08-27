@@ -44,6 +44,8 @@ final class DictationSessionTests: XCTestCase {
         private var onBuffer: (@Sendable (AudioChunk) -> Void)?
         private var onRuntimeError: (@Sendable (AudioCaptureRuntimeError) -> Void)?
         var onStop: (() -> Void)?
+        var suspendFirstStop = false
+        private var firstStopContinuation: CheckedContinuation<URL?, Never>?
 
         func ingestNativeBuffer(_ buffer: AVAudioPCMBuffer) {
             latestLevel = AudioCapture.computeLevel(of: buffer)
@@ -74,7 +76,14 @@ final class DictationSessionTests: XCTestCase {
             stopCount += 1
             onStop?()
             isRunning = false
-            return stoppedURL
+            guard stopCount == 1 else { return nil }
+            guard suspendFirstStop else { return stoppedURL }
+            return await withCheckedContinuation { firstStopContinuation = $0 }
+        }
+
+        func finishFirstStop() {
+            firstStopContinuation?.resume(returning: stoppedURL)
+            firstStopContinuation = nil
         }
     }
 
@@ -806,6 +815,59 @@ final class DictationSessionTests: XCTestCase {
         XCTAssertEqual(reveal.urls.count, 1)
         XCTAssertEqual(reveal.urls.first?.deletingLastPathComponent(), recoveryDirectory)
         XCTAssertTrue(toasts.contains { $0.localizedCaseInsensitiveContains("finder") })
+    }
+
+    func testRuntimeErrorDuringSuspendedCommitStopReusesResultAndRegistersRecovery() async throws {
+        let directory = makeDirectory()
+        let audio = FakeAudioCapture()
+        audio.suspendFirstStop = true
+        let history = FakeHistoryStore()
+        let textInjector = TextInjectorSpy()
+        let reveal = RevealSpy()
+        let recoveryDirectory = directory.appendingPathComponent("recovery", isDirectory: true)
+        let app = makeApp(
+            audio: audio,
+            engines: [FakeSpeechEngine(text: "Nicht als Erfolg speichern")],
+            history: history,
+            isTextFieldEditable: { true },
+            injectText: { textInjector.inject($0) },
+            recoveryStore: AudioRecoveryStore(directory: recoveryDirectory),
+            revealRecoveryFile: { reveal.reveal($0) },
+            directory: directory
+        )
+        let pasteboard = NSPasteboard.general
+        let previousClipboard = pasteboard.string(forType: .string)
+        defer {
+            pasteboard.clearContents()
+            if let previousClipboard {
+                pasteboard.setString(previousClipboard, forType: .string)
+            }
+        }
+        pasteboard.clearContents()
+        pasteboard.setString("vorheriger Inhalt", forType: .string)
+
+        app.startDictation()
+        await waitUntil { audio.isRunning }
+        let wav = try XCTUnwrap(audio.startedURL)
+        try Data("suspended commit audio".utf8).write(to: wav)
+        audio.stoppedURL = wav
+
+        app.stopDictation(commit: true)
+        await waitUntil { audio.stopCount == 1 }
+        audio.fail(.wavWriteFailed("failure during first stop"))
+        await Task.yield()
+        audio.finishFirstStop()
+        await waitUntil { app.phase == .idle }
+
+        XCTAssertEqual(audio.stopCount, 1)
+        XCTAssertTrue(history.records.isEmpty)
+        XCTAssertEqual(history.insertCount, 0)
+        XCTAssertEqual(textInjector.callCount, 0)
+        XCTAssertEqual(pasteboard.string(forType: .string), "vorheriger Inhalt")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: wav.path))
+        let recoveredURL = try XCTUnwrap(reveal.urls.first)
+        XCTAssertEqual(recoveredURL.deletingLastPathComponent(), recoveryDirectory)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: recoveredURL.path))
     }
 
     func testAudioRuntimeErrorDeletesUnclosedRecording() async throws {

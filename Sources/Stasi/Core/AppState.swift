@@ -614,7 +614,7 @@ final class AppState {
                 return
             }
 
-            let recordedURL = await session.audio.stop()
+            let recordedURL = await session.stopAudioOnce()
             if session.health.failure == .audioRuntimeFailure {
                 DebugLog.log("STASI-APP: Commit-Drain wegen Audio-Runtimefehler abgebrochen")
                 return
