@@ -7,7 +7,7 @@ permissions:
   contents: read
 
 jobs:
-  build:
+  verify:
     runs-on: macos-26
     timeout-minutes: 60
 
@@ -68,34 +68,58 @@ jobs:
           set -euo pipefail
           STASI_SIGNING_MODE=local ./scripts/smoke-test-app.sh
 
-      - name: Check release secrets
-        id: release_secrets
+  sign-and-notarize:
+    needs: verify
+    if: github.ref == 'refs/heads/main'
+    environment: release
+    runs-on: macos-26
+    timeout-minutes: 60
+
+    steps:
+      - name: Check out exact commit
         shell: bash
         env:
-          STASI_DEVELOPER_ID_CERTIFICATE_BASE64: ${{ secrets.STASI_DEVELOPER_ID_CERTIFICATE_BASE64 }}
-          STASI_DEVELOPER_ID_CERTIFICATE_PASSWORD: ${{ secrets.STASI_DEVELOPER_ID_CERTIFICATE_PASSWORD }}
-          STASI_DEVELOPER_ID_APPLICATION: ${{ secrets.STASI_DEVELOPER_ID_APPLICATION }}
-          STASI_NOTARY_PRIVATE_KEY_BASE64: ${{ secrets.STASI_NOTARY_PRIVATE_KEY_BASE64 }}
-          STASI_NOTARY_KEY_ID: ${{ secrets.STASI_NOTARY_KEY_ID }}
-          STASI_NOTARY_ISSUER_ID: ${{ secrets.STASI_NOTARY_ISSUER_ID }}
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
 
-          if [[ -n "$STASI_DEVELOPER_ID_CERTIFICATE_BASE64" \
-             && -n "$STASI_DEVELOPER_ID_CERTIFICATE_PASSWORD" \
-             && -n "$STASI_DEVELOPER_ID_APPLICATION" \
-             && -n "$STASI_NOTARY_PRIVATE_KEY_BASE64" \
-             && -n "$STASI_NOTARY_KEY_ID" \
-             && -n "$STASI_NOTARY_ISSUER_ID" ]]; then
-            printf '%s\n' 'enabled=true' >>"$GITHUB_OUTPUT"
-            printf '%s\n' 'Developer-ID signing and notarization are enabled.'
-          else
-            printf '%s\n' 'enabled=false' >>"$GITHUB_OUTPUT"
-            printf '%s\n' 'Developer-ID signing and notarization skipped: the secret set is absent or incomplete.'
+          askpass="$(mktemp "${RUNNER_TEMP}/stasi-askpass.XXXXXX")"
+          cleanup_checkout() {
+            rm -f "$askpass"
+          }
+          trap cleanup_checkout EXIT
+
+          cat >"$askpass" <<'ASKPASS'
+          #!/bin/bash
+          case "$1" in
+            *Username*) printf '%s\n' 'x-access-token' ;;
+            *Password*) printf '%s\n' "$GITHUB_TOKEN" ;;
+            *) exit 1 ;;
+          esac
+          ASKPASS
+          chmod 700 "$askpass"
+
+          repository_url="https://github.com/${GITHUB_REPOSITORY}.git"
+          git init --quiet "$GITHUB_WORKSPACE"
+          GIT_ASKPASS="$askpass" GIT_TERMINAL_PROMPT=0 \
+            git -C "$GITHUB_WORKSPACE" \
+              -c credential.helper= \
+              fetch --quiet --no-tags --depth=1 "$repository_url" "$GITHUB_SHA"
+          git -C "$GITHUB_WORKSPACE" checkout --quiet --detach FETCH_HEAD
+
+          checked_out_sha="$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)"
+          if [[ "$checked_out_sha" != "$GITHUB_SHA" ]]; then
+            printf '%s\n' 'Checked-out commit does not match GITHUB_SHA.' >&2
+            exit 1
           fi
 
-      - name: Sign and notarize with Developer ID
-        if: ${{ steps.release_secrets.outputs.enabled == 'true' }}
+      - name: Build unsigned app
+        shell: bash
+        run: |
+          set -euo pipefail
+          STASI_SIGNING_MODE=none ./scripts/make-app.sh
+
+      - name: Sign and notarize with Developer ID when configured
         shell: bash
         env:
           STASI_DEVELOPER_ID_CERTIFICATE_BASE64: ${{ secrets.STASI_DEVELOPER_ID_CERTIFICATE_BASE64 }}
@@ -106,6 +130,16 @@ jobs:
           STASI_NOTARY_ISSUER_ID: ${{ secrets.STASI_NOTARY_ISSUER_ID }}
         run: |
           set -euo pipefail
+
+          if [[ -z "$STASI_DEVELOPER_ID_CERTIFICATE_BASE64" \
+             || -z "$STASI_DEVELOPER_ID_CERTIFICATE_PASSWORD" \
+             || -z "$STASI_DEVELOPER_ID_APPLICATION" \
+             || -z "$STASI_NOTARY_PRIVATE_KEY_BASE64" \
+             || -z "$STASI_NOTARY_KEY_ID" \
+             || -z "$STASI_NOTARY_ISSUER_ID" ]]; then
+            printf '%s\n' 'Developer-ID signing and notarization skipped: the release-environment secret set is absent or incomplete.'
+            exit 0
+          fi
 
           signing_temp="$(mktemp -d "${RUNNER_TEMP}/stasi-signing.XXXXXX")"
           certificate_path="${signing_temp}/certificate.p12"
@@ -149,8 +183,6 @@ jobs:
             --issuer "$STASI_NOTARY_ISSUER_ID" \
             --keychain "$keychain_path"
 
-          rm -rf build
-          STASI_SIGNING_MODE=none ./scripts/make-app.sh
           codesign --force \
             --sign "$STASI_DEVELOPER_ID_APPLICATION" \
             --keychain "$keychain_path" \

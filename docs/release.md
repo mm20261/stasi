@@ -62,9 +62,11 @@ Voraussetzung ist die im Repository beschriebene macOS-/Swift-Toolchain.
 
 `.github/workflows/release.yml` ist ausschließlich über `workflow_dispatch` startbar und läuft auf dem von GitHub dokumentierten Standard-Arm64-Runner `macos-26`. Quelle für Bezeichnung und Architektur: [GitHub-hosted runners reference](https://docs.github.com/en/actions/reference/runners/github-hosted-runners), geprüft am 28. August 2026.
 
-Der Workflow verwendet keine Marketplace-Actions. Er initialisiert Git selbst, lädt mit dem von GitHub bereitgestellten, auf `contents: read` beschränkten `GITHUB_TOKEN` ausschließlich den Commit aus `GITHUB_SHA`, checkt ihn detached aus und verifiziert den resultierenden `HEAD`. Das Token wird über ein temporäres `GIT_ASKPASS`-Skript bereitgestellt, nicht in eine URL oder Git-Konfiguration geschrieben; das Skript wird anschließend gelöscht.
+Der Workflow verwendet keine Marketplace-Actions. Beide Jobs initialisieren Git selbst, laden mit dem von GitHub bereitgestellten, auf `contents: read` beschränkten `GITHUB_TOKEN` ausschließlich den Commit aus `GITHUB_SHA`, checken ihn detached aus und verifizieren den resultierenden `HEAD`. Das Token wird über ein temporäres `GIT_ASKPASS`-Skript bereitgestellt, nicht in eine URL oder Git-Konfiguration geschrieben; das Skript wird anschließend gelöscht.
 
-Jeder manuelle Lauf führt Tests, einen lokalen beziehungsweise ad-hoc signierten Build und den vollständigen Smoke-Test aus. Developer-ID-Signierung und Notarisierung folgen danach nur, wenn **alle** folgenden GitHub-Actions-Repository-Secrets nicht leer gesetzt sind:
+Der secretlose Job `verify` läuft für jeden manuell ausgewählten Ref. Er führt Tests, einen lokalen beziehungsweise ad-hoc signierten Build und den vollständigen Smoke-Test aus. Er besitzt weder ein Release-Environment noch Zugriff auf Developer-ID- oder Notarisierungs-Secrets.
+
+Der getrennte Job `sign-and-notarize` wartet mit `needs: verify` auf diese Prüfungen. Er läuft ausschließlich, wenn der ausgewählte Ref exakt `refs/heads/main` ist, und ist dem GitHub-Environment `release` zugeordnet. Ein Branch- oder anderer Nicht-`main`-Dispatch beendet sich daher nach `verify`; er kann keine Freigabe für Signier-Credentials anfordern. Nach Environment-Freigabe checkt der Signierjob denselben exakten Commit frisch aus und baut ihn ohne Credential-Umgebung erneut unsigned. Nur der anschließende Import-/Signier-/Notarisierungsschritt erhält die folgenden **Environment-Secrets des Environments `release`**:
 
 - `STASI_DEVELOPER_ID_CERTIFICATE_BASE64`: Base64-kodierte PKCS#12-Datei mit Zertifikat und privatem Schlüssel für „Developer ID Application“.
 - `STASI_DEVELOPER_ID_CERTIFICATE_PASSWORD`: Passwort der PKCS#12-Datei.
@@ -73,9 +75,20 @@ Jeder manuelle Lauf führt Tests, einen lokalen beziehungsweise ad-hoc signierte
 - `STASI_NOTARY_KEY_ID`: Key-ID dieses API-Schlüssels.
 - `STASI_NOTARY_ISSUER_ID`: Issuer-ID dieses API-Schlüssels.
 
-Die Secret-Werte werden ausschließlich über die GitHub-Actions-Umgebung übergeben und dürfen weder in Workflow-Datei, Dokumentation noch Logs kopiert werden. Bei fehlendem oder unvollständigem Secret-Satz meldet der Lauf den Skip ausdrücklich; Tests, lokaler/ad-hoc Build und Smoke-Test bleiben davon unberührt. Sind alle Secrets vorhanden, importiert der Workflow Zertifikat und Notarisierungsprofil in einen temporären Schlüsselbund, baut zunächst unsigned, signiert mit Developer ID und Hardened Runtime, notarisiert, stapelt und prüft das Bundle. Temporäre Schlüssel-, Zertifikats- und Schlüsselbunddateien werden auch bei einem Fehler entfernt.
+### Verbindliche GitHub-Environment-Einrichtung
 
-Der erzeugte Build bleibt ausschließlich im flüchtigen Runner-Dateisystem. Der Workflow enthält keinen Push, keine Tag-Erzeugung, kein GitHub Release, keinen Artifact-Upload und kein Deployment. Ein Download oder eine Veröffentlichung benötigt eine getrennte Änderung und ausdrückliche Freigabe.
+Vor dem ersten signierten Lauf muss eine Repository-Administration in den GitHub-Einstellungen das Environment `release` einrichten:
+
+1. Den Branch `main` mit einer Branch-Protection-Regel gegen ungeprüfte direkte Änderungen schützen.
+2. Unter **Settings → Environments** das Environment `release` erstellen.
+3. Unter **Deployment protection rules** mindestens eine verantwortliche Person als **Required reviewer** festlegen. Selbstfreigabe darf nicht der alleinige Schutz sein.
+4. Unter **Deployment branches and tags** als einzige ausgewählte Deployment-Quelle den geschützten Branch `main` zulassen. Keine Wildcards, Tags oder sonstigen Branches freigeben.
+5. Die sechs oben genannten Werte ausschließlich als **Environment secrets** in `release` hinterlegen.
+6. Gleichnamige Secrets auf Repository- oder Organisationsebene dürfen nicht angelegt werden. Bereits vorhandene repository- oder organisationsweite Kopien sind zu entfernen, damit Workflows von frei wählbaren Refs sie nicht außerhalb der geschützten Environment-Grenze referenzieren können.
+
+Die Secret-Werte werden ausschließlich über die Umgebung des einen Import-/Signier-/Notarisierungsschritts übergeben und dürfen weder in Workflow-Datei, Dokumentation noch Logs kopiert werden. Bei fehlendem oder unvollständigem Environment-Secret-Satz meldet der bereits freigegebene Signierjob den Skip ausdrücklich. `verify` bleibt davon unberührt. Sind alle Secrets vorhanden, importiert der Workflow Zertifikat und Notarisierungsprofil in einen temporären Schlüsselbund, signiert den zuvor unsigned erzeugten Build mit Developer ID und Hardened Runtime, notarisiert, stapelt und prüft das Bundle. Temporäre Schlüssel-, Zertifikats- und Schlüsselbunddateien werden auch bei einem Fehler entfernt.
+
+Der erzeugte Build bleibt ausschließlich im flüchtigen Runner-Dateisystem. Der Workflow enthält keinen Push, keine Tag-Erzeugung, kein GitHub Release, keinen Artifact-Upload und kein Deployment außerhalb des GitHub-Environment-Freigabegates. Ein Download oder eine Veröffentlichung benötigt eine getrennte Änderung und ausdrückliche Freigabe.
 
 ## Developer ID, Hardened Runtime und Notarisierung
 
