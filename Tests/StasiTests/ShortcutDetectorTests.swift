@@ -149,6 +149,45 @@ final class ShortcutDetectorTests: XCTestCase {
         XCTAssertEqual(events, [.handsFreeTap])
     }
 
+    func testResetTreatsFirstPressAfterRestartAsPress() {
+        var d = ShortcutDetector(handsFreeEnabled: true)
+        let beforeStop = Date(timeIntervalSince1970: 0)
+        let afterRestart = Date(timeIntervalSince1970: 10)
+
+        _ = d.process(kind: .flagsChanged, keyCode: ShortcutDetector.fnKeyCode,
+                      flags: ShortcutDetector.secondaryFn, now: beforeStop)
+        d.reset()
+        let firstPress = d.process(kind: .flagsChanged, keyCode: ShortcutDetector.fnKeyCode,
+                                   flags: ShortcutDetector.secondaryFn, now: afterRestart)
+        _ = d.process(kind: .flagsChanged, keyCode: ShortcutDetector.fnKeyCode,
+                      flags: 0, now: afterRestart.addingTimeInterval(0.1))
+        let secondPress = d.process(kind: .flagsChanged, keyCode: ShortcutDetector.fnKeyCode,
+                                    flags: ShortcutDetector.secondaryFn,
+                                    now: afterRestart.addingTimeInterval(0.2))
+
+        XCTAssertTrue(firstPress.isEmpty)
+        XCTAssertEqual(secondPress, [.handsFreeTap])
+    }
+
+    func testResetClearsOldDoubleTapTimestamp() {
+        var d = ShortcutDetector(handsFreeEnabled: true)
+        let beforeStop = Date(timeIntervalSince1970: 0)
+
+        _ = d.process(kind: .flagsChanged, keyCode: ShortcutDetector.fnKeyCode,
+                      flags: ShortcutDetector.secondaryFn, now: beforeStop)
+        _ = d.process(kind: .flagsChanged, keyCode: ShortcutDetector.fnKeyCode,
+                      flags: 0, now: beforeStop.addingTimeInterval(0.1))
+        d.reset()
+        let firstPressAfterRestart = d.process(
+            kind: .flagsChanged,
+            keyCode: ShortcutDetector.fnKeyCode,
+            flags: ShortcutDetector.secondaryFn,
+            now: beforeStop.addingTimeInterval(0.2)
+        )
+
+        XCTAssertTrue(firstPressAfterRestart.isEmpty)
+    }
+
     func testConfiguredOptionDoubleTapOutsideWindowDoesNotFire() {
         var d = ShortcutDetector(handsFreeKeyCode: 58)
         d.handsFreeEnabled = true

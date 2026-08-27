@@ -158,8 +158,7 @@ final class HotkeyEngine: @unchecked Sendable {
         case .reenable(let attempt):
             DebugLog.log("STASI-HK: Tap war deaktiviert – reaktiviere (\(attempt)/\(reenablePolicy.maxReenableAttempts))")
             CGEvent.tapEnable(tap: tap, enable: true)
-            isOperational = CGEvent.tapIsEnabled(tap: tap)
-            tapWasDisabled = !isOperational
+            applyTapReenableResult(isEnabled: CGEvent.tapIsEnabled(tap: tap))
         case .giveUp:
             DebugLog.log("STASI-HK: Tap wird wiederholt vom System deaktiviert – gebe auf. App-Neustart nötig, damit die Freigabe greift.")
             isOperational = false
@@ -179,9 +178,22 @@ final class HotkeyEngine: @unchecked Sendable {
         }
         tap = nil
         runLoopSource = nil
+        resetInputState()
+        isOperational = false
+    }
+
+    func applyTapReenableResult(isEnabled: Bool) {
+        isOperational = isEnabled
+        tapWasDisabled = !isEnabled
+        if isEnabled {
+            resetInputState()
+        }
+    }
+
+    private func resetInputState() {
         isDown = false
         pttModifierState = PhysicalModifierState()
-        isOperational = false
+        shortcut.reset()
     }
 
     deinit { stop() }
@@ -197,19 +209,7 @@ final class HotkeyEngine: @unchecked Sendable {
         // PTT
         switch type {
         case .flagsChanged where matchesKey && isModifier:
-            // Das Familienflag bleibt gesetzt, solange die jeweils andere Seite
-            // gehalten wird. Der physische KeyCode entscheidet daher über Up/Down.
-            let modifierFlag = Self.modifierFlag(for: keyCodeU)!
-            var down = pttModifierState.processFlagsChanged(
-                keyCode: keyCodeU,
-                familyFlagIsSet: event.flags.contains(modifierFlag)
-            )
-            // Ist bei Command gleichzeitig Control gedrückt, ist es ein Chord,
-            // kein Diktat-Start.
-            if modifierFlag == .maskCommand, event.flags.contains(.maskControl) {
-                down = false
-            }
-            transition(to: down)
+            processModifierFlagsChanged(keyCode: keyCodeU, flags: event.flags.rawValue)
         case .keyDown where matchesKey && !isModifier:
             // Normale Taste: Down, wenn geforderte Modifier gehalten werden.
             let down = combo.flags == 0 || (event.flags.rawValue & combo.flags) == combo.flags
@@ -228,14 +228,48 @@ final class HotkeyEngine: @unchecked Sendable {
         default: kind = .flagsChanged
         }
         let isRepeat = event.getIntegerValueField(.keyboardEventAutorepeat) != 0
-        let events = shortcut.process(kind: kind, keyCode: keyCodeU,
-                                      flags: event.flags.rawValue, isRepeat: isRepeat)
-        for e in events {
-            switch e {
-            case .chord(let c): onChord?(c)
+        processShortcut(
+            kind: kind,
+            keyCode: keyCodeU,
+            flags: event.flags.rawValue,
+            isRepeat: isRepeat
+        )
+    }
+
+    func processShortcut(kind: ShortcutDetector.Kind, keyCode: UInt64, flags: UInt64,
+                         isRepeat: Bool = false, now: Date = Date()) {
+        let events = shortcut.process(
+            kind: kind,
+            keyCode: keyCode,
+            flags: flags,
+            isRepeat: isRepeat,
+            now: now
+        )
+        for event in events {
+            switch event {
+            case .chord(let combo): onChord?(combo)
             case .handsFreeTap: onHandsFree?()
             }
         }
+    }
+
+    func processModifierFlagsChanged(keyCode: UInt64, flags: UInt64) {
+        guard keyCode == combo.keyCode, let modifierFlag = Self.modifierFlag(for: keyCode) else {
+            return
+        }
+        let eventFlags = CGEventFlags(rawValue: flags)
+        // Das Familienflag bleibt gesetzt, solange die jeweils andere Seite
+        // gehalten wird. Der physische KeyCode entscheidet daher über Up/Down.
+        var down = pttModifierState.processFlagsChanged(
+            keyCode: keyCode,
+            familyFlagIsSet: eventFlags.contains(modifierFlag)
+        )
+        // Ist bei Command gleichzeitig Control gedrückt, ist es ein Chord,
+        // kein Diktat-Start.
+        if modifierFlag == .maskCommand, eventFlags.contains(.maskControl) {
+            down = false
+        }
+        transition(to: down)
     }
 
     /// Bildet eine Modifier-Taste auf ihr CGEventFlag ab; nil für normale Tasten.
@@ -292,6 +326,11 @@ struct ShortcutDetector {
         self.handsFreeEnabled = handsFreeEnabled
         self.handsFreeKeyCode = handsFreeKeyCode
         self.doubleTapWindow = doubleTapWindow
+    }
+
+    mutating func reset() {
+        physicalModifierState = PhysicalModifierState()
+        lastModifierDownAt = nil
     }
 
     mutating func process(kind: Kind, keyCode: UInt64, flags: UInt64,

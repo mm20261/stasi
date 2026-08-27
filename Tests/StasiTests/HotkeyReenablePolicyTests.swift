@@ -1,4 +1,5 @@
 import XCTest
+import CoreGraphics
 @testable import Stasi
 
 final class HotkeyReenablePolicyTests: XCTestCase {
@@ -80,6 +81,110 @@ final class HotkeyReenablePolicyTests: XCTestCase {
         })
 
         XCTAssertEqual(probeCount, 1)
+    }
+
+    func testStopClearsLostModifierReleaseBeforeNextPress() {
+        let engine = HotkeyEngine(combo: .defaultPTT)
+        var pressCount = 0
+        engine.onPress = { pressCount += 1 }
+
+        engine.processModifierFlagsChanged(
+            keyCode: 54,
+            flags: CGEventFlags.maskCommand.rawValue
+        )
+        engine.stop()
+        engine.processModifierFlagsChanged(
+            keyCode: 54,
+            flags: CGEventFlags.maskCommand.rawValue
+        )
+
+        XCTAssertEqual(pressCount, 2)
+        XCTAssertTrue(engine.isDown)
+    }
+
+    func testStopClearsOldShortcutDoubleTapTimestamp() {
+        let engine = HotkeyEngine(combo: .defaultPTT, handsFreeEnabled: true)
+        var handsFreeCount = 0
+        engine.onHandsFree = { handsFreeCount += 1 }
+        let beforeStop = Date(timeIntervalSince1970: 0)
+
+        engine.processShortcut(
+            kind: .flagsChanged,
+            keyCode: ShortcutDetector.fnKeyCode,
+            flags: ShortcutDetector.secondaryFn,
+            now: beforeStop
+        )
+        engine.processShortcut(
+            kind: .flagsChanged,
+            keyCode: ShortcutDetector.fnKeyCode,
+            flags: 0,
+            now: beforeStop.addingTimeInterval(0.1)
+        )
+        engine.stop()
+        engine.processShortcut(
+            kind: .flagsChanged,
+            keyCode: ShortcutDetector.fnKeyCode,
+            flags: ShortcutDetector.secondaryFn,
+            now: beforeStop.addingTimeInterval(0.2)
+        )
+
+        XCTAssertEqual(handsFreeCount, 0)
+    }
+
+    func testSuccessfulTapReactivationClearsLostModifierRelease() {
+        let engine = HotkeyEngine(combo: .defaultPTT)
+        var pressCount = 0
+        engine.onPress = { pressCount += 1 }
+
+        engine.processModifierFlagsChanged(
+            keyCode: 54,
+            flags: CGEventFlags.maskCommand.rawValue
+        )
+        engine.applyTapReenableResult(isEnabled: true)
+        engine.processModifierFlagsChanged(
+            keyCode: 54,
+            flags: CGEventFlags.maskCommand.rawValue
+        )
+
+        XCTAssertTrue(engine.isOperational)
+        XCTAssertEqual(pressCount, 2)
+        XCTAssertTrue(engine.isDown)
+    }
+
+    func testSuccessfulTapReactivationResetsShortcutAfterLostRelease() {
+        let engine = HotkeyEngine(combo: .defaultPTT, handsFreeEnabled: true)
+        var handsFreeCount = 0
+        engine.onHandsFree = { handsFreeCount += 1 }
+        let beforeDisable = Date(timeIntervalSince1970: 0)
+        let afterReactivation = Date(timeIntervalSince1970: 10)
+
+        engine.processShortcut(
+            kind: .flagsChanged,
+            keyCode: ShortcutDetector.fnKeyCode,
+            flags: ShortcutDetector.secondaryFn,
+            now: beforeDisable
+        )
+        engine.applyTapReenableResult(isEnabled: true)
+        engine.processShortcut(
+            kind: .flagsChanged,
+            keyCode: ShortcutDetector.fnKeyCode,
+            flags: ShortcutDetector.secondaryFn,
+            now: afterReactivation
+        )
+        engine.processShortcut(
+            kind: .flagsChanged,
+            keyCode: ShortcutDetector.fnKeyCode,
+            flags: 0,
+            now: afterReactivation.addingTimeInterval(0.1)
+        )
+        engine.processShortcut(
+            kind: .flagsChanged,
+            keyCode: ShortcutDetector.fnKeyCode,
+            flags: ShortcutDetector.secondaryFn,
+            now: afterReactivation.addingTimeInterval(0.2)
+        )
+
+        XCTAssertEqual(handsFreeCount, 1)
     }
 
     @MainActor
