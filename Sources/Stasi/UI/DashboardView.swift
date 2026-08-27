@@ -575,15 +575,13 @@ private struct EarlierRowView: View {
 
 struct PermissionWarningCard: View {
     var onAllow: () -> Void
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var pulseOn = false
 
     var body: some View {
         HStack(spacing: 12) {
             Circle()
                 .fill(Theme.Palette.recRed)
                 .frame(width: 8, height: 8)
-                .opacity(pulseOn ? 0.25 : 1)
+                .pulseForever(intensity: 0.75)
             VStack(alignment: .leading, spacing: 2) {
                 Text(Copy.permissionWarningTitle)
                     .font(Theme.Typo.body().weight(.semibold))
@@ -613,15 +611,6 @@ struct PermissionWarningCard: View {
                 .overlay(RoundedRectangle(cornerRadius: 8)
                     .strokeBorder(Theme.Palette.warnRand, lineWidth: Theme.Metrics.hairline))
         )
-        .onAppear { startPulse() }
-        .onChange(of: reduceMotion) { _, newValue in startPulse() }
-    }
-
-    private func startPulse() {
-        guard !reduceMotion else { return }
-        withAnimation(.easeInOut(duration: 1.1).repeatForever(autoreverses: true)) {
-            pulseOn = true
-        }
     }
 }
 

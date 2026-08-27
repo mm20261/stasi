@@ -287,20 +287,7 @@ struct CardStyle: ViewModifier {
 }
 
 /// v3-Nebenkarte: identisch zur Hauptkarte (kein Unterschied in v3).
-struct SecondaryCardStyle: ViewModifier {
-    var padding: EdgeInsetWrapper = .uniform(16)
-
-    init(padding: CGFloat = 16) { self.padding = .uniform(padding) }
-    init(insets: EdgeInsets) { self.padding = .insets(insets) }
-
-    func body(content: Content) -> some View {
-        content
-            .padding(padding.edgeInsets)
-            .background(Theme.Palette.surface)
-            .clipShape(Theme.cardShape)
-            .shadow(color: Theme.shadow(Theme.accent), radius: 8, x: 0, y: 2)
-    }
-}
+typealias SecondaryCardStyle = CardStyle
 
 enum EdgeInsetWrapper {
     case uniform(CGFloat)

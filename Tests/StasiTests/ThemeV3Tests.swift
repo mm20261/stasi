@@ -76,4 +76,35 @@ final class ThemeV3Tests: XCTestCase {
         XCTAssertEqual(Theme.Metrics.radiusPill, 999)
         XCTAssertEqual(Theme.Metrics.gridGap, 12)
     }
+
+    // MARK: Wiederverwendung identischer UI-Strukturen
+
+    func testPermissionWarningUsesSharedReduceMotionPulse() throws {
+        let dashboard = try source(at: "Sources/Stasi/UI/DashboardView.swift")
+        let effects = try source(at: "Sources/Stasi/UI/Effects.swift")
+
+        XCTAssertTrue(dashboard.contains(".pulseForever(intensity: 0.75)"))
+        XCTAssertFalse(dashboard.contains("pulseOn"))
+        XCTAssertFalse(dashboard.contains("startPulse"))
+        XCTAssertTrue(effects.contains("pulsing = !reduced"))
+    }
+
+    func testSecondaryCardDelegatesToCardStyle() throws {
+        let theme = try source(at: "Sources/Stasi/UI/Theme.swift")
+
+        XCTAssertTrue(theme.contains("typealias SecondaryCardStyle = CardStyle"))
+        XCTAssertTrue(theme.contains("func secondaryCard(padding: CGFloat = 16)"))
+        XCTAssertTrue(theme.contains("func secondaryCard(insets: EdgeInsets)"))
+    }
+
+    private func source(at relativePath: String) throws -> String {
+        let repository = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        return try String(
+            contentsOf: repository.appendingPathComponent(relativePath),
+            encoding: .utf8
+        )
+    }
 }
