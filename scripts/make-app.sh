@@ -3,7 +3,7 @@
 # Aufruf: ./scripts/make-app.sh [Ausgabeordner]
 set -euo pipefail
 
-OUT_DIR="${1:-build}"
+OUT_DIR="${1:-${STASI_APP_OUTPUT_DIR:-build}}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 APP_NAME="Stasi"
 BUNDLE_ID="app.stasi.macos"
@@ -18,7 +18,12 @@ echo "▸ Swift-Build (release)…"
 cd "$ROOT"
 swift build -c release 2>&1 | tail -2
 
-BINARY="$(swift build -c release --show-bin-path)/$APP_NAME"
+BIN_DIR="$(swift build -c release --show-bin-path)"
+BINARY="$BIN_DIR/$APP_NAME"
+RESOURCE_BUNDLE="$BIN_DIR/Stasi_Stasi.bundle"
+
+test -x "$BINARY" || { echo "Stasi binary fehlt: $BINARY" >&2; exit 1; }
+test -d "$RESOURCE_BUNDLE" || { echo "Ressourcenbundle fehlt: $RESOURCE_BUNDLE" >&2; exit 1; }
 
 echo "▸ Bundle-Struktur…"
 rm -rf "$APP"
@@ -26,6 +31,7 @@ mkdir -p "$MACOS" "$RESOURCES"
 
 cp "$BINARY" "$MACOS/$APP_NAME"
 chmod +x "$MACOS/$APP_NAME"
+cp -R "$RESOURCE_BUNDLE" "$RESOURCES/Stasi_Stasi.bundle"
 
 echo "▸ Info.plist…"
 cat > "$CONTENTS/Info.plist" <<PLIST
