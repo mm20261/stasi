@@ -283,6 +283,30 @@ final class DictationSessionTests: XCTestCase {
         }
     }
 
+    private final class FocusGateRaceStub: @unchecked Sendable {
+        private let lock = NSLock()
+        private var current: TargetApplication?
+        private let target: TargetApplication
+
+        init(current: TargetApplication?, target: TargetApplication) {
+            self.current = current
+            self.target = target
+        }
+
+        func application() -> TargetApplication? {
+            lock.withLock { current }
+        }
+
+        func setCurrent(_ application: TargetApplication?) {
+            lock.withLock { current = application }
+        }
+
+        func editableAndRestoreTarget() -> Bool {
+            lock.withLock { current = target }
+            return true
+        }
+    }
+
     private final class RevealSpy {
         private(set) var urls: [URL] = []
 
@@ -552,6 +576,40 @@ final class DictationSessionTests: XCTestCase {
         XCTAssertEqual(clipboard.strings, ["Finaler Text"])
         XCTAssertEqual(history.records.first?.targetApp, "Slack")
         XCTAssertTrue(toasts.contains { $0.contains("Slack") })
+    }
+
+    func testFocusChangeBetweenEditableAndApplicationChecksSkipsInjection() async {
+        let slack = TargetApplication(
+            localizedName: "Slack",
+            bundleIdentifier: "com.tinyspeck.slackmacgap",
+            processIdentifier: 42
+        )
+        let notes = TargetApplication(
+            localizedName: "Notes",
+            bundleIdentifier: "com.apple.Notes",
+            processIdentifier: 84
+        )
+        let focus = FocusGateRaceStub(current: slack, target: slack)
+        let audio = FakeAudioCapture()
+        let injector = TextInjectorSpy()
+        let clipboard = ClipboardSpy()
+        let app = makeApp(
+            audio: audio,
+            engines: [FakeSpeechEngine(text: "Finaler Text")],
+            frontmostApplication: { focus.application() },
+            isTextFieldEditable: { focus.editableAndRestoreTarget() },
+            injectText: { injector.inject($0) },
+            copyToClipboard: { clipboard.copy($0) }
+        )
+
+        app.startDictation()
+        await waitUntil { audio.isRunning }
+        app.stopDictation(commit: true)
+        focus.setCurrent(notes)
+        await waitUntil { app.phase == .idle }
+
+        XCTAssertEqual(injector.callCount, 0)
+        XCTAssertEqual(clipboard.strings, ["Finaler Text"])
     }
 
     func testRelaunchedTargetWithSameBundleSkipsInjection() async {

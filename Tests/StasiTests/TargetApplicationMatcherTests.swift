@@ -12,6 +12,16 @@ final class TargetApplicationMatcherTests: XCTestCase {
         XCTAssertTrue(TargetApplicationMatcher.matches(captured: slack, current: slack))
     }
 
+    func testSameBundleAndProcessMatchesDespiteDifferentLocalizedName() {
+        let renamedSlack = TargetApplication(
+            localizedName: "Slack Beta",
+            bundleIdentifier: "com.tinyspeck.slackmacgap",
+            processIdentifier: 42
+        )
+
+        XCTAssertTrue(TargetApplicationMatcher.matches(captured: slack, current: renamedSlack))
+    }
+
     func testSameBundleWithDifferentProcessDoesNotMatch() {
         let relaunchedSlack = TargetApplication(
             localizedName: "Slack",

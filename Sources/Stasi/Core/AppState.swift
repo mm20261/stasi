@@ -865,15 +865,25 @@ final class AppState {
         let isTextFieldEditable = isTextFieldEditable
         let injectText = injectText
         Task.detached(priority: .userInitiated) { [weak self] in
-            let editable = isTextFieldEditable()
-            let sameTarget = await MainActor.run { [weak self] in
+            let sameTargetBeforeEditabilityCheck = await MainActor.run { [weak self] in
                 guard let self else { return false }
                 return TargetApplicationMatcher.matches(
                     captured: targetApplicationSnapshot,
                     current: self.frontmostApplication()
                 )
             }
-            if sameTarget && editable {
+            let editable = isTextFieldEditable()
+            let sameTargetImmediatelyBeforeInjection = await MainActor.run { [weak self] in
+                guard let self else { return false }
+                return TargetApplicationMatcher.matches(
+                    captured: targetApplicationSnapshot,
+                    current: self.frontmostApplication()
+                )
+            }
+            let shouldInject = sameTargetBeforeEditabilityCheck
+                && editable
+                && sameTargetImmediatelyBeforeInjection
+            if shouldInject {
                 injectText(trimmed)
             }
             // Zwei Poll-Zyklen Sichtbarkeit, auch wenn das Einfügen nur einen
@@ -882,7 +892,7 @@ final class AppState {
             try? await Task.sleep(nanoseconds: 100_000_000)
             await MainActor.run { [weak self] in
                 guard let self else { return }
-                if !sameTarget || !editable {
+                if !shouldInject {
                     self.onToast?(
                         "Nicht in \(targetApplicationSnapshot.localizedName) eingefügt: Ziel-App oder Textfokus hat sich geändert. Der Text liegt in der Zwischenablage.",
                         false
