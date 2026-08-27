@@ -69,7 +69,11 @@ protocol AudioCapturing: AnyObject, Sendable {
                onRuntimeError: @escaping @Sendable (AudioCaptureRuntimeError) -> Void,
                onBuffer: @escaping @Sendable (AudioChunk) -> Void) throws
 
-    func activateCapture()
+    @discardableResult
+    func activateCapture() -> Bool
+
+    @discardableResult
+    func openCapture() -> Bool
 
     @discardableResult
     func stop() async -> URL?
@@ -116,6 +120,14 @@ final class AudioCapture: AudioCapturing, @unchecked Sendable {
         static let inputOnly = IOConfiguration(inputEnabled: true, outputEnabled: false)
     }
 
+    private enum CaptureAdmission: UInt8 {
+        case suspended
+        case activating
+        case active
+        case failed
+        case stopped
+    }
+
     /// Schmale Hardware-Naht fuer Dateilebenszyklus-Tests ohne Mikrofon/TCC.
     struct AudioUnitHooks {
         let configureInput: @Sendable (
@@ -150,6 +162,7 @@ final class AudioCapture: AudioCapturing, @unchecked Sendable {
     private let backlogCapacity: Int
     private let beforeBacklogDequeue: @Sendable () -> Void
     private let afterBacklogFinish: @Sendable () -> Void
+    private let afterAdmissionSnapshot: @Sendable () -> Void
     private let beforeProcessing: @Sendable () -> Void
     private let processingFailure: @Sendable (AVAudioPCMBuffer) -> AudioCaptureRuntimeError?
     private let processingQueue = DispatchQueue(label: "app.stasi.audio.processing",
@@ -158,7 +171,7 @@ final class AudioCapture: AudioCapturing, @unchecked Sendable {
     private var processingWorkerStarted = false
     private let runtimeErrorReporter = RuntimeErrorReporter()
     private let stateLock = NSLock()
-    private let captureActive = Atomic<Bool>(false)
+    private let captureAdmission = Atomic<UInt8>(CaptureAdmission.stopped.rawValue)
     private var isRunningStorage = false
     private var isStoppingStorage = false
     var isRunning: Bool {
@@ -196,6 +209,7 @@ final class AudioCapture: AudioCapturing, @unchecked Sendable {
          backlogCapacity: Int = AudioCapture.defaultBacklogCapacity,
          beforeBacklogDequeue: @escaping @Sendable () -> Void = {},
          afterBacklogFinish: @escaping @Sendable () -> Void = {},
+         afterAdmissionSnapshot: @escaping @Sendable () -> Void = {},
          beforeProcessing: @escaping @Sendable () -> Void = {},
          processingFailure: @escaping @Sendable (AVAudioPCMBuffer) -> AudioCaptureRuntimeError? = { _ in nil }) {
         precondition(backlogCapacity > 0)
@@ -204,6 +218,7 @@ final class AudioCapture: AudioCapturing, @unchecked Sendable {
         self.backlogCapacity = backlogCapacity
         self.beforeBacklogDequeue = beforeBacklogDequeue
         self.afterBacklogFinish = afterBacklogFinish
+        self.afterAdmissionSnapshot = afterAdmissionSnapshot
         self.beforeProcessing = beforeProcessing
         self.processingFailure = processingFailure
     }
@@ -219,7 +234,8 @@ final class AudioCapture: AudioCapturing, @unchecked Sendable {
         guard !isRunningStorage, !isStoppingStorage else {
             throw AudioCaptureError.alreadyRunning
         }
-        captureActive.store(captureInitiallyActive, ordering: .releasing)
+        let initialAdmission: CaptureAdmission = captureInitiallyActive ? .active : .suspended
+        captureAdmission.store(initialAdmission.rawValue, ordering: .releasing)
         self.onBuffer = onBuffer
         self.outputFormat = outputFormat
         recordURL = url
@@ -245,7 +261,7 @@ final class AudioCapture: AudioCapturing, @unchecked Sendable {
             }
 
             let sink: @Sendable (AVAudioPCMBuffer) -> Void = { [weak self] buffer in
-                self?.enqueueRenderBuffer(buffer)
+                self?.acceptRenderedBuffer(buffer)
             }
             audioUnitPrepared = true
             let native: AVAudioFormat
@@ -297,19 +313,43 @@ final class AudioCapture: AudioCapturing, @unchecked Sendable {
             self.outputFormat = nil
             self.onBuffer = nil
             recordURL = nil
-            captureActive.store(false, ordering: .releasing)
+            captureAdmission.store(CaptureAdmission.stopped.rawValue, ordering: .releasing)
             isRunningStorage = false
             throw error
         }
     }
 
-    /// Oeffnet nach erfolgreichem Hardware-Start die atomare Capture-Grenze.
-    /// Render-Puffer davor werden ohne Besitzkopie, Queue-Arbeit oder WAV-Schreibung verworfen.
-    func activateCapture() {
-        stateLock.withLock {
-            guard isRunningStorage, !isStoppingStorage else { return }
-            captureActive.store(true, ordering: .releasing)
+    /// Reserviert die Capture-Aktivierung atomar gegen einen Runtimefehler.
+    /// Bis `openCapture()` bleiben alle Render-Puffer gesperrt, damit der Cue nicht einfliesst.
+    @discardableResult
+    func activateCapture() -> Bool {
+        while true {
+            let current = captureAdmission.load(ordering: .acquiring)
+            switch CaptureAdmission(rawValue: current) {
+            case .suspended:
+                if captureAdmission.compareExchange(
+                    expected: CaptureAdmission.suspended.rawValue,
+                    desired: CaptureAdmission.activating.rawValue,
+                    ordering: .acquiringAndReleasing
+                ).exchanged {
+                    return true
+                }
+            case .activating, .active:
+                return true
+            case .failed, .stopped, nil:
+                return false
+            }
         }
+    }
+
+    /// Oeffnet nach dem vollstaendigen Cue die eigentliche Render-Zulassung.
+    @discardableResult
+    func openCapture() -> Bool {
+        captureAdmission.compareExchange(
+            expected: CaptureAdmission.activating.rawValue,
+            desired: CaptureAdmission.active.rawValue,
+            ordering: .acquiringAndReleasing
+        ).exchanged
     }
 
     /// Stoppt und entsorgt nur die input-only AUHAL, laesst den Mitschrieb
@@ -318,7 +358,7 @@ final class AudioCapture: AudioCapturing, @unchecked Sendable {
     func stop() async -> URL? {
         let shouldStop = stateLock.withLock { () -> Bool in
             guard isRunningStorage else { return false }
-            captureActive.store(false, ordering: .releasing)
+            captureAdmission.store(CaptureAdmission.stopped.rawValue, ordering: .releasing)
             isRunningStorage = false
             isStoppingStorage = true
             // Der Hardware-Teil bleibt synchron und beendet weitere Render-Callbacks,
@@ -619,21 +659,49 @@ final class AudioCapture: AudioCapturing, @unchecked Sendable {
 
     // MARK: Audio-Thread
 
+    /// Der Zustandswechsel gewinnt atomar gegen `activateCapture()`/`openCapture()`.
+    /// Erst danach wird der Fehler an AppState ausgeliefert.
+    nonisolated func reportRuntimeError(_ error: AudioCaptureRuntimeError) {
+        while true {
+            let current = captureAdmission.load(ordering: .acquiring)
+            switch CaptureAdmission(rawValue: current) {
+            case .suspended, .activating, .active:
+                if captureAdmission.compareExchange(
+                    expected: current,
+                    desired: CaptureAdmission.failed.rawValue,
+                    ordering: .acquiringAndReleasing
+                ).exchanged {
+                    runtimeErrorReporter.report(error)
+                    return
+                }
+            case .stopped:
+                // Worker-Drain-Fehler nach synchronem Hardware-Stop bleiben fatal.
+                runtimeErrorReporter.report(error)
+                return
+            case .failed, nil:
+                return
+            }
+        }
+    }
+
     nonisolated fileprivate func renderInput(
         actionFlags: UnsafeMutablePointer<AudioUnitRenderActionFlags>?,
         timeStamp: UnsafePointer<AudioTimeStamp>,
         frameCount: UInt32
     ) -> OSStatus {
+        let admitted = captureAdmission.load(ordering: .acquiring)
+            == CaptureAdmission.active.rawValue
+        afterAdmissionSnapshot()
         guard let audioUnit, let inputBuffer else {
             let status = kAudio_ParamError
-            runtimeErrorReporter.report(.renderFailed(status))
+            reportRuntimeError(.renderFailed(status))
             return status
         }
 
         let preparationStatus = Self.prepareRenderBuffer(inputBuffer,
                                                          frameCount: frameCount)
         guard preparationStatus == noErr else {
-            runtimeErrorReporter.report(.bufferCopyFailed)
+            reportRuntimeError(.bufferCopyFailed)
             return preparationStatus
         }
 
@@ -644,10 +712,10 @@ final class AudioCapture: AudioCapturing, @unchecked Sendable {
                                      frameCount,
                                      inputBuffer.mutableAudioBufferList)
         guard status == noErr else {
-            runtimeErrorReporter.report(.renderFailed(status))
+            reportRuntimeError(.renderFailed(status))
             return status
         }
-        enqueueRenderBuffer(inputBuffer)
+        enqueueRenderBuffer(inputBuffer, admitted: admitted)
         return noErr
     }
 
@@ -688,16 +756,26 @@ final class AudioCapture: AudioCapturing, @unchecked Sendable {
         return noErr
     }
 
+    /// Hook-Sinks repraesentieren einen bereits gerenderten Callback. Auch hier
+    /// wird die Zulassung genau einmal am Callback-Eintritt gesnapshottet.
+    nonisolated private func acceptRenderedBuffer(_ buffer: AVAudioPCMBuffer) {
+        let admitted = captureAdmission.load(ordering: .acquiring)
+            == CaptureAdmission.active.rawValue
+        afterAdmissionSnapshot()
+        enqueueRenderBuffer(buffer, admitted: admitted)
+    }
+
     /// Der AUHAL-Puffer wird noch im synchronen Callback-Aufruf tief kopiert.
     /// Diese verbleibende AVAudioPCMBuffer-Allokation ist bewusst dokumentiert:
     /// Ein sicherer vorallozierter Pool ist mit variablen Slice-Laengen und den
     /// AVFoundation-Objektlebenszeiten hier nicht klein genug nachweisbar. Hinter
     /// der Besitzkopie ist der Backlog strikt auf `backlogCapacity` begrenzt.
-    nonisolated private func enqueueRenderBuffer(_ buffer: AVAudioPCMBuffer) {
-        guard captureActive.load(ordering: .acquiring) else { return }
+    nonisolated private func enqueueRenderBuffer(_ buffer: AVAudioPCMBuffer,
+                                                 admitted: Bool) {
+        guard admitted else { return }
         guard !runtimeErrorReporter.hasReported else { return }
         guard let owned = Self.copy(buffer) else {
-            runtimeErrorReporter.report(.bufferCopyFailed)
+            reportRuntimeError(.bufferCopyFailed)
             return
         }
         guard let processingBacklog else { return }
@@ -705,7 +783,7 @@ final class AudioCapture: AudioCapturing, @unchecked Sendable {
         case .enqueued, .closed:
             return
         case .full:
-            runtimeErrorReporter.report(.processingBacklog)
+            reportRuntimeError(.processingBacklog)
         }
     }
 
@@ -748,7 +826,7 @@ final class AudioCapture: AudioCapturing, @unchecked Sendable {
         beforeProcessing()
         guard !runtimeErrorReporter.hasReported else { return }
         if let failure = processingFailure(buffer) {
-            runtimeErrorReporter.report(failure)
+            reportRuntimeError(failure)
             return
         }
 
@@ -764,7 +842,7 @@ final class AudioCapture: AudioCapturing, @unchecked Sendable {
             let capacity = AVAudioFrameCount((Double(buffer.frameLength) * ratio).rounded(.up)) + 64
             guard let converted = AVAudioPCMBuffer(pcmFormat: outputFormat,
                                                    frameCapacity: capacity) else {
-                runtimeErrorReporter.report(.conversionFailed("Zielpuffer konnte nicht angelegt werden."))
+                reportRuntimeError(.conversionFailed("Zielpuffer konnte nicht angelegt werden."))
                 return
             }
             nonisolated(unsafe) let input = buffer
@@ -780,7 +858,7 @@ final class AudioCapture: AudioCapturing, @unchecked Sendable {
             }
             guard error == nil, status != .error, converted.frameLength > 0 else {
                 let details = error?.localizedDescription ?? "AVAudioConverter lieferte keine Audiodaten."
-                runtimeErrorReporter.report(.conversionFailed(details))
+                reportRuntimeError(.conversionFailed(details))
                 return
             }
             processed = converted
@@ -795,7 +873,7 @@ final class AudioCapture: AudioCapturing, @unchecked Sendable {
             do {
                 try file.write(from: processed)
             } catch {
-                runtimeErrorReporter.report(.wavWriteFailed(error.localizedDescription))
+                reportRuntimeError(.wavWriteFailed(error.localizedDescription))
                 return
             }
         }

@@ -45,6 +45,7 @@ final class DictationSession {
     private var shouldPreserveAudioFile = false
     private var shouldRecoverClosedAudioFile = false
     private var runtimeFailureHandled = false
+    private(set) var captureActivationWon = false
     private var emittedSoundEvents: Set<SoundEvent> = []
     private(set) var recoveredAudioURL: URL?
 
@@ -73,6 +74,11 @@ final class DictationSession {
     func beginCompletion(_ intent: CompletionIntent) {
         guard completionIntent == .active else { return }
         completionIntent = intent
+    }
+
+    func markCaptureActivationWon() {
+        guard state == .settingUp else { return }
+        captureActivationWon = true
     }
 
     func beginRuntimeFailure() -> Bool {

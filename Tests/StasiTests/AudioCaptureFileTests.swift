@@ -718,13 +718,108 @@ final class AudioCaptureFileTests: XCTestCase {
         discarded = nil
         XCTAssertNil(weakDiscarded.value)
 
-        capture.activateCapture()
+        XCTAssertTrue(capture.activateCapture())
+        XCTAssertTrue(capture.openCapture())
         let active = try XCTUnwrap(AVAudioPCMBuffer(
             pcmFormat: outputFormat,
             frameCapacity: 16
         ))
         active.frameLength = 16
         sink(active)
+        await fulfillment(of: [delivered], timeout: 1)
+        _ = await capture.stop()
+
+        let file = try AVAudioFile(forReading: url)
+        XCTAssertEqual(file.length, 16)
+    }
+
+    func testRuntimeErrorWinsSuspendedActivationCAS() async throws {
+        let outputFormat = format()
+        let errorReported = expectation(description: "Runtimefehler geliefert")
+        let capture = AudioCapture(audioUnitHooks: hooks(format: outputFormat))
+        try capture.start(
+            outputFormat: outputFormat,
+            recordTo: nil,
+            preferredMicUID: nil,
+            captureInitiallyActive: false,
+            onRuntimeError: { _ in errorReported.fulfill() }
+        ) { _ in }
+
+        capture.reportRuntimeError(.processingBacklog)
+        XCTAssertFalse(capture.activateCapture())
+        await fulfillment(of: [errorReported], timeout: 1)
+        _ = await capture.stop()
+    }
+
+    func testActivationWinsCASAndLaterRuntimeFailurePreventsOpeningCapture() async throws {
+        let outputFormat = format()
+        let errorReported = expectation(description: "Runtimefehler geliefert")
+        let capture = AudioCapture(audioUnitHooks: hooks(format: outputFormat))
+        try capture.start(
+            outputFormat: outputFormat,
+            recordTo: nil,
+            preferredMicUID: nil,
+            captureInitiallyActive: false,
+            onRuntimeError: { _ in errorReported.fulfill() }
+        ) { _ in }
+
+        XCTAssertTrue(capture.activateCapture())
+        capture.reportRuntimeError(.processingBacklog)
+        XCTAssertFalse(capture.openCapture())
+        await fulfillment(of: [errorReported], timeout: 1)
+        _ = await capture.stop()
+    }
+
+    func testCallbackEnteringWhileSuspendedStaysDiscardedAcrossActivation() async throws {
+        let outputFormat = format()
+        let url = makeDirectory().appendingPathComponent("straddling-callback.wav")
+        let sinkBox = SinkBox()
+        let snapshotTaken = DispatchSemaphore(value: 0)
+        let resumeCallback = DispatchSemaphore(value: 0)
+        let callbackFinished = DispatchSemaphore(value: 0)
+        let didBlock = LockedFlag()
+        let delivered = expectation(description: "Nur nächster aktiver Callback wird geliefert")
+        let capture = AudioCapture(
+            audioUnitHooks: AudioCapture.AudioUnitHooks(
+                configureInput: { _, _, sink in
+                    sinkBox.store(sink)
+                    return outputFormat
+                },
+                initialize: {}, start: {}, stop: {}, uninitialize: {}, dispose: {}
+            ),
+            afterAdmissionSnapshot: {
+                guard !didBlock.get() else { return }
+                didBlock.set(true)
+                snapshotTaken.signal()
+                resumeCallback.wait()
+            }
+        )
+        try capture.start(
+            outputFormat: outputFormat,
+            recordTo: url,
+            preferredMicUID: nil,
+            captureInitiallyActive: false,
+            onRuntimeError: { _ in XCTFail("Kein Runtimefehler erwartet") }
+        ) { _ in delivered.fulfill() }
+        let sink = try XCTUnwrap(sinkBox.load())
+        let buffer = try XCTUnwrap(AVAudioPCMBuffer(
+            pcmFormat: outputFormat,
+            frameCapacity: 16
+        ))
+        buffer.frameLength = 16
+        nonisolated(unsafe) let straddlingBuffer = buffer
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            sink(straddlingBuffer)
+            callbackFinished.signal()
+        }
+        XCTAssertEqual(snapshotTaken.wait(timeout: .now() + 1), .success)
+        XCTAssertTrue(capture.activateCapture())
+        XCTAssertTrue(capture.openCapture())
+        resumeCallback.signal()
+        XCTAssertEqual(callbackFinished.wait(timeout: .now() + 1), .success)
+
+        sink(buffer)
         await fulfillment(of: [delivered], timeout: 1)
         _ = await capture.stop()
 

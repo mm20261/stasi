@@ -39,7 +39,11 @@ final class DictationSessionTests: XCTestCase {
         private(set) var startCount = 0
         private(set) var stopCount = 0
         private(set) var activateCount = 0
+        private(set) var openCount = 0
         private(set) var isCaptureActive = false
+        private var activationReserved = false
+        private var runtimeFailed = false
+        var activationShouldFail = false
         var startError: Error?
         var stoppedURL: URL?
         private(set) var startedURL: URL?
@@ -47,6 +51,7 @@ final class DictationSessionTests: XCTestCase {
         private var onRuntimeError: (@Sendable (AudioCaptureRuntimeError) -> Void)?
         var onStart: (() -> Void)?
         var onActivate: (() -> Void)?
+        var onOpen: (() -> Void)?
         var onStop: (() -> Void)?
         var suspendFirstStop = false
         private var firstStopContinuation: CheckedContinuation<URL?, Never>?
@@ -65,20 +70,32 @@ final class DictationSessionTests: XCTestCase {
             startedURL = url
             self.onRuntimeError = onRuntimeError
             self.onBuffer = onBuffer
+            activationReserved = captureInitiallyActive
             isCaptureActive = captureInitiallyActive
+            runtimeFailed = false
             onStart?()
             if let startError {
+                activationReserved = false
                 isCaptureActive = false
                 throw startError
             }
             isRunning = true
         }
 
-        func activateCapture() {
-            guard isRunning, !isCaptureActive else { return }
+        func activateCapture() -> Bool {
             activateCount += 1
-            isCaptureActive = true
             onActivate?()
+            guard isRunning, !runtimeFailed, !activationShouldFail else { return false }
+            activationReserved = true
+            return true
+        }
+
+        func openCapture() -> Bool {
+            guard isRunning, activationReserved, !runtimeFailed else { return false }
+            openCount += 1
+            isCaptureActive = true
+            onOpen?()
+            return true
         }
 
         func emit(_ chunk: AudioChunk) {
@@ -87,6 +104,8 @@ final class DictationSessionTests: XCTestCase {
         }
 
         func fail(_ error: AudioCaptureRuntimeError) {
+            runtimeFailed = true
+            isCaptureActive = false
             onRuntimeError?(error)
         }
 
@@ -94,6 +113,7 @@ final class DictationSessionTests: XCTestCase {
             stopCount += 1
             onStop?()
             isRunning = false
+            activationReserved = false
             isCaptureActive = false
             guard stopCount == 1 else { return nil }
             guard suspendFirstStop else { return stoppedURL }
@@ -1432,7 +1452,7 @@ final class DictationSessionTests: XCTestCase {
         XCTAssertEqual(history.records.first?.durationSecs ?? -1, 0.05, accuracy: 0.001)
     }
 
-    func testRuntimeFailureDuringStartCueCancelsStartedAndPlaysFailedOnly() async {
+    func testActivationWinningBeforeCueMakesCueRuntimeFailurePostStart() async {
         let audio = FakeAudioCapture()
         let cueGate = PermissionGate()
         let sound = SoundFeedbackSpy(onPlay: { event in
@@ -1449,6 +1469,7 @@ final class DictationSessionTests: XCTestCase {
         app.startDictation()
         await waitUntil { await cueGate.requested }
         XCTAssertTrue(audio.isRunning)
+        XCTAssertEqual(audio.activateCount, 1)
         XCTAssertFalse(audio.isCaptureActive)
 
         audio.fail(.processingBacklog)
@@ -1456,7 +1477,27 @@ final class DictationSessionTests: XCTestCase {
         await cueGate.resolve(true)
         await waitUntil { app.phase == .idle }
 
-        XCTAssertEqual(audio.activateCount, 0)
+        XCTAssertEqual(audio.openCount, 0)
+        XCTAssertEqual(audio.stopCount, 1)
+        XCTAssertEqual(sound.events, [.recordingStarted, .recordingStopped, .failed])
+    }
+
+    func testRuntimeErrorWinningActivationCrossingPlaysFailedOnly() async {
+        let audio = FakeAudioCapture()
+        let sound = SoundFeedbackSpy()
+        audio.onActivate = { audio.fail(.processingBacklog) }
+        let app = makeApp(
+            audio: audio,
+            engines: [FakeSpeechEngine()],
+            soundFeedback: sound
+        )
+        app.settings.soundOn = true
+
+        app.startDictation()
+        await waitUntil { app.phase == .idle && app.currentSession == nil }
+
+        XCTAssertEqual(audio.activateCount, 1)
+        XCTAssertEqual(audio.openCount, 0)
         XCTAssertEqual(audio.stopCount, 1)
         XCTAssertEqual(sound.events, [.failed])
     }
@@ -1572,7 +1613,7 @@ final class DictationSessionTests: XCTestCase {
         await waitUntil { app.phase == .idle }
     }
 
-    func testHardwareStartsThenCueFinishesThenCaptureActivatesBeforeRecordingPublishes() async {
+    func testHardwareStartsThenActivationWinsThenCueFinishesThenCaptureOpens() async {
         let audio = FakeAudioCapture()
         let events = EventLog()
         weak var appReference: AppState?
@@ -1581,6 +1622,11 @@ final class DictationSessionTests: XCTestCase {
             XCTAssertEqual(appReference?.phase, .preparing)
             XCTAssertNil(appReference?.recordStart)
             events.append("capture.activate")
+        }
+        audio.onOpen = {
+            XCTAssertEqual(appReference?.phase, .preparing)
+            XCTAssertNil(appReference?.recordStart)
+            events.append("capture.open")
         }
         let app = makeApp(
             audio: audio,
@@ -1598,7 +1644,9 @@ final class DictationSessionTests: XCTestCase {
         app.startDictation()
         await waitUntil { app.phase == .recording }
 
-        XCTAssertEqual(events.events, ["hardware.start", "cue.complete", "capture.activate"])
+        XCTAssertEqual(events.events, [
+            "hardware.start", "capture.activate", "cue.complete", "capture.open",
+        ])
         XCTAssertTrue(audio.isCaptureActive)
         XCTAssertNotNil(app.recordStart)
         app.requestDiscard()
@@ -1956,6 +2004,7 @@ final class DictationSessionTests: XCTestCase {
         let audio = FakeAudioCapture()
         audio.onStart = { timeline.append("hardware.start") }
         audio.onActivate = { timeline.append("capture.activate") }
+        audio.onOpen = { timeline.append("capture.open") }
         audio.onStop = { timeline.append("audio.stop") }
         let sound = SoundFeedbackSpy(timeline: timeline)
         let app = makeApp(
@@ -1974,8 +2023,8 @@ final class DictationSessionTests: XCTestCase {
             .recordingStarted, .recordingStopped, .processingCompleted,
         ])
         XCTAssertEqual(timeline.events, [
-            "hardware.start", "sound.recordingStarted", "capture.activate", "audio.stop",
-            "sound.recordingStopped", "sound.processingCompleted",
+            "hardware.start", "capture.activate", "sound.recordingStarted", "capture.open",
+            "audio.stop", "sound.recordingStopped", "sound.processingCompleted",
         ])
     }
 

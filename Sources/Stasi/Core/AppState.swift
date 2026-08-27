@@ -463,13 +463,11 @@ final class AppState {
         await soundFeedback.play(event)
     }
 
-    private func playRecordingStartCue(for session: DictationSession,
-                                       health: DictationSessionHealth) async -> Bool {
+    private func playRecordingStartCue(for session: DictationSession) async -> Bool {
         if session.soundFeedbackEnabled {
             await soundFeedback.play(.recordingStarted)
         }
         guard !Task.isCancelled,
-              health.audioRuntimeError == nil,
               session === currentSession,
               session.state == .settingUp else { return false }
         return session.claimSoundEvent(.recordingStarted)
@@ -618,7 +616,9 @@ final class AppState {
                             guard let self, let session else { return }
                             if session.state == .settingUp,
                                let setupTask = session.setupTask {
-                                setupTask.cancel()
+                                if !session.captureActivationWon {
+                                    setupTask.cancel()
+                                }
                                 Task { @MainActor [weak self, weak session] in
                                     await setupTask.value
                                     guard let self, let session else { return }
@@ -637,13 +637,13 @@ final class AppState {
                     return
                 }
                 guard await self.setupShouldContinue(session) else { return }
-                let startCueCompleted = await self.playRecordingStartCue(for: session,
-                                                                         health: health)
-                guard !Task.isCancelled else { return }
-                if let runtimeError = health.audioRuntimeError {
-                    await self.handleAudioRuntimeError(runtimeError, session: session)
+                guard session.audio.activateCapture() else {
+                    await self.handleCaptureActivationFailure(session)
                     return
                 }
+                session.markCaptureActivationWon()
+                let startCueCompleted = await self.playRecordingStartCue(for: session)
+                guard !Task.isCancelled else { return }
                 guard await self.setupShouldContinue(session),
                       startCueCompleted else { return }
                 if let runtimeError = health.audioRuntimeError {
@@ -652,7 +652,10 @@ final class AppState {
                 }
                 session.updateTargetApplication(self.captureTargetApplication())
                 let recordingStartCandidate = self.now()
-                session.audio.activateCapture()
+                guard session.audio.openCapture() else {
+                    await self.handleCaptureActivationFailure(session)
+                    return
+                }
                 guard session.beginRecording() else { return }
                 self.recordStart = recordingStartCandidate
                 self.elapsed = 0
@@ -779,6 +782,22 @@ final class AppState {
                                            duration: duration,
                                            audioURL: recordedURL ?? session.audioURL,
                                            session: session)
+        }
+    }
+
+    private func handleCaptureActivationFailure(_ session: DictationSession) async {
+        guard session === currentSession, session.beginRuntimeFailure() else { return }
+        DebugLog.log("STASI-AUDIO: Capture-Aktivierung von Runtimefehler überholt")
+        session.state = .stopping
+        phase = .transcribing
+        await teardown(session)
+        await playSound(.failed, for: session)
+        let recoveredURL = session.recoveredAudioURL.flatMap { registerRecoveryAudio(at: $0) }
+        finishAbortedSession(session)
+        if recoveredURL != nil {
+            onToast?("Die Aufnahme ist unvollständig. Die Wiederherstellungsdatei wurde im Finder geöffnet.", false)
+        } else {
+            onToast?("Die Audioaufnahme ist fehlgeschlagen und wurde verworfen.", false)
         }
     }
 
