@@ -3,10 +3,11 @@
 > Dieses File ist das Memory für Coding-Sessions. Es wird bei jedem Session-Start
 > gelesen und enthält ALLES Wichtige: Stand, Architektur, harte Lektionen, Regeln.
 
-## Kommunikation
+## Kommunikation und Entwicklungsumgebung
 
 - **Immer auf Deutsch** mit dem Nutzer schreiben und erklären.
-- Nutzer: Philipp, MacBook Pro M5 Pro (Mac17,8), 64 GB, macOS 26.6.2, Xcode 26.6 (Swift 6.3.3).
+- Repository-Anforderungen: macOS 26 sowie eine Toolchain mit Unterstützung für
+  Swift Tools 6.2 (siehe `Package.swift`).
 
 ## Was ist Stasi?
 
@@ -94,7 +95,8 @@ Nach jedem neuen Protokoll schlägt **Auto-gelernt** wiederholt diktierte, unbek
 Begriffe vor (DE konservativ über Großschreibung mitten im Satz, EN zusätzlich über
 unbekannte Wörter). Vorschläge lassen sich übernehmen oder dauerhaft ignorieren.
 
-**Test-Suite: 344 Tests, 0 Fehler** (`Tests/StasiTests/`; davon 4 Pipeline-E2E gated).
+**Test-Suite:** Vor Commits muss die vollständige Suite unter `Tests/StasiTests/`
+laufen; Pipeline-E2E-Tests bleiben ohne TCC-Consent gegatet.
 TDD etabliert – bei Änderungen an Logik: erst Test, dann Fix.
 
 ### Bekannte Grenzen / offene Punkte
@@ -181,10 +183,10 @@ Sources/Stasi/
 
 scripts/make-app.sh            → build/Stasi.app (stabil signiert, Icon aus import/…/icons/anthrazit)
 scripts/gen_icon.swift         → Fallback-Icon-Generator
-Tests/StasiTests/              → 344 Tests (XCTest): AutoLearnScout/TextTidy/FillerFilter/SelfCorrectionResolver/
-                                 TranscriptPolisher/DictationSession/HotkeyReenablePolicy/
-                                 AudioCaptureFile/DictionaryWatcher/ThemeV3/CopyV3/
-                                 ProtocolSearch/PillChrome/UpdateChecker + Bestand
+Tests/StasiTests/              → vollständige XCTest-Suite: AutoLearnScout/TextTidy/FillerFilter/
+                                 SelfCorrectionResolver/TranscriptPolisher/DictationSession/
+                                 HotkeyReenablePolicy/AudioCaptureFile/DictionaryWatcher/ThemeV3/
+                                 CopyV3/ProtocolSearch/PillChrome/UpdateChecker + Bestand
 ```
 
 ## ⚠️ HART ERARBEITETE REGELN (macOS 26.6 / Swift 6.3 – NICHT verletzen!)
@@ -300,15 +302,13 @@ echter, vom Nutzer reproduzierter Bug:
 ## Tests
 
 - **`swift test` kann an der Runner-Infra hängen** – zuverlässig:
-  `swift build --build-tests && xcrun xctest .build/arm64-apple-macosx/debug/StasiPackageTests.xctest`
-- Suite: 344 Tests, davon Pipeline (2 aktiv + 4 gated), AutoLearnScout (13),
-  TextTidy (10), FillerFilter (26), SelfCorrectionResolver (37),
-  TranscriptPolisher (9), DictationSession (20),
-  HotkeyReenablePolicy (8), AudioCaptureFile (7), DictionaryWatcher (2),
-  ShortcutDetector (14), ThemeV3 (7), CopyV3 (14), ProtocolSearch (13),
-  PillChrome/MicLevelBars (19), UpdateChecker (11), MicrophoneCatalog (6),
-  Onboarding (6). Bei Logik-Änderungen: erst Test schreiben/ändern, dann implementieren
-  (TDD).
+  ```bash
+  swift build --build-tests
+  xcrun xctest "$(swift build --show-bin-path)/StasiPackageTests.xctest"
+  ```
+- Vor Commits muss die vollständige Suite laufen. Pipeline-E2E-Tests benötigen
+  TCC-Consent und bleiben ohne passenden App-Kontext gegatet. Bei Logik-Änderungen:
+  erst Test schreiben/ändern, dann implementieren (TDD).
 - Diagnose-Logs laufen mit: `STASI-HK PRESS/RELEASE`, `STASI-PILL ✓/✕`, `STASI-APP …`,
   `STASI-WATCH` (Main-Thread-Stalls >1 s). Lesen:
   `log show --last 30m --predicate 'eventMessage CONTAINS "STASI"' --style compact`

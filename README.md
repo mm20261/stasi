@@ -54,15 +54,16 @@ swift build                    # Kompilieren
 open Package.swift             # In Xcode öffnen
 ```
 
-Tests (307 Tests; vier Speech-Pipeline-E2E-Fälle sind ohne TCC-Consent gegatet):
+Tests (vor Commits muss die vollständige Suite laufen; Speech-Pipeline-E2E-Tests
+bleiben ohne TCC-Consent gegatet):
 
 ```bash
 swift build --build-tests
-xcrun xctest .build/arm64-apple-macosx/debug/StasiPackageTests.xctest
+xcrun xctest "$(swift build --show-bin-path)/StasiPackageTests.xctest"
 ```
 
-`swift test` kann in der Runner-Infrastruktur hängen; der direkte `xctest`-Aufruf ist
-der zuverlässige Weg.
+`swift test` kann in der Runner-Infrastruktur hängen; der direkte, vom aktuellen
+Swift-Binärpfad unabhängige `xctest`-Aufruf ist der zuverlässige Weg.
 
 ## Erster Start – Berechtigungen
 
