@@ -52,7 +52,7 @@ final class AppState {
     private let revealRecoveryFile: @MainActor (URL) -> Void
     private let frontmostApplication: @MainActor () -> TargetApplication?
     private let isTextFieldEditable: @Sendable () -> Bool
-    private let injectText: @Sendable (String) -> Void
+    private let injectText: @Sendable (String, pid_t) -> Void
     private let copyToClipboard: @MainActor (String) -> Void
     private let soundFeedback: any SoundFeedback
     private(set) var modelReadyByLocale: [String: Bool] = [:]
@@ -200,8 +200,8 @@ final class AppState {
          isTextFieldEditable: @escaping @Sendable () -> Bool = {
              TextInjector.isFocusedElementEditable()
          },
-         injectText: @escaping @Sendable (String) -> Void = {
-             TextInjector.inject($0)
+         injectText: @escaping @Sendable (String, pid_t) -> Void = { text, targetPID in
+             TextInjector.inject(text, targetPID: targetPID)
          },
          copyToClipboard: @escaping @MainActor (String) -> Void = { text in
              NSPasteboard.general.clearContents()
@@ -465,7 +465,10 @@ final class AppState {
 
     private func playRecordingStartCue(for session: DictationSession) async -> Bool {
         if session.soundFeedbackEnabled {
-            await soundFeedback.play(.recordingStarted)
+            let completed = await session.startCue { [soundFeedback] in
+                await soundFeedback.play(.recordingStarted)
+            }
+            guard completed else { return false }
         }
         guard !Task.isCancelled,
               session === currentSession,
@@ -518,14 +521,12 @@ final class AppState {
         let locale = settings.transcriptionLocale
         let dictionaryEntries = dictionary.entries
         let biasWords = DictionaryBiaser(entries: dictionaryEntries).vocabularyContext()
-        let targetApplication = captureTargetApplication()
         try? FileManager.default.createDirectory(at: audioDirectory, withIntermediateDirectories: true)
         let audioURL = audioDirectory.appendingPathComponent("\(UUID().uuidString).wav")
         let audio = audioFactory()
         let session = DictationSession(
             locale: locale,
             dictionaryEntries: dictionaryEntries,
-            targetApplication: targetApplication,
             audioURL: audioURL,
             soundFeedbackEnabled: settings.soundOn,
             speech: speechFactory(locale, biasWords),
@@ -609,16 +610,19 @@ final class AppState {
                     recordTo: session.audioURL,
                     preferredMicUID: self.settings.preferredMicUID,
                     captureInitiallyActive: false,
-                    onRuntimeError: { [weak self, weak session] error in
+                    onRuntimeErrorAccepted: { error in
+                        // Diese lock-geschützte Handoff-Grenze läuft synchron im
+                        // Reporter. Der Worker-Drain kann einen akzeptierten Fehler
+                        // deshalb nie als gesunde Session überholen.
                         health.recordAudioRuntimeFailure(error)
                         health.closeSpeechIngress(audioContinuation)
+                    },
+                    onRuntimeError: { [weak self, weak session] error in
                         Task { @MainActor in
                             guard let self, let session else { return }
                             if session.state == .settingUp,
                                let setupTask = session.setupTask {
-                                if !session.captureActivationWon {
-                                    setupTask.cancel()
-                                }
+                                session.cancelStartCue()
                                 Task { @MainActor [weak self, weak session] in
                                     await setupTask.value
                                     guard let self, let session else { return }
@@ -650,12 +654,12 @@ final class AppState {
                     await self.handleAudioRuntimeError(runtimeError, session: session)
                     return
                 }
-                session.updateTargetApplication(self.captureTargetApplication())
-                let recordingStartCandidate = self.now()
                 guard session.audio.openCapture() else {
                     await self.handleCaptureActivationFailure(session)
                     return
                 }
+                guard session.assignTargetApplication(self.captureTargetApplication()) else { return }
+                let recordingStartCandidate = self.now()
                 guard session.beginRecording() else { return }
                 self.recordStart = recordingStartCandidate
                 self.elapsed = 0
@@ -663,13 +667,7 @@ final class AppState {
                 DebugLog.log("STASI-APP: audio.start fertig – Aufnahme läuft")
             } catch {
                 DebugLog.log("STASI-APP: startDictation FEHLER: \(error.localizedDescription)")
-                guard session === self.currentSession else { return }
-                if session.state == .stopping {
-                    await self.teardown(session)
-                    self.finishAbortedSession(session)
-                    return
-                }
-                guard session.state == .settingUp else { return }
+                guard await self.setupShouldContinue(session) else { return }
                 await self.teardown(session)
                 await self.playSound(.failed, for: session)
                 self.onToast?(error.localizedDescription, false)
@@ -683,6 +681,7 @@ final class AppState {
                                   timedOut: Bool = false) {
         guard session === currentSession, session.state == .settingUp else { return }
         session.beginCompletion(intent)
+        session.cancelStartCue()
         session.state = .stopping
         if timedOut {
             phase = .setupTimedOut
@@ -728,11 +727,21 @@ final class AppState {
             }
 
             let recordedURL = await session.stopAudioOnce()
-            await self.playSound(.recordingStopped, for: session)
+            let stopCueTask = Task { @MainActor [weak self, weak session] in
+                guard let self, let session else { return }
+                await self.playSound(.recordingStopped, for: session)
+            }
             if session.health.failure == .audioRuntimeFailure {
                 DebugLog.log("STASI-APP: Commit-Drain wegen Audio-Runtimefehler abgebrochen")
+                await stopCueTask.value
+                await self.completeTerminalFailure(
+                    session,
+                    fallbackMessage: "Die Audioaufnahme ist fehlgeschlagen und wurde verworfen."
+                )
                 return
             }
+            // Stop-Cue und Speech-Finalisierung laufen parallel. Das terminale
+            // Ergebnis wartet weiterhin auf beide, sodass die Ereignisfolge stabil bleibt.
             // Erst alle gepufferten Chunks in die Engine drainen, DANN
             // finalisieren – sonst fehlt das Satzende.
             session.health.closeSpeechIngress(session.audioContinuation)
@@ -754,25 +763,18 @@ final class AppState {
             }
             guard session === self.currentSession else { return }
             session.consumeTask = nil
+            await stopCueTask.value
+            guard session === self.currentSession else { return }
             session.setupTask = nil
             session.state = .finished
             self.resetLevel()
 
             if session.health.failure != nil {
-                DebugLog.log("STASI-APP: Speech-Puffer unvollständig – Session wird verworfen")
-                let recoverySource = recordedURL ?? session.audioURL
-                let recovered = recoverySource.flatMap { self.registerRecoveryAudio(at: $0) }
-                if recovered == nil {
-                    session.preserveAudioFile()
-                }
-                await self.teardown(session)
-                await self.playSound(.failed, for: session)
-                self.finishAbortedSession(session)
-                if recovered != nil {
-                    self.onToast?("Die Aufnahme ist unvollständig. Die Wiederherstellungsdatei wurde im Finder geöffnet.", false)
-                } else {
-                    self.onToast?("Die Aufnahme ist unvollständig. Die Audiodatei bleibt erhalten.", false)
-                }
+                DebugLog.log("STASI-APP: Session terminal unvollständig – gemeinsamer Abschluss")
+                await self.completeTerminalFailure(
+                    session,
+                    fallbackMessage: "Die Aufnahme ist unvollständig und wurde verworfen."
+                )
                 return
             }
 
@@ -786,36 +788,47 @@ final class AppState {
     }
 
     private func handleCaptureActivationFailure(_ session: DictationSession) async {
-        guard session === currentSession, session.beginRuntimeFailure() else { return }
         DebugLog.log("STASI-AUDIO: Capture-Aktivierung von Runtimefehler überholt")
-        session.state = .stopping
-        phase = .transcribing
-        await teardown(session)
-        await playSound(.failed, for: session)
-        let recoveredURL = session.recoveredAudioURL.flatMap { registerRecoveryAudio(at: $0) }
-        finishAbortedSession(session)
-        if recoveredURL != nil {
-            onToast?("Die Aufnahme ist unvollständig. Die Wiederherstellungsdatei wurde im Finder geöffnet.", false)
-        } else {
-            onToast?("Die Audioaufnahme ist fehlgeschlagen und wurde verworfen.", false)
-        }
+        await completeTerminalFailure(
+            session,
+            fallbackMessage: "Die Audioaufnahme ist fehlgeschlagen und wurde verworfen."
+        )
     }
 
     private func handleAudioRuntimeError(_ error: AudioCaptureRuntimeError,
                                          session: DictationSession) async {
-        guard session === currentSession, session.beginRuntimeFailure() else { return }
         DebugLog.log("STASI-AUDIO: Runtimefehler – \(String(describing: error))")
-        session.state = .stopping
-        phase = .transcribing
-        await teardown(session)
-        await playSound(.failed, for: session)
-        let recoveredURL = session.recoveredAudioURL.flatMap { registerRecoveryAudio(at: $0) }
-        finishAbortedSession(session)
-        if recoveredURL != nil {
-            onToast?("Die Aufnahme ist unvollständig. Die Wiederherstellungsdatei wurde im Finder geöffnet.", false)
-        } else {
-            onToast?("Die Audioaufnahme ist fehlgeschlagen und wurde verworfen.", false)
-        }
+        await completeTerminalFailure(
+            session,
+            fallbackMessage: "Die Audioaufnahme ist fehlgeschlagen und wurde verworfen."
+        )
+    }
+
+    private func completeTerminalFailure(
+        _ session: DictationSession,
+        fallbackMessage: String
+    ) async {
+        guard let task = session.terminalFailure(starting: { [weak self, weak session] in
+            guard let self, let session, session === self.currentSession else { return }
+            session.cancelStartCue()
+            session.state = .stopping
+            self.phase = .transcribing
+            await self.teardown(session)
+            let recoveredURL = session.recoveredAudioURL.flatMap {
+                self.registerRecoveryAudio(at: $0)
+            }
+            await self.playSound(.failed, for: session)
+            self.finishAbortedSession(session)
+            if recoveredURL != nil {
+                self.onToast?(
+                    "Die Aufnahme ist unvollständig. Die Wiederherstellungsdatei wurde im Finder geöffnet.",
+                    false
+                )
+            } else {
+                self.onToast?(fallbackMessage, false)
+            }
+        }) else { return }
+        await task.value
     }
 
     private func registerRecoveryAudio(at sourceURL: URL) -> URL? {
@@ -921,7 +934,10 @@ final class AppState {
         let dictionarySnapshot = session.dictionaryEntries
         let configuredLevel = settings.postProcessing
         let levelSnapshot = TranscriptPolisher.effectiveLevel(configured: configuredLevel)
-        let targetApplicationSnapshot = session.targetApplication
+        guard let targetApplicationSnapshot = session.targetApplication else {
+            await completeTerminalFailure(session, fallbackMessage: "Die Ziel-App konnte nicht erfasst werden.")
+            return
+        }
         let audioURLSnapshot = audioURL
         let durationSnapshot = duration
 
@@ -992,6 +1008,7 @@ final class AppState {
         let isTextFieldEditable = isTextFieldEditable
         let injectText = injectText
         Task.detached(priority: .userInitiated) { [weak self] in
+            var shouldInject = false
             let sameTargetBeforeEditabilityCheck = await MainActor.run { [weak self] in
                 guard let self else { return false }
                 return TargetApplicationMatcher.matches(
@@ -999,19 +1016,18 @@ final class AppState {
                     current: self.frontmostApplication()
                 )
             }
-            let editable = isTextFieldEditable()
-            let sameTargetImmediatelyBeforeInjection = await MainActor.run { [weak self] in
-                guard let self else { return false }
-                return TargetApplicationMatcher.matches(
-                    captured: targetApplicationSnapshot,
-                    current: self.frontmostApplication()
-                )
-            }
-            let shouldInject = sameTargetBeforeEditabilityCheck
-                && editable
-                && sameTargetImmediatelyBeforeInjection
-            if shouldInject {
-                injectText(trimmed)
+            if sameTargetBeforeEditabilityCheck, isTextFieldEditable() {
+                let sameTargetImmediatelyBeforeInjection = await MainActor.run { [weak self] in
+                    guard let self else { return false }
+                    return TargetApplicationMatcher.matches(
+                        captured: targetApplicationSnapshot,
+                        current: self.frontmostApplication()
+                    )
+                }
+                if sameTargetImmediatelyBeforeInjection {
+                    injectText(trimmed, targetApplicationSnapshot.processIdentifier)
+                    shouldInject = true
+                }
             }
             // Zwei Poll-Zyklen Sichtbarkeit, auch wenn das Einfügen nur einen
             // kurzen CGEvent-Chunk benötigt. Der verzögerte Spinner bleibt bei
@@ -1091,11 +1107,12 @@ final class AppState {
         guard let record = history.records.first else { return }
         let text = record.correctedText
         copy(record)
+        guard let targetPID = frontmostApplication()?.processIdentifier else { return }
         let isTextFieldEditable = isTextFieldEditable
         let injectText = injectText
         Task.detached(priority: .userInitiated) {
             if isTextFieldEditable() {
-                injectText(text)
+                injectText(text, targetPID)
             }
         }
     }

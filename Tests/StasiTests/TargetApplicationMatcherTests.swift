@@ -66,6 +66,19 @@ final class TargetApplicationMatcherTests: XCTestCase {
         XCTAssertFalse(TargetApplicationMatcher.matches(captured: captured, current: current))
     }
 
+    func testEveryUnicodeChunkIsBoundToCapturedProcess() {
+        let text = String(repeating: "abcdefghijklmnopqrstuvwx", count: 3)
+        var deliveries: [(String, pid_t)] = []
+
+        TextInjector.routeChunks(text, targetPID: slack.processIdentifier) { chunk, pid in
+            deliveries.append((String(decoding: chunk, as: UTF16.self), pid))
+        }
+
+        XCTAssertEqual(deliveries.map(\.0).joined(), text)
+        XCTAssertGreaterThan(deliveries.count, 1)
+        XCTAssertTrue(deliveries.allSatisfy { $0.1 == slack.processIdentifier })
+    }
+
     func testSameNameAloneDoesNotMatch() {
         let notesNamedSlack = TargetApplication(
             localizedName: "Slack",

@@ -96,7 +96,7 @@ final class CopyV3Tests: XCTestCase {
     }
 
     func testAnleitungBar() {
-        XCTAssertEqual(Copy.anleitungText, "halten und sprechen.")
+        XCTAssertEqual(Copy.anleitungText, "halten, Startton abwarten, dann sprechen.")
         XCTAssertEqual(Copy.anleitungStatusReady, "Bereit")
         XCTAssertEqual(Copy.anleitungStatusBlocked, "Hotkey inaktiv")
         XCTAssertEqual(Copy.hotkeyRestartRequired, "Neustart nötig")

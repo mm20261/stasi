@@ -4,32 +4,7 @@ import AppKit
 
 // MARK: - Einstellungen (v3: 6 Sektionen, Spalte 620)
 
-enum SettingsHotkeyCaptureEffect: Equatable {
-    case none
-    case removeMonitor
-}
-
-struct SettingsHotkeyCaptureState: Equatable {
-    private(set) var isRecording = false
-    private(set) var draft = HotkeyCaptureDraft()
-
-    mutating func begin(with combo: HotkeyEngine.Combo) {
-        isRecording = true
-        draft = HotkeyCaptureDraft(combo: combo)
-    }
-
-    mutating func process(_ event: HotkeyCaptureEvent) -> SettingsHotkeyCaptureEffect {
-        draft.process(event)
-        guard case .cancel = event else { return .none }
-        isRecording = false
-        return .removeMonitor
-    }
-
-    mutating func stop() {
-        isRecording = false
-        draft = HotkeyCaptureDraft()
-    }
-}
+typealias SettingsHotkeyCaptureState = HotkeyCaptureState
 
 struct SettingsWindowView: View {
     @Environment(AppState.self) private var app
@@ -123,7 +98,7 @@ struct SettingsWindowView: View {
                     Text("Push-to-talk")
                         .font(Theme.Typo.zeilenTitel())
                         .foregroundColor(Theme.Palette.ink)
-                    Text("Halten zum Sprechen, loslassen zum Einfügen.")
+                    Text("Halten, Startton abwarten, sprechen, dann loslassen.")
                         .font(Theme.Typo.secondary(size: 11.5))
                         .foregroundColor(Theme.Palette.text2)
                 }

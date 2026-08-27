@@ -66,6 +66,7 @@ protocol AudioCapturing: AnyObject, Sendable {
                recordTo url: URL?,
                preferredMicUID: String?,
                captureInitiallyActive: Bool,
+               onRuntimeErrorAccepted: @escaping @Sendable (AudioCaptureRuntimeError) -> Void,
                onRuntimeError: @escaping @Sendable (AudioCaptureRuntimeError) -> Void,
                onBuffer: @escaping @Sendable (AudioChunk) -> Void) throws
 
@@ -83,13 +84,29 @@ extension AudioCapturing {
     func start(outputFormat: AVAudioFormat,
                recordTo url: URL?,
                preferredMicUID: String? = nil,
-               onRuntimeError: @escaping @Sendable (AudioCaptureRuntimeError) -> Void = { _ in },
+               captureInitiallyActive: Bool,
+               onRuntimeError: @escaping @Sendable (AudioCaptureRuntimeError) -> Void,
                onBuffer: @escaping @Sendable (AudioChunk) -> Void) throws {
         try start(outputFormat: outputFormat,
                   recordTo: url,
                   preferredMicUID: preferredMicUID,
-                  captureInitiallyActive: true,
+                  captureInitiallyActive: captureInitiallyActive,
+                  onRuntimeErrorAccepted: { _ in },
                   onRuntimeError: onRuntimeError,
+                  onBuffer: onBuffer)
+    }
+
+    func start(outputFormat: AVAudioFormat,
+               recordTo url: URL?,
+               preferredMicUID: String? = nil,
+               captureInitiallyActive: Bool,
+               onBuffer: @escaping @Sendable (AudioChunk) -> Void) throws {
+        try start(outputFormat: outputFormat,
+                  recordTo: url,
+                  preferredMicUID: preferredMicUID,
+                  captureInitiallyActive: captureInitiallyActive,
+                  onRuntimeErrorAccepted: { _ in },
+                  onRuntimeError: { _ in },
                   onBuffer: onBuffer)
     }
 }
@@ -452,6 +469,7 @@ final class AudioCapture: AudioCapturing, @unchecked Sendable {
                recordTo url: URL?,
                preferredMicUID: String?,
                captureInitiallyActive: Bool,
+               onRuntimeErrorAccepted: @escaping @Sendable (AudioCaptureRuntimeError) -> Void,
                onRuntimeError: @escaping @Sendable (AudioCaptureRuntimeError) -> Void,
                onBuffer: @escaping @Sendable (AudioChunk) -> Void) throws {
         stateLock.lock()
@@ -465,7 +483,7 @@ final class AudioCapture: AudioCapturing, @unchecked Sendable {
             beforeDequeue: beforeBacklogDequeue
         )
         let reporter = RuntimeErrorReporter()
-        reporter.reset(callback: onRuntimeError)
+        reporter.reset(onAccepted: onRuntimeErrorAccepted, callback: onRuntimeError)
         let run = AudioCaptureRun(initialAdmission: initialAdmission,
                                   backlog: backlog,
                                   reporter: reporter,
@@ -547,8 +565,11 @@ final class AudioCapture: AudioCapturing, @unchecked Sendable {
             converter = nil
             self.outputFormat = nil
             self.onBuffer = nil
+            if let recordURL {
+                try? FileManager.default.removeItem(at: recordURL)
+            }
             recordURL = nil
-            reporter.clearCallback()
+            reporter.clearCallbacks()
             if currentRun === run { currentRun = nil }
             isRunningStorage = false
             throw error
@@ -594,12 +615,16 @@ final class AudioCapture: AudioCapturing, @unchecked Sendable {
             converter = nil
             outputFormat = nil
             onBuffer = nil
-            stoppingRun.reporter.clearCallback()
+            stoppingRun.reporter.clearCallbacks()
             lock.withLock { rawLevel = 0 }
-            closeOutputFile()
+            let frameCount = closeOutputFile()
             let url = recordURL
             recordURL = nil
             isStoppingStorage = false
+            guard frameCount > 0 else {
+                if let url { try? FileManager.default.removeItem(at: url) }
+                return nil
+            }
             return url
         }
     }
@@ -1043,10 +1068,13 @@ final class AudioCapture: AudioCapturing, @unchecked Sendable {
         onBuffer?(AudioChunk(buffer: processed))
     }
 
-    private func closeOutputFile() {
+    @discardableResult
+    private func closeOutputFile() -> AVAudioFramePosition {
         outputFileLock.lock()
+        let length = outputFile?.length ?? 0
         outputFile = nil
         outputFileLock.unlock()
+        return length
     }
 
     /// Deep-Copy eines Render-Puffers in eigenen Speicher.
@@ -1212,15 +1240,31 @@ final class AudioCapture: AudioCapturing, @unchecked Sendable {
 
     /// Genau ein Runtimefehler pro Start. Selbst aus dem Render-Callback entsteht
     /// hoechstens eine Dispatch-Closure; der Fehler-Backlog kann daher nicht wachsen.
-    fileprivate final class RuntimeErrorReporter: @unchecked Sendable {
+    final class RuntimeErrorReporter: @unchecked Sendable {
+        typealias Delivery = @Sendable (@escaping @Sendable () -> Void) -> Void
+
         private let reported = Atomic<Bool>(false)
-        private let deliveryQueue = DispatchQueue(label: "app.stasi.audio.runtime-error")
-        private nonisolated(unsafe) var callback: (@Sendable (AudioCaptureRuntimeError) -> Void)?
+        private let callbackLock = NSLock()
+        private let deliver: Delivery
+        private var onAccepted: (@Sendable (AudioCaptureRuntimeError) -> Void)?
+        private var callback: (@Sendable (AudioCaptureRuntimeError) -> Void)?
+
+        init(deliver: @escaping Delivery = { delivery in
+            DispatchQueue(label: "app.stasi.audio.runtime-error").async(execute: delivery)
+        }) {
+            self.deliver = deliver
+        }
 
         var hasReported: Bool { reported.load(ordering: .acquiring) }
 
-        func reset(callback: @escaping @Sendable (AudioCaptureRuntimeError) -> Void) {
-            self.callback = callback
+        func reset(
+            onAccepted: @escaping @Sendable (AudioCaptureRuntimeError) -> Void,
+            callback: @escaping @Sendable (AudioCaptureRuntimeError) -> Void
+        ) {
+            callbackLock.withLock {
+                self.onAccepted = onAccepted
+                self.callback = callback
+            }
             reported.store(false, ordering: .releasing)
         }
 
@@ -1230,12 +1274,19 @@ final class AudioCapture: AudioCapturing, @unchecked Sendable {
                 desired: true,
                 ordering: .acquiringAndReleasing
             ).exchanged else { return }
-            guard let callback else { return }
-            deliveryQueue.async { callback(error) }
+            let callbacks = callbackLock.withLock { (onAccepted, callback) }
+            callbacks.0?(error)
+            guard let callback = callbacks.1 else { return }
+            // Die Closure wird vor einem möglichen clear kopiert. Ein akzeptierter
+            // Fehler verliert daher seine UI-Lieferung nicht beim Stop-Drain.
+            deliver { callback(error) }
         }
 
-        func clearCallback() {
-            callback = nil
+        func clearCallbacks() {
+            callbackLock.withLock {
+                onAccepted = nil
+                callback = nil
+            }
         }
     }
 

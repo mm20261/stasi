@@ -48,7 +48,10 @@ final class DictationSessionTests: XCTestCase {
         var stoppedURL: URL?
         private(set) var startedURL: URL?
         private var onBuffer: (@Sendable (AudioChunk) -> Void)?
+        private var onRuntimeErrorAccepted: (@Sendable (AudioCaptureRuntimeError) -> Void)?
         private var onRuntimeError: (@Sendable (AudioCaptureRuntimeError) -> Void)?
+        var delaysRuntimeErrorDelivery = false
+        private var pendingRuntimeError: AudioCaptureRuntimeError?
         var onStart: (() -> Void)?
         var onActivate: (() -> Void)?
         var onOpen: (() -> Void)?
@@ -64,10 +67,12 @@ final class DictationSessionTests: XCTestCase {
                    recordTo url: URL?,
                    preferredMicUID: String?,
                    captureInitiallyActive: Bool,
+                   onRuntimeErrorAccepted: @escaping @Sendable (AudioCaptureRuntimeError) -> Void,
                    onRuntimeError: @escaping @Sendable (AudioCaptureRuntimeError) -> Void,
                    onBuffer: @escaping @Sendable (AudioChunk) -> Void) throws {
             startCount += 1
             startedURL = url
+            self.onRuntimeErrorAccepted = onRuntimeErrorAccepted
             self.onRuntimeError = onRuntimeError
             self.onBuffer = onBuffer
             activationReserved = captureInitiallyActive
@@ -106,6 +111,17 @@ final class DictationSessionTests: XCTestCase {
         func fail(_ error: AudioCaptureRuntimeError) {
             runtimeFailed = true
             isCaptureActive = false
+            onRuntimeErrorAccepted?(error)
+            if delaysRuntimeErrorDelivery {
+                pendingRuntimeError = error
+            } else {
+                onRuntimeError?(error)
+            }
+        }
+
+        func deliverPendingRuntimeError() {
+            guard let error = pendingRuntimeError else { return }
+            pendingRuntimeError = nil
             onRuntimeError?(error)
         }
 
@@ -318,10 +334,12 @@ final class DictationSessionTests: XCTestCase {
     private final class TextInjectorSpy: @unchecked Sendable {
         private(set) var callCount = 0
         private(set) var texts: [String] = []
+        private(set) var targetPIDs: [pid_t] = []
 
-        func inject(_ text: String) {
+        func inject(_ text: String, targetPID: pid_t) {
             callCount += 1
             texts.append(text)
+            targetPIDs.append(targetPID)
         }
     }
 
@@ -335,10 +353,28 @@ final class DictationSessionTests: XCTestCase {
 
     private final class FrontmostApplicationStub {
         var current: TargetApplication?
+        private(set) var callCount = 0
 
         init(_ current: TargetApplication?) {
             self.current = current
         }
+
+        func application() -> TargetApplication? {
+            callCount += 1
+            return current
+        }
+    }
+
+    private final class CallCounter: @unchecked Sendable {
+        private let lock = NSLock()
+        private var storage = 0
+
+        func call(returning value: Bool) -> Bool {
+            lock.withLock { storage += 1 }
+            return value
+        }
+
+        var count: Int { lock.withLock { storage } }
     }
 
     private final class FakeClock {
@@ -485,7 +521,7 @@ final class DictationSessionTests: XCTestCase {
                              )
                          },
                          isTextFieldEditable: @escaping @Sendable () -> Bool = { false },
-                         injectText: @escaping @Sendable (String) -> Void = { _ in },
+                         injectText: @escaping @Sendable (String, pid_t) -> Void = { _, _ in },
                          copyToClipboard: @escaping @MainActor (String) -> Void = { _ in },
                          recoveryStore: AudioRecoveryStore? = nil,
                          revealRecoveryFile: @escaping @MainActor (URL) -> Void = { _ in },
@@ -667,7 +703,7 @@ final class DictationSessionTests: XCTestCase {
             history: history,
             frontmostApplication: { frontmost.current },
             isTextFieldEditable: { true },
-            injectText: { injector.inject($0) },
+            injectText: { text, pid in injector.inject(text, targetPID: pid) },
             copyToClipboard: { clipboard.copy($0) }
         )
         var toasts: [String] = []
@@ -705,7 +741,7 @@ final class DictationSessionTests: XCTestCase {
             engines: [FakeSpeechEngine(text: "Finaler Text")],
             frontmostApplication: { focus.application() },
             isTextFieldEditable: { focus.editableAndRestoreTarget() },
-            injectText: { injector.inject($0) },
+            injectText: { text, pid in injector.inject(text, targetPID: pid) },
             copyToClipboard: { clipboard.copy($0) }
         )
 
@@ -734,7 +770,7 @@ final class DictationSessionTests: XCTestCase {
             engines: [FakeSpeechEngine(text: "Finaler Text")],
             frontmostApplication: { frontmost.current },
             isTextFieldEditable: { true },
-            injectText: { injector.inject($0) },
+            injectText: { text, pid in injector.inject(text, targetPID: pid) },
             copyToClipboard: { clipboard.copy($0) }
         )
 
@@ -762,12 +798,13 @@ final class DictationSessionTests: XCTestCase {
         let audio = FakeAudioCapture()
         let injector = TextInjectorSpy()
         let clipboard = ClipboardSpy()
+        let editability = CallCounter()
         let app = makeApp(
             audio: audio,
             engines: [FakeSpeechEngine(text: "Finaler Text")],
-            frontmostApplication: { frontmost.current },
-            isTextFieldEditable: { true },
-            injectText: { injector.inject($0) },
+            frontmostApplication: { frontmost.application() },
+            isTextFieldEditable: { editability.call(returning: true) },
+            injectText: { text, pid in injector.inject(text, targetPID: pid) },
             copyToClipboard: { clipboard.copy($0) }
         )
 
@@ -779,6 +816,8 @@ final class DictationSessionTests: XCTestCase {
 
         XCTAssertEqual(injector.callCount, 0)
         XCTAssertEqual(clipboard.strings, ["Finaler Text"])
+        XCTAssertEqual(frontmost.callCount, 2)
+        XCTAssertEqual(editability.count, 0)
     }
 
     func testSameEditableTargetInjectsFinalText() async {
@@ -795,7 +834,7 @@ final class DictationSessionTests: XCTestCase {
             engines: [FakeSpeechEngine(text: "Finaler Text")],
             frontmostApplication: { slack },
             isTextFieldEditable: { true },
-            injectText: { injector.inject($0) },
+            injectText: { text, pid in injector.inject(text, targetPID: pid) },
             copyToClipboard: { clipboard.copy($0) }
         )
 
@@ -805,6 +844,7 @@ final class DictationSessionTests: XCTestCase {
         await waitUntil { app.phase == .idle }
 
         XCTAssertEqual(injector.texts, ["Finaler Text"])
+        XCTAssertEqual(injector.targetPIDs, [slack.processIdentifier])
         XCTAssertEqual(clipboard.strings, ["Finaler Text"])
     }
 
@@ -814,15 +854,17 @@ final class DictationSessionTests: XCTestCase {
             bundleIdentifier: "com.tinyspeck.slackmacgap",
             processIdentifier: 42
         )
+        let frontmost = FrontmostApplicationStub(slack)
         let audio = FakeAudioCapture()
         let injector = TextInjectorSpy()
         let clipboard = ClipboardSpy()
+        let editability = CallCounter()
         let app = makeApp(
             audio: audio,
             engines: [FakeSpeechEngine(text: "Finaler Text")],
-            frontmostApplication: { slack },
-            isTextFieldEditable: { false },
-            injectText: { injector.inject($0) },
+            frontmostApplication: { frontmost.application() },
+            isTextFieldEditable: { editability.call(returning: false) },
+            injectText: { text, pid in injector.inject(text, targetPID: pid) },
             copyToClipboard: { clipboard.copy($0) }
         )
         var toasts: [String] = []
@@ -836,6 +878,8 @@ final class DictationSessionTests: XCTestCase {
         XCTAssertEqual(injector.callCount, 0)
         XCTAssertEqual(clipboard.strings, ["Finaler Text"])
         XCTAssertTrue(toasts.contains { $0.contains("Slack") })
+        XCTAssertEqual(frontmost.callCount, 2)
+        XCTAssertEqual(editability.count, 1)
     }
 
     func testSessionSnapshotsAreImmutable() async {
@@ -851,10 +895,11 @@ final class DictationSessionTests: XCTestCase {
         )
         let session = DictationSession(locale: locale,
                                        dictionaryEntries: [entry],
-                                       targetApplication: targetApplication,
                                        audioURL: url,
                                        speech: speech,
                                        audio: audio)
+        XCTAssertNil(session.targetApplication)
+        XCTAssertTrue(session.assignTargetApplication(targetApplication))
 
         XCTAssertEqual(session.locale.identifier, "de_DE")
         XCTAssertEqual(session.dictionaryEntries, [entry])
@@ -865,7 +910,7 @@ final class DictationSessionTests: XCTestCase {
     func testNewSessionStartsInSettingUpState() {
         let session = DictationSession(locale: Locale(identifier: "de_DE"),
                                        dictionaryEntries: [],
-                                       targetApplication: makeTargetApplication(), audioURL: nil,
+                                       audioURL: nil,
                                        speech: FakeSpeechEngine(), audio: FakeAudioCapture())
         XCTAssertEqual(session.state, .settingUp)
     }
@@ -873,7 +918,7 @@ final class DictationSessionTests: XCTestCase {
     func testSessionPublishesRecordingOnlyFromSetup() {
         let session = DictationSession(locale: Locale(identifier: "de_DE"),
                                        dictionaryEntries: [],
-                                       targetApplication: makeTargetApplication(), audioURL: nil,
+                                       audioURL: nil,
                                        speech: FakeSpeechEngine(), audio: FakeAudioCapture())
 
         XCTAssertTrue(session.beginRecording())
@@ -883,10 +928,8 @@ final class DictationSessionTests: XCTestCase {
 
     func testSessionsHaveDistinctIDs() {
         let first = DictationSession(locale: .current, dictionaryEntries: [],
-                                      targetApplication: makeTargetApplication(),
                                      audioURL: nil, speech: FakeSpeechEngine(), audio: FakeAudioCapture())
         let second = DictationSession(locale: .current, dictionaryEntries: [],
-                                      targetApplication: makeTargetApplication(),
                                       audioURL: nil, speech: FakeSpeechEngine(), audio: FakeAudioCapture())
         XCTAssertNotEqual(first.id, second.id)
     }
@@ -895,7 +938,6 @@ final class DictationSessionTests: XCTestCase {
         let audio = FakeAudioCapture()
         let speech = FakeSpeechEngine()
         let session = DictationSession(locale: .current, dictionaryEntries: [],
-                                      targetApplication: makeTargetApplication(),
                                        audioURL: nil, speech: speech, audio: audio)
 
         await session.teardown()
@@ -911,7 +953,6 @@ final class DictationSessionTests: XCTestCase {
         let url = makeDirectory().appendingPathComponent("delete-me.wav")
         try Data("audio".utf8).write(to: url)
         let session = DictationSession(locale: .current, dictionaryEntries: [],
-                                      targetApplication: makeTargetApplication(),
                                        audioURL: url, speech: FakeSpeechEngine(), audio: FakeAudioCapture())
 
         await session.teardown()
@@ -1000,7 +1041,7 @@ final class DictationSessionTests: XCTestCase {
             engines: [speech],
             history: history,
             isTextFieldEditable: { true },
-            injectText: { textInjector.inject($0) },
+            injectText: { text, pid in textInjector.inject(text, targetPID: pid) },
             recoveryStore: recoveryStore,
             revealRecoveryFile: { reveal.reveal($0) },
             directory: directory
@@ -1064,7 +1105,7 @@ final class DictationSessionTests: XCTestCase {
             engines: [speech],
             history: history,
             isTextFieldEditable: { true },
-            injectText: { textInjector.inject($0) },
+            injectText: { text, pid in textInjector.inject(text, targetPID: pid) },
             recoveryStore: AudioRecoveryStore(directory: recoveryDirectory),
             revealRecoveryFile: { reveal.reveal($0) },
             directory: directory
@@ -1206,6 +1247,7 @@ final class DictationSessionTests: XCTestCase {
         let directory = makeDirectory()
         let audio = FakeAudioCapture()
         audio.suspendFirstStop = true
+        audio.delaysRuntimeErrorDelivery = true
         let history = FakeHistoryStore()
         let textInjector = TextInjectorSpy()
         let reveal = RevealSpy()
@@ -1216,7 +1258,7 @@ final class DictationSessionTests: XCTestCase {
             engines: [FakeSpeechEngine(text: "Nicht als Erfolg speichern")],
             history: history,
             isTextFieldEditable: { true },
-            injectText: { textInjector.inject($0) },
+            injectText: { text, pid in textInjector.inject(text, targetPID: pid) },
             recoveryStore: AudioRecoveryStore(directory: recoveryDirectory),
             revealRecoveryFile: { reveal.reveal($0) },
             directory: directory,
@@ -1246,6 +1288,8 @@ final class DictationSessionTests: XCTestCase {
         await Task.yield()
         audio.finishFirstStop()
         await waitUntil { app.phase == .idle }
+        audio.deliverPendingRuntimeError()
+        await Task.yield()
 
         XCTAssertEqual(audio.stopCount, 1)
         XCTAssertEqual(sound.events, [.recordingStarted, .recordingStopped, .failed])
@@ -1257,6 +1301,114 @@ final class DictationSessionTests: XCTestCase {
         let recoveredURL = try XCTUnwrap(reveal.urls.first)
         XCTAssertEqual(recoveredURL.deletingLastPathComponent(), recoveryDirectory)
         XCTAssertTrue(FileManager.default.fileExists(atPath: recoveredURL.path))
+    }
+
+    func testAcceptedRuntimeErrorBlocksCommitBeforeDelayedDelivery() async throws {
+        let directory = makeDirectory()
+        let audio = FakeAudioCapture()
+        audio.delaysRuntimeErrorDelivery = true
+        let history = FakeHistoryStore()
+        let injector = TextInjectorSpy()
+        let clipboard = ClipboardSpy()
+        let reveal = RevealSpy()
+        let sound = SoundFeedbackSpy()
+        let app = makeApp(
+            audio: audio,
+            engines: [FakeSpeechEngine(text: "Darf nie committed werden")],
+            history: history,
+            isTextFieldEditable: { true },
+            injectText: { text, pid in injector.inject(text, targetPID: pid) },
+            copyToClipboard: { clipboard.copy($0) },
+            recoveryStore: AudioRecoveryStore(
+                directory: directory.appendingPathComponent("recovery", isDirectory: true)
+            ),
+            revealRecoveryFile: { reveal.reveal($0) },
+            directory: directory,
+            soundFeedback: sound
+        )
+        app.settings.soundOn = true
+        var toasts: [String] = []
+        app.onToast = { message, _ in toasts.append(message) }
+
+        app.startDictation()
+        await waitUntil { audio.isRunning }
+        let wav = try XCTUnwrap(audio.startedURL)
+        try Data("valid frames".utf8).write(to: wav)
+        audio.stoppedURL = wav
+        audio.onStop = { audio.fail(.wavWriteFailed("delayed UI delivery")) }
+
+        app.stopDictation()
+        await waitUntil { app.phase == .idle }
+
+        XCTAssertEqual(history.insertCount, 0)
+        XCTAssertEqual(injector.callCount, 0)
+        XCTAssertTrue(clipboard.strings.isEmpty)
+        XCTAssertEqual(audio.stopCount, 1)
+        XCTAssertEqual(reveal.urls.count, 1)
+        XCTAssertEqual(toasts.count, 1)
+        XCTAssertEqual(sound.events, [.recordingStarted, .recordingStopped, .failed])
+
+        audio.deliverPendingRuntimeError()
+        await Task.yield()
+        XCTAssertEqual(audio.stopCount, 1)
+        XCTAssertEqual(reveal.urls.count, 1)
+        XCTAssertEqual(toasts.count, 1)
+        XCTAssertEqual(sound.events, [.recordingStarted, .recordingStopped, .failed])
+    }
+
+    func testOverflowThenLateRuntimeErrorHasOneTerminalOwner() async throws {
+        let directory = makeDirectory()
+        let audio = FakeAudioCapture()
+        audio.delaysRuntimeErrorDelivery = true
+        let speech = FakeSpeechEngine(text: "Unvollständig")
+        await speech.blockNextFeed()
+        let history = FakeHistoryStore()
+        let injector = TextInjectorSpy()
+        let clipboard = ClipboardSpy()
+        let reveal = RevealSpy()
+        let sound = SoundFeedbackSpy()
+        let app = makeApp(
+            audio: audio,
+            engines: [speech],
+            history: history,
+            isTextFieldEditable: { true },
+            injectText: { text, pid in injector.inject(text, targetPID: pid) },
+            copyToClipboard: { clipboard.copy($0) },
+            recoveryStore: AudioRecoveryStore(
+                directory: directory.appendingPathComponent("recovery", isDirectory: true)
+            ),
+            revealRecoveryFile: { reveal.reveal($0) },
+            directory: directory,
+            soundFeedback: sound
+        )
+        app.settings.soundOn = true
+        var toasts: [String] = []
+        app.onToast = { message, _ in toasts.append(message) }
+
+        app.startDictation()
+        await waitUntil { audio.isRunning }
+        let wav = try XCTUnwrap(audio.startedURL)
+        try Data("recoverable frames".utf8).write(to: wav)
+        audio.stoppedURL = wav
+        let chunk = try makeAudioChunk()
+        audio.emit(chunk)
+        await waitUntil { await speech.metrics().feedCount == 1 }
+        for _ in 0..<65 { audio.emit(chunk) }
+        audio.onStop = { audio.fail(.wavWriteFailed("late after overflow")) }
+
+        app.stopDictation()
+        await speech.unblockFeed()
+        await waitUntil { app.phase == .idle }
+        audio.deliverPendingRuntimeError()
+        await Task.yield()
+
+        XCTAssertEqual(audio.stopCount, 1)
+        XCTAssertEqual(history.insertCount, 0)
+        XCTAssertEqual(injector.callCount, 0)
+        XCTAssertTrue(clipboard.strings.isEmpty)
+        XCTAssertEqual(reveal.urls.count, 1)
+        XCTAssertEqual(toasts.count, 1)
+        XCTAssertEqual(sound.events, [.recordingStarted, .recordingStopped, .failed])
     }
 
     func testAudioRuntimeErrorDeletesUnclosedRecording() async throws {
@@ -1309,7 +1461,7 @@ final class DictationSessionTests: XCTestCase {
             engines: [FakeSpeechEngine(text: "Nicht verlieren")],
             history: history,
             isTextFieldEditable: { true },
-            injectText: { textInjector.inject($0) },
+            injectText: { text, pid in textInjector.inject(text, targetPID: pid) },
             directory: directory
         )
 
@@ -1452,6 +1604,34 @@ final class DictationSessionTests: XCTestCase {
         XCTAssertEqual(history.records.first?.durationSecs ?? -1, 0.05, accuracy: 0.001)
     }
 
+    func testSetupStopCancelsOnlyActiveStartCueAndEmitsNoRecordingEvents() async {
+        let audio = FakeAudioCapture()
+        let cue = EventLog()
+        let sound = SoundFeedbackSpy(onPlay: { event in
+            guard event == .recordingStarted else { return }
+            cue.append("started")
+            do {
+                try await Task.sleep(nanoseconds: 60_000_000_000)
+            } catch {
+                cue.append("cancelled")
+            }
+        })
+        let speech = FakeSpeechEngine()
+        let app = makeApp(audio: audio, engines: [speech], soundFeedback: sound)
+        app.settings.soundOn = true
+
+        app.startDictation()
+        await waitUntil { cue.events.contains("started") }
+        app.stopDictation()
+        await waitUntil { app.phase == .idle }
+
+        XCTAssertEqual(cue.events, ["started", "cancelled"])
+        XCTAssertTrue(sound.events.isEmpty)
+        XCTAssertEqual(audio.stopCount, 1)
+        let metrics = await speech.metrics()
+        XCTAssertEqual(metrics.streamCancellationCount, 0)
+    }
+
     func testActivationWinningBeforeCueMakesCueRuntimeFailurePostStart() async {
         let audio = FakeAudioCapture()
         let cueGate = PermissionGate()
@@ -1479,7 +1659,7 @@ final class DictationSessionTests: XCTestCase {
 
         XCTAssertEqual(audio.openCount, 0)
         XCTAssertEqual(audio.stopCount, 1)
-        XCTAssertEqual(sound.events, [.recordingStarted, .recordingStopped, .failed])
+        XCTAssertEqual(sound.events, [.failed])
     }
 
     func testRuntimeErrorWinningActivationCrossingPlaysFailedOnly() async {
@@ -1543,7 +1723,7 @@ final class DictationSessionTests: XCTestCase {
         let app = makeApp(
             audio: audio,
             engines: [FakeSpeechEngine()],
-            frontmostApplication: { frontmost.current },
+            frontmostApplication: { frontmost.application() },
             soundFeedback: SoundFeedbackSpy(onPlay: { event in
                 guard event == .recordingStarted else { return }
                 _ = await cueGate.request()
@@ -1560,7 +1740,8 @@ final class DictationSessionTests: XCTestCase {
         await waitUntil { app.phase == .recording }
 
         XCTAssertEqual(app.currentSession?.targetApplication, actual)
-        app.currentSession?.updateTargetApplication(before)
+        XCTAssertEqual(frontmost.callCount, 1)
+        XCTAssertFalse(app.currentSession?.assignTargetApplication(before) ?? true)
         XCTAssertEqual(app.currentSession?.targetApplication, actual)
         app.requestDiscard()
         await waitUntil { app.phase == .idle }
@@ -1997,6 +2178,32 @@ final class DictationSessionTests: XCTestCase {
         XCTAssertNotNil(app.currentSession)
         app.requestDiscard()
         await waitUntil { app.phase == .idle }
+    }
+
+    func testStopCueRunsInParallelWithSpeechFinalization() async {
+        let stopCueGate = PermissionGate()
+        let speech = FakeSpeechEngine(text: "Parallel")
+        let sound = SoundFeedbackSpy(onPlay: { event in
+            guard event == .recordingStopped else { return }
+            _ = await stopCueGate.request()
+        })
+        let audio = FakeAudioCapture()
+        let app = makeApp(audio: audio, engines: [speech], soundFeedback: sound)
+        app.settings.soundOn = true
+
+        app.startDictation()
+        await waitUntil { audio.isRunning }
+        app.stopDictation()
+        await waitUntil { await stopCueGate.requested }
+        await waitUntil { await speech.metrics().finishCount == 1 }
+
+        XCTAssertEqual(app.phase, .transcribing)
+        XCTAssertTrue(app.history.records.isEmpty)
+        await stopCueGate.resolve(true)
+        await waitUntil { app.phase == .idle }
+        XCTAssertEqual(sound.events, [
+            .recordingStarted, .recordingStopped, .processingCompleted,
+        ])
     }
 
     func testSoundFeedbackSuccessTimelineWaitsForCueAndAudioStop() async {

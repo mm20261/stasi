@@ -18,14 +18,16 @@ final class HotkeyCaptureDraftTests: XCTestCase {
         XCTAssertTrue(draft.isComplete)
     }
 
-    func testModifierOnlyDraftClearsOnRelease() {
+    func testModifierOnlyDraftRemainsValidAfterRelease() {
+        let commandOnly = HotkeyEngine.Combo(keyCode: 55, flags: 0)
         var draft = HotkeyCaptureDraft()
 
-        draft.process(.modifier(.init(keyCode: 55, flags: 0)))
+        draft.process(.modifier(commandOnly))
         draft.process(.modifierReleased(keyCode: 55))
 
-        XCTAssertNil(draft.combo)
+        XCTAssertEqual(draft.combo, commandOnly)
         XCTAssertFalse(draft.isComplete)
+        XCTAssertTrue(draft.isValidSelection)
     }
 
     func testFunctionModifierRemainsAValidFinalSelectionAfterRelease() {
@@ -135,12 +137,25 @@ final class HotkeyCaptureDraftTests: XCTestCase {
     }
 
     @MainActor
-    func testOnboardingPreviewIsEmptyAfterIncompleteModifierRelease() {
+    func testOnboardingPreviewRetainsModifierOnlySelectionAfterRelease() {
+        let commandOnly = HotkeyEngine.Combo(keyCode: 55, flags: 0)
         var draft = HotkeyCaptureDraft()
-        draft.process(.modifier(.init(keyCode: 55, flags: 0)))
+        draft.process(.modifier(commandOnly))
         draft.process(.modifierReleased(keyCode: 55))
 
-        XCTAssertEqual(OnboardingView.hotkeyPreviewText(for: draft), "")
+        XCTAssertEqual(OnboardingView.hotkeyPreviewText(for: draft), VirtualKey.display(commandOnly))
+        XCTAssertTrue(draft.isValidSelection)
+    }
+
+    func testOnboardingEscapeRequestsMonitorRemoval() {
+        var state = HotkeyCaptureState()
+        state.begin(with: .defaultPTT)
+
+        let effect = state.process(.cancel)
+
+        XCTAssertEqual(effect, .removeMonitor)
+        XCTAssertFalse(state.isRecording)
+        XCTAssertNil(state.draft.combo)
     }
 
     func testSettingsEscapeStopsCaptureUIAndRequestsMonitorRemoval() {
@@ -197,6 +212,18 @@ final class HotkeyCaptureDraftTests: XCTestCase {
         draft.process(.modifier(commandOnly))
 
         XCTAssertEqual(draft.combo, commandOnly)
+        XCTAssertFalse(draft.isComplete)
+    }
+
+    func testKeyRepeatIsIgnoredWhenDraftIsEmpty() {
+        var draft = HotkeyCaptureDraft()
+
+        draft.process(.key(.init(
+            keyCode: 40,
+            flags: CGEventFlags.maskCommand.rawValue
+        ), isRepeat: true))
+
+        XCTAssertNil(draft.combo)
         XCTAssertFalse(draft.isComplete)
     }
 

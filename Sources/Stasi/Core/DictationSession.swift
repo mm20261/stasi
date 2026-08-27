@@ -26,7 +26,7 @@ final class DictationSession {
     let id: UUID
     private(set) var locale: Locale
     let dictionaryEntries: [DictionaryEntry]
-    private(set) var targetApplication: TargetApplication
+    private(set) var targetApplication: TargetApplication?
     let audioURL: URL?
     let soundFeedbackEnabled: Bool
     let speech: any SpeechEngining
@@ -42,9 +42,10 @@ final class DictationSession {
 
     private var teardownTask: Task<Void, Never>?
     private var audioStopTask: Task<URL?, Never>?
+    private var terminalFailureTask: Task<Void, Never>?
+    private var startCueTask: Task<Void, Never>?
     private var shouldPreserveAudioFile = false
-    private var shouldRecoverClosedAudioFile = false
-    private var runtimeFailureHandled = false
+    private var terminalRecoveryRequired = false
     private(set) var captureActivationWon = false
     private var emittedSoundEvents: Set<SoundEvent> = []
     private(set) var recoveredAudioURL: URL?
@@ -56,9 +57,11 @@ final class DictationSession {
         self.locale = locale
     }
 
-    func updateTargetApplication(_ targetApplication: TargetApplication) {
-        guard state == .settingUp else { return }
+    @discardableResult
+    func assignTargetApplication(_ targetApplication: TargetApplication) -> Bool {
+        guard state == .settingUp, self.targetApplication == nil else { return false }
         self.targetApplication = targetApplication
+        return true
     }
 
     func beginRecording() -> Bool {
@@ -81,12 +84,36 @@ final class DictationSession {
         captureActivationWon = true
     }
 
-    func beginRuntimeFailure() -> Bool {
-        guard completionIntent.treatsRuntimeFailureAsFatal,
-              !runtimeFailureHandled else { return false }
-        runtimeFailureHandled = true
-        shouldRecoverClosedAudioFile = true
-        return true
+    func startCue(using operation: @escaping @MainActor () async -> Void) async -> Bool {
+        if let startCueTask {
+            await startCueTask.value
+            return !startCueTask.isCancelled
+        }
+        let task = Task { @MainActor in await operation() }
+        startCueTask = task
+        await task.value
+        let completed = !task.isCancelled
+        startCueTask = nil
+        return completed
+    }
+
+    func cancelStartCue() {
+        startCueTask?.cancel()
+    }
+
+    /// Einziger terminaler Eigentümer einer fehlgeschlagenen Session. Weitere
+    /// Fehlergründe verschmelzen in `health`; Stop/Recovery/Sound/Toast laufen nur
+    /// im zuerst angelegten Task. Recovery wird vor Task-Start veröffentlicht und
+    /// vom Teardown erst direkt an der Dateigrenze gelesen.
+    func terminalFailure(
+        starting operation: @escaping @MainActor () async -> Void
+    ) -> Task<Void, Never>? {
+        guard completionIntent.treatsRuntimeFailureAsFatal else { return nil }
+        terminalRecoveryRequired = true
+        if let terminalFailureTask { return terminalFailureTask }
+        let task = Task { @MainActor in await operation() }
+        terminalFailureTask = task
+        return task
     }
 
     func claimSoundEvent(_ event: SoundEvent) -> Bool {
@@ -109,7 +136,6 @@ final class DictationSession {
     init(id: UUID = UUID(),
          locale: Locale,
          dictionaryEntries: [DictionaryEntry],
-         targetApplication: TargetApplication,
          audioURL: URL?,
          soundFeedbackEnabled: Bool = false,
          speech: any SpeechEngining,
@@ -117,7 +143,7 @@ final class DictationSession {
         self.id = id
         self.locale = locale
         self.dictionaryEntries = dictionaryEntries
-        self.targetApplication = targetApplication
+        self.targetApplication = nil
         self.audioURL = audioURL
         self.soundFeedbackEnabled = soundFeedbackEnabled
         self.speech = speech
@@ -155,8 +181,6 @@ final class DictationSession {
         let speech = self.speech
         let consumeTask = self.consumeTask
         let audioURL = self.audioURL
-        let preserveCompletedAudio = shouldPreserveAudioFile
-        let recoverClosedAudio = shouldRecoverClosedAudioFile
 
         let task = Task { @MainActor in
             let stoppedURL = await self.stopAudioOnce()
@@ -174,9 +198,9 @@ final class DictationSession {
                     }
                 }
             }
-            if recoverClosedAudio, let stoppedURL {
+            if self.terminalRecoveryRequired, let stoppedURL {
                 self.recoveredAudioURL = stoppedURL
-            } else if !preserveCompletedAudio, let audioURL {
+            } else if !self.shouldPreserveAudioFile, let audioURL {
                 try? FileManager.default.removeItem(at: audioURL)
             }
         }

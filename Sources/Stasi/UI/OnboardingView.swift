@@ -8,7 +8,7 @@ struct OnboardingView: View {
 
     @State private var model = OnboardingModel()
     /// Live-Kombination aus Schritt 3.
-    @State private var hotkeyDraft = HotkeyCaptureDraft()
+    @State private var hotkeyCaptureState = HotkeyCaptureState()
     @State private var captureMonitor: Any?
     @State private var captureTarget: HotkeyCaptureMonitorTarget?
     @State private var microphoneGranted = Permissions.microphoneGranted
@@ -88,7 +88,7 @@ struct OnboardingView: View {
                 .lineSpacing(2)
                 .fixedSize(horizontal: false, vertical: true)
                 .padding(.top, 34)
-            Text("Stasi diktiert on-device auf diesem Mac. Nichts verlässt das Gerät — kein Konto, keine Cloud, kein Mithören. Halte eine Taste gedrückt, sprich, lass los: Der Text steht in dem Feld, in dem dein Cursor blinkt.")
+            Text("Stasi diktiert on-device auf diesem Mac. Nichts verlässt das Gerät — kein Konto, keine Cloud, kein Mithören. Halte eine Taste gedrückt, warte den Startton ab, sprich und lass los: Der Text steht in dem Feld, in dem dein Cursor blinkt.")
                 .font(Theme.Typo.body())
                 .lineHeight()
                 .foregroundColor(Theme.Palette.text2)
@@ -225,7 +225,7 @@ struct OnboardingView: View {
             HStack(alignment: .top, spacing: 14) {
                 VStack(alignment: .leading, spacing: 10) {
                     HStack(spacing: 6) {
-                        KeyBadge(Self.hotkeyPreviewText(for: hotkeyDraft))
+                        KeyBadge(Self.hotkeyPreviewText(for: hotkeyCaptureState.draft))
                         BlinkingCursor()
                     }
                     Text("Taste frei belegbar – Modifier plus Taste oder ein Modifier allein.")
@@ -253,7 +253,7 @@ struct OnboardingView: View {
 
             navButtons(backTitle: "Zurück", backAction: { removeMonitor(); model.back() },
                        primaryTitle: "Übernehmen", primaryAction: { commitHotkey(); model.next() },
-                       primaryDisabled: !hotkeyDraft.isValidSelection)
+                       primaryDisabled: !hotkeyCaptureState.draft.isValidSelection)
             Spacer()
         }
     }
@@ -262,7 +262,7 @@ struct OnboardingView: View {
     private var trialStep: some View {
         let lastRecord = app.history.records.first
         return VStack(alignment: .leading, spacing: 0) {
-            Text("Halte \(VirtualKey.display(app.currentCombo)) und sag irgendwas.")
+            Text("Halte \(VirtualKey.display(app.currentCombo)), warte den Startton ab und sag etwas.")
                 .font(Theme.Typo.sectionTitle())
                 .tracking(-0.4)
                 .foregroundColor(Theme.Palette.ink)
@@ -375,11 +375,13 @@ struct OnboardingView: View {
 
     private func startCapture() {
         guard captureMonitor == nil else { return }
-        if hotkeyDraft.combo == nil {
-            hotkeyDraft = HotkeyCaptureDraft(combo: app.currentCombo)
+        if hotkeyCaptureState.draft.combo == nil {
+            hotkeyCaptureState.begin(with: app.currentCombo)
         }
         let target = HotkeyCaptureMonitorTarget { action in
-            hotkeyDraft.process(action)
+            if hotkeyCaptureState.process(action) == .removeMonitor {
+                removeMonitor()
+            }
         }
         captureTarget = target
         captureMonitor = NSEvent.addLocalMonitorForEvents(
@@ -398,9 +400,9 @@ struct OnboardingView: View {
     }
 
     private func commitHotkey() {
-        guard hotkeyDraft.isValidSelection, let combo = hotkeyDraft.combo else { return }
+        guard hotkeyCaptureState.draft.isValidSelection, let combo = hotkeyCaptureState.draft.combo else { return }
         app.applyHotkey(combo)
-        hotkeyDraft = HotkeyCaptureDraft()
+        hotkeyCaptureState.stop()
     }
 
     private func finishOnboarding() {

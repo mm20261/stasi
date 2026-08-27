@@ -37,6 +37,33 @@ enum HotkeyCaptureEvent: Sendable {
     }
 }
 
+enum HotkeyCaptureEffect: Equatable {
+    case none
+    case removeMonitor
+}
+
+struct HotkeyCaptureState: Equatable {
+    private(set) var isRecording = false
+    private(set) var draft = HotkeyCaptureDraft()
+
+    mutating func begin(with combo: HotkeyEngine.Combo) {
+        isRecording = true
+        draft = HotkeyCaptureDraft(combo: combo)
+    }
+
+    mutating func process(_ event: HotkeyCaptureEvent) -> HotkeyCaptureEffect {
+        draft.process(event)
+        guard case .cancel = event else { return .none }
+        isRecording = false
+        return .removeMonitor
+    }
+
+    mutating func stop() {
+        isRecording = false
+        draft = HotkeyCaptureDraft()
+    }
+}
+
 struct HotkeyCaptureDraft: Equatable {
     private(set) var combo: HotkeyEngine.Combo?
     private(set) var isComplete: Bool
@@ -44,7 +71,7 @@ struct HotkeyCaptureDraft: Equatable {
 
     init(combo: HotkeyEngine.Combo? = nil) {
         self.combo = combo
-        self.isComplete = combo?.flags != 0
+        self.isComplete = combo.map { $0.flags != 0 } ?? false
     }
 
     var isValidSelection: Bool {
@@ -70,13 +97,13 @@ struct HotkeyCaptureDraft: Equatable {
             self.combo = combo
             isComplete = false
             acceptsInitialReplacement = false
-        case .modifierReleased(let keyCode):
+        case .modifierReleased:
             guard !isComplete else { return }
             acceptsInitialReplacement = false
-            guard keyCode != 63 else { return }
-            combo = nil
+            // Ein einzelner Modifier ist eine vollständige, gültige Produktauswahl.
+            // Das Loslassen beendet nur die physische Eingabe, nicht den Entwurf.
         case .key(let combo, let isRepeat):
-            guard !isRepeat || self.combo == nil else { return }
+            guard !isRepeat else { return }
             self.combo = combo
             isComplete = true
             acceptsInitialReplacement = false

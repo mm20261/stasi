@@ -178,6 +178,23 @@ final class AudioCaptureFileTests: XCTestCase {
         }
     }
 
+    private final class DeliveryBox: @unchecked Sendable {
+        private let lock = NSLock()
+        private var pending: (@Sendable () -> Void)?
+
+        func store(_ delivery: @escaping @Sendable () -> Void) {
+            lock.withLock { pending = delivery }
+        }
+
+        func deliver() {
+            let delivery = lock.withLock { () -> (@Sendable () -> Void)? in
+                defer { pending = nil }
+                return pending
+            }
+            delivery?()
+        }
+    }
+
     private final class ConfigurationBox: @unchecked Sendable {
         private let lock = NSLock()
         private var configuration: AudioCapture.IOConfiguration?
@@ -240,7 +257,7 @@ final class AudioCaptureFileTests: XCTestCase {
             existedBeforeInput.set(FileManager.default.fileExists(atPath: url.path))
         })
 
-        try capture.start(outputFormat: outputFormat, recordTo: url) { _ in }
+        try capture.start(outputFormat: outputFormat, recordTo: url, captureInitiallyActive: true) { _ in }
 
         XCTAssertTrue(existedBeforeInput.get())
         _ = await capture.stop()
@@ -254,7 +271,7 @@ final class AudioCaptureFileTests: XCTestCase {
             configure: { configurationBox.store($0) }
         ))
 
-        try capture.start(outputFormat: outputFormat, recordTo: nil) { _ in }
+        try capture.start(outputFormat: outputFormat, recordTo: nil, captureInitiallyActive: true) { _ in }
 
         XCTAssertEqual(configurationBox.load(), .inputOnly)
         XCTAssertTrue(configurationBox.load()?.inputEnabled == true)
@@ -267,7 +284,7 @@ final class AudioCaptureFileTests: XCTestCase {
         let outputFormat = format()
         let capture = AudioCapture(audioUnitHooks: hooks(format: outputFormat))
 
-        try capture.start(outputFormat: outputFormat, recordTo: url) { _ in }
+        try capture.start(outputFormat: outputFormat, recordTo: url, captureInitiallyActive: true) { _ in }
 
         XCTAssertTrue(FileManager.default.fileExists(atPath: url.path))
         XCTAssertTrue(capture.hasOpenOutputFile)
@@ -275,17 +292,65 @@ final class AudioCaptureFileTests: XCTestCase {
         _ = await capture.stop()
     }
 
+    func testRuntimeErrorAcceptanceIsSynchronousAndDeliverySurvivesClear() {
+        let accepted = LockedFlag()
+        let delivered = LockedFlag()
+        let deliveryBox = DeliveryBox()
+        let reporter = AudioCapture.RuntimeErrorReporter(deliver: { delivery in
+            deliveryBox.store(delivery)
+        })
+        reporter.reset(
+            onAccepted: { _ in accepted.set(true) },
+            callback: { _ in delivered.set(true) }
+        )
+
+        reporter.report(.processingBacklog)
+        reporter.clearCallbacks()
+
+        XCTAssertTrue(accepted.get())
+        XCTAssertFalse(delivered.get())
+        deliveryBox.deliver()
+        XCTAssertTrue(delivered.get())
+    }
+
+    func testZeroFrameStopDeletesFileAndReturnsNoRecoveryURL() async throws {
+        let url = makeDirectory().appendingPathComponent("empty.wav")
+        let outputFormat = format()
+        let capture = AudioCapture(audioUnitHooks: hooks(format: outputFormat))
+        try capture.start(
+            outputFormat: outputFormat,
+            recordTo: url,
+            preferredMicUID: nil,
+            captureInitiallyActive: true,
+            onRuntimeErrorAccepted: { _ in },
+            onRuntimeError: { _ in }
+        ) { _ in }
+
+        let returnedURL = await capture.stop()
+
+        XCTAssertNil(returnedURL)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: url.path))
+    }
+
     func testStopClosesFileAndDisposesAudioUnit() async throws {
         let url = makeDirectory().appendingPathComponent("closed.wav")
         let outputFormat = format()
+        let sinkBox = SinkBox()
         var teardownOrder: [String] = []
-        let capture = AudioCapture(audioUnitHooks: hooks(
-            format: outputFormat,
+        let capture = AudioCapture(audioUnitHooks: AudioCapture.AudioUnitHooks(
+            configureInput: { _, _, sink in
+                sinkBox.store(sink)
+                return outputFormat
+            },
+            initialize: {}, start: {},
             stop: { teardownOrder.append("stop") },
             uninitialize: { teardownOrder.append("uninitialize") },
             dispose: { teardownOrder.append("dispose") }
         ))
-        try capture.start(outputFormat: outputFormat, recordTo: url) { _ in }
+        try capture.start(outputFormat: outputFormat, recordTo: url, captureInitiallyActive: true) { _ in }
+        let buffer = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: outputFormat, frameCapacity: 16))
+        buffer.frameLength = 16
+        try XCTUnwrap(sinkBox.load())(buffer)
 
         let returnedURL = await capture.stop()
 
@@ -308,7 +373,7 @@ final class AudioCaptureFileTests: XCTestCase {
         ))
 
         XCTAssertThrowsError(
-            try capture.start(outputFormat: outputFormat, recordTo: url) { _ in }
+            try capture.start(outputFormat: outputFormat, recordTo: url, captureInitiallyActive: true) { _ in }
         )
         XCTAssertFalse(capture.hasOpenOutputFile)
         XCTAssertFalse(capture.isRunning)
@@ -348,6 +413,7 @@ final class AudioCaptureFileTests: XCTestCase {
         try capture.start(
             outputFormat: outputFormat,
             recordTo: nil,
+            captureInitiallyActive: true,
             onRuntimeError: { error in errorSpy.record(error) }
         ) { _ in
             delivered.fulfill()
@@ -388,7 +454,7 @@ final class AudioCaptureFileTests: XCTestCase {
         ))
 
         do {
-            try capture.start(outputFormat: outputFormat, recordTo: nil) { _ in
+            try capture.start(outputFormat: outputFormat, recordTo: nil, captureInitiallyActive: true) { _ in
                 processed.signal()
             }
             XCTFail("Startfehler erwartet")
@@ -408,10 +474,10 @@ final class AudioCaptureFileTests: XCTestCase {
     func testSecondStartWhileRunningThrowsAlreadyRunning() async throws {
         let outputFormat = format()
         let capture = AudioCapture(audioUnitHooks: hooks(format: outputFormat))
-        try capture.start(outputFormat: outputFormat, recordTo: nil) { _ in }
+        try capture.start(outputFormat: outputFormat, recordTo: nil, captureInitiallyActive: true) { _ in }
 
         XCTAssertThrowsError(
-            try capture.start(outputFormat: outputFormat, recordTo: nil) { _ in }
+            try capture.start(outputFormat: outputFormat, recordTo: nil, captureInitiallyActive: true) { _ in }
         ) { error in
             guard case AudioCaptureError.alreadyRunning = error else {
                 return XCTFail("Erwartet alreadyRunning, erhalten: \(error)")
@@ -430,9 +496,9 @@ final class AudioCaptureFileTests: XCTestCase {
             dispose: { disposeCount += 1 }
         ))
 
-        try capture.start(outputFormat: outputFormat, recordTo: nil) { _ in }
+        try capture.start(outputFormat: outputFormat, recordTo: nil, captureInitiallyActive: true) { _ in }
         _ = await capture.stop()
-        try capture.start(outputFormat: outputFormat, recordTo: nil) { _ in }
+        try capture.start(outputFormat: outputFormat, recordTo: nil, captureInitiallyActive: true) { _ in }
         _ = await capture.stop()
 
         XCTAssertEqual(startCount, 2)
@@ -450,7 +516,7 @@ final class AudioCaptureFileTests: XCTestCase {
         ))
         let capture = AudioCapture(audioUnitHooks: hooks(format: nativeFormat))
 
-        try capture.start(outputFormat: targetFormat, recordTo: nil) { _ in }
+        try capture.start(outputFormat: targetFormat, recordTo: nil, captureInitiallyActive: true) { _ in }
 
         XCTAssertTrue(capture.hasConverter)
         _ = await capture.stop()
@@ -477,7 +543,7 @@ final class AudioCaptureFileTests: XCTestCase {
         )
 
         XCTAssertThrowsError(
-            try capture.start(outputFormat: targetFormat, recordTo: url) { _ in }
+            try capture.start(outputFormat: targetFormat, recordTo: url, captureInitiallyActive: true) { _ in }
         ) { error in
             guard case let AudioCaptureError.converterUnavailable(input, output) = error else {
                 return XCTFail("Erwartet converterUnavailable, erhalten: \(error)")
@@ -864,6 +930,7 @@ final class AudioCaptureFileTests: XCTestCase {
         try capture.start(
             outputFormat: outputFormat,
             recordTo: firstURL,
+            captureInitiallyActive: true,
             onRuntimeError: { errors.record($0) }
         ) { _ in XCTFail("Erster Run darf nach Stop nicht liefern") }
         let oldSink = try XCTUnwrap(sinkBox.load())
@@ -872,6 +939,7 @@ final class AudioCaptureFileTests: XCTestCase {
         try capture.start(
             outputFormat: outputFormat,
             recordTo: secondURL,
+            captureInitiallyActive: true,
             onRuntimeError: { errors.record($0) }
         ) { _ in delivered.fulfill() }
         let currentSink = try XCTUnwrap(sinkBox.load())
@@ -886,9 +954,8 @@ final class AudioCaptureFileTests: XCTestCase {
         await fulfillment(of: [delivered], timeout: 1)
         _ = await capture.stop()
 
-        let firstFile = try AVAudioFile(forReading: firstURL)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: firstURL.path))
         let secondFile = try AVAudioFile(forReading: secondURL)
-        XCTAssertEqual(firstFile.length, 0)
         XCTAssertEqual(secondFile.length, 16)
         XCTAssertTrue(errors.values.isEmpty)
     }
@@ -938,6 +1005,7 @@ final class AudioCaptureFileTests: XCTestCase {
         try capture.start(
             outputFormat: outputFormat,
             recordTo: firstURL,
+            captureInitiallyActive: true,
             onRuntimeError: { errors.record($0) }
         ) { _ in XCTFail("Erster Run darf nach Stop nicht liefern") }
 
@@ -953,6 +1021,7 @@ final class AudioCaptureFileTests: XCTestCase {
         try capture.start(
             outputFormat: outputFormat,
             recordTo: secondURL,
+            captureInitiallyActive: true,
             onRuntimeError: { errors.record($0) }
         ) { _ in secondDelivered.fulfill() }
         resumeOldCallback.signal()
@@ -964,9 +1033,8 @@ final class AudioCaptureFileTests: XCTestCase {
         await fulfillment(of: [secondDelivered], timeout: 1)
         _ = await capture.stop()
 
-        let firstFile = try AVAudioFile(forReading: firstURL)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: firstURL.path))
         let secondFile = try AVAudioFile(forReading: secondURL)
-        XCTAssertEqual(firstFile.length, 0)
         XCTAssertEqual(secondFile.length, 16)
         XCTAssertTrue(errors.values.isEmpty)
     }
@@ -999,6 +1067,7 @@ final class AudioCaptureFileTests: XCTestCase {
         try capture.start(
             outputFormat: outputFormat,
             recordTo: nil,
+            captureInitiallyActive: true,
             onRuntimeError: { errors.record($0) }
         ) { _ in }
 
@@ -1012,6 +1081,7 @@ final class AudioCaptureFileTests: XCTestCase {
         try capture.start(
             outputFormat: outputFormat,
             recordTo: nil,
+            captureInitiallyActive: true,
             onRuntimeError: { errors.record($0) }
         ) { _ in delivered.fulfill() }
         resumeOldCallback.signal()
@@ -1033,7 +1103,7 @@ final class AudioCaptureFileTests: XCTestCase {
         )
 
         for _ in 0..<64 {
-            try capture.start(outputFormat: outputFormat, recordTo: nil) { _ in }
+            try capture.start(outputFormat: outputFormat, recordTo: nil, captureInitiallyActive: true) { _ in }
             _ = await capture.stop()
         }
 
@@ -1064,7 +1134,7 @@ final class AudioCaptureFileTests: XCTestCase {
         nonisolated(unsafe) let backgroundBuffer = buffer
         let startTask = Task.detached {
             try capture.start(outputFormat: outputFormat,
-                              recordTo: nil) { chunk in
+                              recordTo: nil, captureInitiallyActive: true) { chunk in
                 XCTAssertEqual(chunk.buffer.frameLength, 16)
                 received.fulfill()
             }
@@ -1108,6 +1178,7 @@ final class AudioCaptureFileTests: XCTestCase {
         try capture.start(
             outputFormat: outputFormat,
             recordTo: nil,
+            captureInitiallyActive: true,
             onRuntimeError: { _ in XCTFail("Kein Runtimefehler erwartet") }
         ) { chunk in
             samples.record(chunk.buffer.floatChannelData?[0][0] ?? -1)
@@ -1159,6 +1230,7 @@ final class AudioCaptureFileTests: XCTestCase {
         try capture.start(
             outputFormat: outputFormat,
             recordTo: nil,
+            captureInitiallyActive: true,
             onRuntimeError: { error in errorSpy.record(error) }
         ) { _ in
             metrics.finishConsumption()
@@ -1361,6 +1433,7 @@ final class AudioCaptureFileTests: XCTestCase {
         try capture.start(
             outputFormat: outputFormat,
             recordTo: nil,
+            captureInitiallyActive: true,
             onRuntimeError: { _ in errorReported.fulfill() }
         ) { _ in }
 
@@ -1402,6 +1475,7 @@ final class AudioCaptureFileTests: XCTestCase {
         try capture.start(
             outputFormat: outputFormat,
             recordTo: nil,
+            captureInitiallyActive: true,
             onRuntimeError: { error in errorSpy.record(error) }
         ) { _ in delivered.fulfill() }
         let renderBuffer = try XCTUnwrap(AVAudioPCMBuffer(
@@ -1445,7 +1519,7 @@ final class AudioCaptureFileTests: XCTestCase {
                 allowProcessing.wait()
             }
         )
-        try capture.start(outputFormat: outputFormat, recordTo: nil) { _ in }
+        try capture.start(outputFormat: outputFormat, recordTo: nil, captureInitiallyActive: true) { _ in }
         let renderBuffer = try XCTUnwrap(AVAudioPCMBuffer(
             pcmFormat: outputFormat,
             frameCapacity: 16
@@ -1507,6 +1581,7 @@ final class AudioCaptureFileTests: XCTestCase {
         try capture.start(
             outputFormat: outputFormat,
             recordTo: nil,
+            captureInitiallyActive: true,
             onRuntimeError: { error in
                 errorSpy.record(error)
                 errorReported.fulfill()
@@ -1549,6 +1624,7 @@ final class AudioCaptureFileTests: XCTestCase {
         try capture.start(
             outputFormat: outputFormat,
             recordTo: nil,
+            captureInitiallyActive: true,
             onRuntimeError: { error in
                 errorSpy.record(error)
                 errorReported.fulfill()

@@ -287,7 +287,7 @@ enum Copy {
     }
 
     // Anleitungsleiste im Bericht
-    static let anleitungText = "halten und sprechen."
+    static let anleitungText = "halten, Startton abwarten, dann sprechen."
     static let anleitungStatusReady = "Bereit"
     static let anleitungStatusBlocked = "Hotkey inaktiv"
     static let hotkeyRestartRequired = "Neustart nötig"

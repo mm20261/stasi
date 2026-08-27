@@ -2,7 +2,7 @@
 
 Push-to-Talk-Diktat für macOS – Wispr-Flow-Style, komplett on-device.
 
-Rechte **Command-Taste halten** → sprechen → loslassen. Der korrigierte Text
+Rechte **Command-Taste halten** → Startton abwarten → sprechen → loslassen. Der korrigierte Text
 wird in die fokussierte App getippt.
 
 ## Features (v0.9.0)
