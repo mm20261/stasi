@@ -4,7 +4,33 @@ import XCTest
 
 @MainActor
 final class DictationSessionTests: XCTestCase {
-    private enum FakeError: Error { case setup, audio }
+    private enum FakeError: Error { case setup, audio, history }
+
+    private final class FakeHistoryStore: HistoryStoring {
+        var records: [TranscriptionRecord] = []
+        var state: HistoryStoreState = .missing
+        var lastError: String?
+        private(set) var insertCount = 0
+        var insertError: Error?
+
+        func save() throws {}
+
+        func insert(_ record: TranscriptionRecord, at position: Int) throws {
+            insertCount += 1
+            if let insertError { throw insertError }
+            records.insert(record, at: min(position, records.count))
+        }
+
+        func delete(_ record: TranscriptionRecord) throws {
+            records.removeAll { $0.id == record.id }
+        }
+
+        func deleteAll() throws {
+            records.removeAll()
+        }
+
+        func purge(olderThan days: Int, now: Date) throws -> Int { 0 }
+    }
 
     private final class FakeAudioCapture: AudioCapturing, @unchecked Sendable {
         var latestLevel: Double = 0
@@ -12,6 +38,7 @@ final class DictationSessionTests: XCTestCase {
         private(set) var startCount = 0
         private(set) var stopCount = 0
         var startError: Error?
+        var stoppedURL: URL?
 
         func ingestNativeBuffer(_ buffer: AVAudioPCMBuffer) {
             latestLevel = AudioCapture.computeLevel(of: buffer)
@@ -29,7 +56,7 @@ final class DictationSessionTests: XCTestCase {
         func stop() -> URL? {
             stopCount += 1
             isRunning = false
-            return nil
+            return stoppedURL
         }
     }
 
@@ -164,6 +191,14 @@ final class DictationSessionTests: XCTestCase {
         func installedLocaleIDs() -> [String] { localeIDs }
     }
 
+    private final class TextInjectorSpy: @unchecked Sendable {
+        private(set) var callCount = 0
+
+        func inject(_ text: String) {
+            callCount += 1
+        }
+    }
+
     private final class SpellCheckerSpy {
         private(set) var calls: [(word: String, language: String)] = []
 
@@ -197,10 +232,13 @@ final class DictationSessionTests: XCTestCase {
                          spellChecker: @escaping @MainActor (String, String) -> Bool = { _, _ in true },
                          consumeTimeoutNanoseconds: UInt64 = 2_000_000_000,
                          minimumPushToTalkDuration: TimeInterval = 0,
+                         history: (any HistoryStoring)? = nil,
+                         isTextFieldEditable: @escaping @Sendable () -> Bool = { false },
+                         injectText: @escaping @Sendable (String) -> Void = { _ in },
                          directory: URL? = nil) -> AppState {
         let root = directory ?? makeDirectory()
         let dictionary = DictionaryStore(directory: root.appendingPathComponent("dictionary"))
-        let history = HistoryStore(directory: root.appendingPathComponent("history"))
+        let history = history ?? HistoryStore(directory: root.appendingPathComponent("history"))
         var remaining = engines
         return AppState(
             settings: makeSettings(),
@@ -214,7 +252,9 @@ final class DictationSessionTests: XCTestCase {
             consumeTimeoutNanoseconds: consumeTimeoutNanoseconds,
             minimumPushToTalkDuration: minimumPushToTalkDuration,
             installHotkey: false,
-            audioDirectory: root.appendingPathComponent("audio")
+            audioDirectory: root.appendingPathComponent("audio"),
+            isTextFieldEditable: isTextFieldEditable,
+            injectText: injectText
         )
     }
 
@@ -268,7 +308,7 @@ final class DictationSessionTests: XCTestCase {
         await waitUntil { app.phase == .idle }
     }
 
-    func testFinishedDictationMergesLearnedCandidateUsingInjectedSpellChecker() async {
+    func testFinishedDictationMergesLearnedCandidateUsingInjectedSpellChecker() async throws {
         let directory = makeDirectory()
         let audio = FakeAudioCapture()
         let speech = FakeSpeechEngine(text: "Wir verwenden Frobulator heute")
@@ -281,7 +321,7 @@ final class DictationSessionTests: XCTestCase {
             },
             directory: directory
         )
-        app.history.insert(TranscriptionRecord(
+        try app.history.insert(TranscriptionRecord(
             date: Date().addingTimeInterval(-60),
             localeID: "de_DE",
             rawText: "Der Frobulator hilft",
@@ -398,6 +438,35 @@ final class DictationSessionTests: XCTestCase {
         XCTAssertEqual(metrics.startCount, 0)
         XCTAssertTrue(toasts.isEmpty)
         XCTAssertTrue(app.history.records.isEmpty)
+    }
+
+    func testHistoryInsertFailurePreservesFinishedAudioAndSkipsInjection() async throws {
+        let directory = makeDirectory()
+        let finishedWAV = directory.appendingPathComponent("finished.wav")
+        try Data("finished audio".utf8).write(to: finishedWAV)
+        let audio = FakeAudioCapture()
+        audio.stoppedURL = finishedWAV
+        let history = FakeHistoryStore()
+        history.insertError = FakeError.history
+        let textInjector = TextInjectorSpy()
+        let app = makeApp(
+            audio: audio,
+            engines: [FakeSpeechEngine(text: "Nicht verlieren")],
+            history: history,
+            isTextFieldEditable: { true },
+            injectText: { textInjector.inject($0) },
+            directory: directory
+        )
+
+        app.startDictation()
+        await waitUntil { audio.isRunning }
+        app.stopDictation(commit: true)
+        await waitUntil { app.phase == .idle }
+
+        XCTAssertEqual(history.insertCount, 1)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: finishedWAV.path))
+        XCTAssertEqual(textInjector.callCount, 0)
+        XCTAssertEqual(app.phase, .idle)
     }
 
     func testCompletionAndDiscardStaySilentWhileErrorsStillToast() async {

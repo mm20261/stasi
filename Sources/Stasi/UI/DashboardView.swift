@@ -277,7 +277,7 @@ struct DashboardView: View {
             Button("Löschen", role: .destructive) {
                 Task { @MainActor in
                     if playingId == record.id { player.stop(); playingId = nil }
-                    app.history.delete(record)
+                    app.deleteHistoryRecord(record)
                 }
             }
         } label: {

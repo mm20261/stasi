@@ -44,12 +44,62 @@ struct TranscriptionRecord: Identifiable, Codable {
 // MARK: - HistoryStore
 // Persistiert Protokolle nach ~/Library/Application Support/Stasi/history.json.
 
+enum HistoryStoreState: Equatable {
+    case missing
+    case loaded
+    case unreadable(String)
+}
+
+enum HistoryStoreError: LocalizedError {
+    case writeBlockedByUnreadableHistory(URL)
+    case encodingFailed(String)
+    case writeFailed(URL, String)
+
+    var errorDescription: String? {
+        switch self {
+        case .writeBlockedByUnreadableHistory(let url):
+            return "Die unlesbare Verlaufsdatei \(url.path) wurde nicht verändert."
+        case .encodingFailed(let message):
+            return "Der Verlauf konnte nicht kodiert werden: \(message)"
+        case .writeFailed(let url, let message):
+            return "Der Verlauf konnte nicht nach \(url.path) geschrieben werden: \(message)"
+        }
+    }
+}
+
+@MainActor
+protocol HistoryStoring: AnyObject {
+    var records: [TranscriptionRecord] { get }
+    var state: HistoryStoreState { get }
+    var lastError: String? { get }
+
+    func save() throws
+    func insert(_ record: TranscriptionRecord, at position: Int) throws
+    func delete(_ record: TranscriptionRecord) throws
+    func deleteAll() throws
+    func purge(olderThan days: Int, now: Date) throws -> Int
+}
+
+extension HistoryStoring {
+    func insert(_ record: TranscriptionRecord) throws {
+        try insert(record, at: 0)
+    }
+
+    func purge(olderThan days: Int) throws -> Int {
+        try purge(olderThan: days, now: Date())
+    }
+}
+
 @MainActor
 @Observable
-final class HistoryStore {
+final class HistoryStore: HistoryStoring {
     private(set) var records: [TranscriptionRecord] = []
+    private(set) var state: HistoryStoreState = .missing
+    private(set) var lastError: String?
 
-    private var fileURL: URL
+    private let fileURL: URL
+    private let decoder = JSONDecoder()
+    private let encoder = JSONEncoder()
 
     /// `directory` ist für Tests injizierbar; default = Application Support.
     init(directory: URL? = nil) {
@@ -60,56 +110,107 @@ final class HistoryStore {
     }
 
     func load() {
-        guard let data = try? Data(contentsOf: fileURL),
-              let decoded = try? JSONDecoder().decode([TranscriptionRecord].self, from: data)
-        else { return }
-        records = decoded.sorted { $0.date > $1.date }
+        guard FileManager.default.fileExists(atPath: fileURL.path) else {
+            records = []
+            state = .missing
+            lastError = nil
+            return
+        }
+
+        do {
+            let data = try Data(contentsOf: fileURL)
+            records = try decoder.decode([TranscriptionRecord].self, from: data)
+                .sorted { $0.date > $1.date }
+            state = .loaded
+            lastError = nil
+        } catch {
+            records = []
+            let message = error.localizedDescription
+            state = .unreadable(message)
+            lastError = message
+        }
     }
 
-    func save() {
-        guard let data = try? JSONEncoder().encode(records) else { return }
-        try? data.write(to: fileURL, options: .atomic)
+    func save() throws {
+        try ensureWritable()
+        try persist(records)
     }
 
-    func insert(_ record: TranscriptionRecord, at position: Int = 0) {
-        records.insert(record, at: min(position, records.count))
-        save()
+    func insert(_ record: TranscriptionRecord, at position: Int = 0) throws {
+        try ensureWritable()
+        var updated = records
+        updated.insert(record, at: min(position, updated.count))
+        try persist(updated)
+        records = updated
     }
 
-    func delete(_ record: TranscriptionRecord) {
-        records.removeAll { $0.id == record.id }
+    func delete(_ record: TranscriptionRecord) throws {
+        try ensureWritable()
+        let updated = records.filter { $0.id != record.id }
+        try persist(updated)
+        records = updated
         if let audioPath = record.audioPath {
             try? FileManager.default.removeItem(atPath: audioPath)
         }
-        save()
     }
 
     /// Löscht sämtliche Protokolle inkl. Audio-Dateien.
-    func deleteAll() {
-        for record in records {
+    func deleteAll() throws {
+        try ensureWritable()
+        let removed = records
+        try persist([])
+        records = []
+        for record in removed {
             if let audioPath = record.audioPath {
                 try? FileManager.default.removeItem(atPath: audioPath)
             }
         }
-        records.removeAll()
-        save()
     }
 
     /// Entfernt Protokolle (und deren Audio), die älter als `days` Tage sind.
     /// Liefert die Anzahl der entfernten Einträge.
     @discardableResult
-    func purge(olderThan days: Int, now: Date = Date()) -> Int {
+    func purge(olderThan days: Int, now: Date = Date()) throws -> Int {
+        try ensureWritable()
         guard days > 0 else { return 0 }
         let cutoff = now.addingTimeInterval(-Double(days) * 86_400)
         let stale = records.filter { $0.date < cutoff }
         guard !stale.isEmpty else { return 0 }
+        let updated = records.filter { $0.date >= cutoff }
+        try persist(updated)
+        records = updated
         for record in stale {
             if let audioPath = record.audioPath {
                 try? FileManager.default.removeItem(atPath: audioPath)
             }
         }
-        records.removeAll { $0.date < cutoff }
-        save()
         return stale.count
+    }
+
+    private func ensureWritable() throws {
+        if case .unreadable = state {
+            throw HistoryStoreError.writeBlockedByUnreadableHistory(fileURL)
+        }
+    }
+
+    private func persist(_ records: [TranscriptionRecord]) throws {
+        let data: Data
+        do {
+            data = try encoder.encode(records)
+        } catch {
+            let message = error.localizedDescription
+            lastError = message
+            throw HistoryStoreError.encodingFailed(message)
+        }
+
+        do {
+            try data.write(to: fileURL, options: .atomic)
+            state = .loaded
+            lastError = nil
+        } catch {
+            let message = error.localizedDescription
+            lastError = message
+            throw HistoryStoreError.writeFailed(fileURL, message)
+        }
     }
 }

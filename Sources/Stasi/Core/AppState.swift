@@ -37,13 +37,15 @@ final class AppState {
 
     let settings: SettingsStore
     let dictionary: DictionaryStore
-    let history: HistoryStore
+    let history: any HistoryStoring
     let audio: any AudioCapturing
     private let speechFactory: @MainActor (Locale, [String]) -> any SpeechEngining
     private let requestMicrophone: @MainActor () async -> Bool
     private let modelInstaller: @Sendable (Locale) async throws -> Void
     private let spellChecker: @MainActor (String, String) -> Bool
     private let audioDirectory: URL
+    private let isTextFieldEditable: @Sendable () -> Bool
+    private let injectText: @Sendable (String) -> Void
     private(set) var modelReadyByLocale: [String: Bool] = [:]
     @ObservationIgnored private var modelPreparationTasks: [String: Task<Bool, Never>] = [:]
     @ObservationIgnored private var knownWordCache: [String: Bool] = [:]
@@ -135,7 +137,7 @@ final class AppState {
 
     init(settings: SettingsStore,
          dictionary: DictionaryStore? = nil,
-         history: HistoryStore? = nil,
+         history: (any HistoryStoring)? = nil,
          audio: any AudioCapturing = AudioCapture(),
          speechFactory: @escaping @MainActor (Locale, [String]) -> any SpeechEngining = {
              TranscriptionEngine(locale: $0, biasWords: $1)
@@ -161,7 +163,13 @@ final class AppState {
          consumeTimeoutNanoseconds: UInt64 = 2_000_000_000,
          minimumPushToTalkDuration: TimeInterval = PillChrome.presentationDelay,
          installHotkey: Bool = true,
-         audioDirectory: URL? = nil) {
+         audioDirectory: URL? = nil,
+         isTextFieldEditable: @escaping @Sendable () -> Bool = {
+             TextInjector.isFocusedElementEditable()
+         },
+         injectText: @escaping @Sendable (String) -> Void = {
+             TextInjector.inject($0)
+         }) {
         self.settings = settings
         self.dictionary = dictionary ?? DictionaryStore()
         self.history = history ?? HistoryStore()
@@ -174,6 +182,8 @@ final class AppState {
         self.minimumPushToTalkDuration = minimumPushToTalkDuration
         self.audioDirectory = audioDirectory ?? DictionaryStore.appSupportDirectory
             .appendingPathComponent("audio", isDirectory: true)
+        self.isTextFieldEditable = isTextFieldEditable
+        self.injectText = injectText
         levelTraceEnabled = ProcessInfo.processInfo.environment["STASI_LEVEL_TRACE"] == "1"
         (commandStream, commandContinuation) = AsyncStream.makeStream(of: HotkeyCommand.self)
         accessibilityGranted = Permissions.accessibilityGranted
@@ -702,7 +712,16 @@ final class AppState {
             audioPath: audioURLSnapshot?.path,
             polish: outcome.summary
         )
-        history.insert(newRecord)
+        do {
+            try history.insert(newRecord)
+        } catch {
+            DebugLog.log("STASI-APP: Verlauf speichern fehlgeschlagen: \(error.localizedDescription)")
+            currentSession = nil
+            partialText = ""
+            phase = .idle
+            onToast?("Verlauf konnte nicht gespeichert werden. Die Audiodatei bleibt erhalten.", false)
+            return
+        }
 
         let historicalRecords = history.records.filter { $0.id != newRecord.id }
         let learned = AutoLearnScout.candidates(
@@ -726,12 +745,14 @@ final class AppState {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(trimmed, forType: .string)
 
+        let isTextFieldEditable = isTextFieldEditable
+        let injectText = injectText
         Task.detached(priority: .userInitiated) {
             // Nur tippen, wenn ein editierbares Textfeld fokussiert ist –
             // sonst spielt macOS den Fehler-Beep (kein Textfeld im Fokus).
-            let editable = TextInjector.isFocusedElementEditable()
+            let editable = isTextFieldEditable()
             if editable {
-                TextInjector.inject(trimmed)
+                injectText(trimmed)
             }
             // Zwei Poll-Zyklen Sichtbarkeit, auch wenn das Einfügen nur einen
             // kurzen CGEvent-Chunk benötigt. Der verzögerte Spinner bleibt bei
@@ -784,9 +805,11 @@ final class AppState {
         guard let record = history.records.first else { return }
         let text = record.correctedText
         copy(record)
+        let isTextFieldEditable = isTextFieldEditable
+        let injectText = injectText
         Task.detached(priority: .userInitiated) {
-            if TextInjector.isFocusedElementEditable() {
-                TextInjector.inject(text)
+            if isTextFieldEditable() {
+                injectText(text)
             }
         }
     }
@@ -800,13 +823,36 @@ final class AppState {
         }
     }
 
+    func deleteHistoryRecord(_ record: TranscriptionRecord) {
+        do {
+            try history.delete(record)
+        } catch {
+            DebugLog.log("STASI-APP: Verlauf löschen fehlgeschlagen: \(error.localizedDescription)")
+            onToast?("Protokoll konnte nicht gelöscht werden.", false)
+        }
+    }
+
+    func deleteAllHistory() {
+        do {
+            try history.deleteAll()
+        } catch {
+            DebugLog.log("STASI-APP: Verlauf vollständig löschen fehlgeschlagen: \(error.localizedDescription)")
+            onToast?("Verlauf konnte nicht gelöscht werden.", false)
+        }
+    }
+
     /// Aufbewahrungsdauer anwenden: Protokolle + Audio löschen, die älter
     /// als die eingestellte Dauer sind.
     func applyRetention() {
         guard let days = settings.retention.days else { return }
-        let purged = history.purge(olderThan: days)
-        if purged > 0 {
-            DebugLog.log("STASI-APP: Retention – \(purged) alte Protokolle gelöscht")
+        do {
+            let purged = try history.purge(olderThan: days)
+            if purged > 0 {
+                DebugLog.log("STASI-APP: Retention – \(purged) alte Protokolle gelöscht")
+            }
+        } catch {
+            DebugLog.log("STASI-APP: Retention fehlgeschlagen: \(error.localizedDescription)")
+            onToast?("Aufbewahrungsdauer konnte nicht angewendet werden.", false)
         }
     }
 

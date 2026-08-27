@@ -174,9 +174,99 @@ final class HistoryStoreTests: XCTestCase {
         )
     }
 
-    func testInsertAndPersistRoundtrip() {
+    func testMissingHistoryIsNotAnError() {
+        XCTAssertTrue(store.records.isEmpty)
+        XCTAssertEqual(store.state, .missing)
+        XCTAssertNil(store.lastError)
+    }
+
+    func testValidHistoryIsLoaded() throws {
+        let record = makeRecord(text: "Gültiger Verlauf")
+        let data = try JSONEncoder().encode([record])
+        try data.write(to: tempDir.appendingPathComponent("history.json"))
+
+        let reloaded = HistoryStore(directory: tempDir)
+
+        XCTAssertEqual(reloaded.records.map(\.correctedText), ["Gültiger Verlauf"])
+        XCTAssertEqual(reloaded.state, .loaded)
+        XCTAssertNil(reloaded.lastError)
+    }
+
+    func testMalformedHistoryIsUnreadableAndPreserved() throws {
+        let url = tempDir.appendingPathComponent("history.json")
+        let original = Data("{not-json".utf8)
+        try original.write(to: url)
+
+        let reloaded = HistoryStore(directory: tempDir)
+
+        guard case .unreadable = reloaded.state else {
+            return XCTFail("Beschädigte Historie muss als unlesbar markiert werden")
+        }
+        XCTAssertNotNil(reloaded.lastError)
+        XCTAssertEqual(try Data(contentsOf: url), original)
+    }
+
+    func testInsertCannotOverwriteUnreadableHistory() throws {
+        let url = tempDir.appendingPathComponent("history.json")
+        let original = Data("{not-json".utf8)
+        try original.write(to: url)
+        let reloaded = HistoryStore(directory: tempDir)
+
+        XCTAssertThrowsError(try reloaded.insert(makeRecord())) { error in
+            XCTAssertTrue(error is HistoryStoreError)
+        }
+        XCTAssertTrue(reloaded.records.isEmpty)
+        XCTAssertEqual(try Data(contentsOf: url), original)
+    }
+
+    func testSaveCannotOverwriteUnreadableHistory() throws {
+        let url = tempDir.appendingPathComponent("history.json")
+        let original = Data("{not-json".utf8)
+        try original.write(to: url)
+        let reloaded = HistoryStore(directory: tempDir)
+
+        XCTAssertThrowsError(try reloaded.save())
+        XCTAssertEqual(try Data(contentsOf: url), original)
+    }
+
+    func testDeleteCannotMutateUnreadableHistoryOrRemoveAudio() throws {
+        let url = tempDir.appendingPathComponent("history.json")
+        let original = Data("{not-json".utf8)
+        try original.write(to: url)
+        let audioURL = tempDir.appendingPathComponent("preserve.wav")
+        try Data("audio".utf8).write(to: audioURL)
+        var record = makeRecord()
+        record.audioPath = audioURL.path
+        let reloaded = HistoryStore(directory: tempDir)
+
+        XCTAssertThrowsError(try reloaded.delete(record))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: audioURL.path))
+        XCTAssertEqual(try Data(contentsOf: url), original)
+    }
+
+    func testDeleteAllCannotOverwriteUnreadableHistory() throws {
+        let url = tempDir.appendingPathComponent("history.json")
+        let original = Data("{not-json".utf8)
+        try original.write(to: url)
+        let reloaded = HistoryStore(directory: tempDir)
+
+        XCTAssertThrowsError(try reloaded.deleteAll())
+        XCTAssertEqual(try Data(contentsOf: url), original)
+    }
+
+    func testPurgeCannotOverwriteUnreadableHistory() throws {
+        let url = tempDir.appendingPathComponent("history.json")
+        let original = Data("{not-json".utf8)
+        try original.write(to: url)
+        let reloaded = HistoryStore(directory: tempDir)
+
+        XCTAssertThrowsError(try reloaded.purge(olderThan: 7))
+        XCTAssertEqual(try Data(contentsOf: url), original)
+    }
+
+    func testInsertAndPersistRoundtrip() throws {
         let record = makeRecord(text: "Persistenz-Test")
-        store.insert(record)
+        try store.insert(record)
 
         let reloaded = HistoryStore(directory: tempDir)
         XCTAssertEqual(reloaded.records.first?.correctedText, "Persistenz-Test")
@@ -200,11 +290,11 @@ final class HistoryStoreTests: XCTestCase {
         XCTAssertNil(reloaded.records.first?.polish)
     }
 
-    func testInsertAtTop() {
+    func testInsertAtTop() throws {
         let first = makeRecord(text: "erster")
         let second = makeRecord(text: "zweiter")
-        store.insert(first)
-        store.insert(second)
+        try store.insert(first)
+        try store.insert(second)
 
         XCTAssertEqual(store.records.first?.correctedText, "zweiter")
         XCTAssertEqual(store.records.count, 2)
@@ -215,8 +305,8 @@ final class HistoryStoreTests: XCTestCase {
         try Data([0x00]).write(to: audioFile)
         var record = makeRecord()
         record.audioPath = audioFile.path
-        store.insert(record)
-        store.delete(record)
+        try store.insert(record)
+        try store.delete(record)
 
         XCTAssertFalse(FileManager.default.fileExists(atPath: audioFile.path))
         XCTAssertTrue(store.records.isEmpty)
@@ -234,10 +324,10 @@ final class HistoryStoreTests: XCTestCase {
         try Data([0x00]).write(to: audioFile)
         var r = makeRecord(text: "mit Audio")
         r.audioPath = audioFile.path
-        store.insert(r)
-        store.insert(makeRecord(text: "ohne Audio"))
+        try store.insert(r)
+        try store.insert(makeRecord(text: "ohne Audio"))
 
-        store.deleteAll()
+        try store.deleteAll()
 
         XCTAssertTrue(store.records.isEmpty)
         XCTAssertFalse(FileManager.default.fileExists(atPath: audioFile.path))
@@ -246,14 +336,14 @@ final class HistoryStoreTests: XCTestCase {
         XCTAssertTrue(reloaded.records.isEmpty)
     }
 
-    func testPurgeRemovesOnlyOldRecords() {
+    func testPurgeRemovesOnlyOldRecords() throws {
         let now = Date()
         let old = makeRecord(text: "alt", date: now.addingTimeInterval(-20 * 86_400))
         let recent = makeRecord(text: "neu", date: now)
-        store.insert(old)
-        store.insert(recent)
+        try store.insert(old)
+        try store.insert(recent)
 
-        let purged = store.purge(olderThan: 7, now: now)
+        let purged = try store.purge(olderThan: 7, now: now)
 
         XCTAssertEqual(purged, 1)
         XCTAssertEqual(store.records.count, 1)
@@ -266,17 +356,17 @@ final class HistoryStoreTests: XCTestCase {
         try Data([0x00]).write(to: audioFile)
         var old = makeRecord(text: "alt", date: now.addingTimeInterval(-10 * 86_400))
         old.audioPath = audioFile.path
-        store.insert(old)
+        try store.insert(old)
 
-        store.purge(olderThan: 7, now: now)
+        try store.purge(olderThan: 7, now: now)
 
         XCTAssertFalse(FileManager.default.fileExists(atPath: audioFile.path))
     }
 
-    func testPurgeKeepsEverythingWhenWithinRetention() {
+    func testPurgeKeepsEverythingWhenWithinRetention() throws {
         let now = Date()
-        store.insert(makeRecord(text: "frisch", date: now.addingTimeInterval(-3 * 86_400)))
-        let purged = store.purge(olderThan: 7, now: now)
+        try store.insert(makeRecord(text: "frisch", date: now.addingTimeInterval(-3 * 86_400)))
+        let purged = try store.purge(olderThan: 7, now: now)
         XCTAssertEqual(purged, 0)
         XCTAssertEqual(store.records.count, 1)
     }

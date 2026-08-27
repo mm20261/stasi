@@ -704,7 +704,7 @@ struct SettingsWindowView: View {
         }
         .alert("Alles löschen?", isPresented: $showDeleteConfirm) {
             Button("Alles löschen", role: .destructive) {
-                app.history.deleteAll()
+                app.deleteAllHistory()
             }
             Button("Abbrechen", role: .cancel) {}
         } message: {
