@@ -47,6 +47,22 @@ final class PillChromeTests: XCTestCase {
     }
 
     @MainActor
+    func testPreparingAndTimedOutSetupUseVisibleSpinner() {
+        XCTAssertTrue(PillChrome.shouldShowSpinner(
+            phase: .preparing,
+            processingElapsed: 0
+        ))
+        XCTAssertTrue(PillChrome.shouldShowSpinner(
+            phase: .setupTimedOut,
+            processingElapsed: 0
+        ))
+        XCTAssertEqual(AppState.Phase.preparing.rawValue, "VORBEREITUNG")
+        XCTAssertEqual(AppState.Phase.setupTimedOut.rawValue, "NEUSTART NÖTIG")
+        XCTAssertNotNil(StatusBarController.icon(forPhase: .preparing))
+        XCTAssertNotNil(StatusBarController.icon(forPhase: .setupTimedOut))
+    }
+
+    @MainActor
     func testProcessingPhasesUseTextlessSpinner() {
         for phase in [AppState.Phase.transcribing, .polishing, .injecting] {
             XCTAssertTrue(PillChrome.shouldShowSpinner(

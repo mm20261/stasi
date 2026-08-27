@@ -26,7 +26,7 @@ final class DictationSession {
     let id: UUID
     private(set) var locale: Locale
     let dictionaryEntries: [DictionaryEntry]
-    let targetApplication: TargetApplication
+    private(set) var targetApplication: TargetApplication
     let audioURL: URL?
     let speech: any SpeechEngining
     let audio: any AudioCapturing
@@ -51,6 +51,11 @@ final class DictationSession {
     func applyResolvedLocale(_ locale: Locale) {
         guard state == .settingUp else { return }
         self.locale = locale
+    }
+
+    func updateTargetApplication(_ targetApplication: TargetApplication) {
+        guard state == .settingUp else { return }
+        self.targetApplication = targetApplication
     }
 
     func beginRecording() -> Bool {

@@ -27,6 +27,8 @@ enum PillChrome {
     static func shouldShowSpinner(phase: AppState.Phase,
                                   processingElapsed: TimeInterval) -> Bool {
         switch phase {
+        case .preparing, .setupTimedOut:
+            true
         case .transcribing, .polishing, .injecting:
             processingElapsed >= spinnerDelay
         case .idle, .recording:

@@ -9,6 +9,7 @@ final class DictationSessionHealth: @unchecked Sendable {
 
     private let lock = NSLock()
     private var failureStorage: Failure?
+    private var audioRuntimeErrorStorage: AudioCaptureRuntimeError?
     private var speechIngressClosed = false
 
     var failure: Failure? {
@@ -38,9 +39,18 @@ final class DictationSessionHealth: @unchecked Sendable {
         }
     }
 
-    func recordAudioRuntimeFailure() {
+    var audioRuntimeError: AudioCaptureRuntimeError? {
         lock.lock()
         defer { lock.unlock() }
+        return audioRuntimeErrorStorage
+    }
+
+    func recordAudioRuntimeFailure(_ error: AudioCaptureRuntimeError) {
+        lock.lock()
+        defer { lock.unlock() }
+        if audioRuntimeErrorStorage == nil {
+            audioRuntimeErrorStorage = error
+        }
         if failureStorage == nil {
             failureStorage = .audioRuntimeFailure
         }

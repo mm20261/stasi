@@ -83,12 +83,19 @@ final class StatusBarController {
     /// dem Poll-Timer hatten den Main-Thread zu Boden gerissen.
     private static let iconCache: [AppState.Phase: NSImage] = {
         var cache: [AppState.Phase: NSImage] = [:]
-        for phase in [AppState.Phase.idle, .recording, .transcribing, .polishing, .injecting] {
+        for phase in [AppState.Phase.idle, .preparing, .setupTimedOut,
+                      .recording, .transcribing, .polishing, .injecting] {
             let image: NSImage?
             switch phase {
             case .idle:
                 image = Bundle.module.url(forResource: "menubar", withExtension: "png")
                     .flatMap(NSImage.init(contentsOf:))
+            case .preparing:
+                image = NSImage(systemSymbolName: "hourglass",
+                                accessibilityDescription: "Vorbereitung")
+            case .setupTimedOut:
+                image = NSImage(systemSymbolName: "exclamationmark.arrow.trianglehead.2.clockwise.rotate.90",
+                                accessibilityDescription: "Neustart nötig")
             case .recording:
                 image = Bundle.module.url(forResource: "menubar-recording", withExtension: "png")
                     .flatMap(NSImage.init(contentsOf:))

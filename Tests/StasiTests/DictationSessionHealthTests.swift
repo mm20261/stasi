@@ -20,6 +20,16 @@ final class DictationSessionHealthTests: XCTestCase {
         XCTAssertEqual(health.failure, .speechBufferOverflow)
     }
 
+    func testRuntimeErrorRemainsObservableAfterEarlierSpeechFailure() throws {
+        let health = DictationSessionHealth()
+
+        health.record(.dropped(try makeChunk()))
+        health.recordAudioRuntimeFailure(.processingBacklog)
+
+        XCTAssertEqual(health.failure, .speechBufferOverflow)
+        XCTAssertEqual(health.audioRuntimeError, .processingBacklog)
+    }
+
     func testFirstOverflowClosesSpeechIngressAndRejectsLaterChunks() async throws {
         let health = DictationSessionHealth()
         let (stream, continuation) = AsyncStream<AudioChunk>.makeStream(
