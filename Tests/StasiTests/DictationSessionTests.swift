@@ -283,6 +283,18 @@ final class DictationSessionTests: XCTestCase {
         }
     }
 
+    private final class FakeClock {
+        var now: Date
+
+        init(now: Date = Date(timeIntervalSince1970: 1_000)) {
+            self.now = now
+        }
+
+        func advance(by interval: TimeInterval) {
+            now = now.addingTimeInterval(interval)
+        }
+    }
+
     private final class FocusGateRaceStub: @unchecked Sendable {
         private let lock = NSLock()
         private var current: TargetApplication?
@@ -386,7 +398,8 @@ final class DictationSessionTests: XCTestCase {
                          copyToClipboard: @escaping @MainActor (String) -> Void = { _ in },
                          recoveryStore: AudioRecoveryStore? = nil,
                          revealRecoveryFile: @escaping @MainActor (URL) -> Void = { _ in },
-                         directory: URL? = nil) -> AppState {
+                         directory: URL? = nil,
+                         now: @escaping @MainActor () -> Date = { Date() }) -> AppState {
         let root = directory ?? makeDirectory("makeApp")
         let dictionary = DictionaryStore(directory: root.appendingPathComponent("dictionary"))
         let history = history ?? HistoryStore(directory: root.appendingPathComponent("history"))
@@ -409,7 +422,8 @@ final class DictationSessionTests: XCTestCase {
             frontmostApplication: frontmostApplication,
             isTextFieldEditable: isTextFieldEditable,
             injectText: injectText,
-            copyToClipboard: copyToClipboard
+            copyToClipboard: copyToClipboard,
+            now: now
         )
     }
 
@@ -761,6 +775,17 @@ final class DictationSessionTests: XCTestCase {
                                        targetApplication: makeTargetApplication(), audioURL: nil,
                                        speech: FakeSpeechEngine(), audio: FakeAudioCapture())
         XCTAssertEqual(session.state, .settingUp)
+    }
+
+    func testSessionPublishesRecordingOnlyFromSetup() {
+        let session = DictationSession(locale: Locale(identifier: "de_DE"),
+                                       dictionaryEntries: [],
+                                       targetApplication: makeTargetApplication(), audioURL: nil,
+                                       speech: FakeSpeechEngine(), audio: FakeAudioCapture())
+
+        XCTAssertTrue(session.beginRecording())
+        XCTAssertEqual(session.state, .recording)
+        XCTAssertFalse(session.beginRecording())
     }
 
     func testSessionsHaveDistinctIDs() {
@@ -1240,6 +1265,90 @@ final class DictationSessionTests: XCTestCase {
         XCTAssertEqual(toasts.first?.1, false)
     }
 
+    func testBlockedSetupDoesNotPublishRecordingTimingOrElapsedTime() async {
+        let audio = FakeAudioCapture()
+        let gate = PermissionGate()
+        let clock = FakeClock()
+        let app = makeApp(
+            audio: audio,
+            engines: [FakeSpeechEngine()],
+            permission: { await gate.request() },
+            now: { clock.now }
+        )
+
+        app.startDictation()
+        await waitUntil { await gate.requested }
+        clock.advance(by: 30)
+        app.updateElapsedFromPoll(now: clock.now)
+
+        XCTAssertEqual(app.phase, .idle)
+        XCTAssertNil(app.recordStart)
+        XCTAssertEqual(app.elapsed, 0)
+        XCTAssertFalse(audio.isRunning)
+
+        app.stopDictation(commit: true)
+        await gate.resolve(true)
+        await waitUntil { app.currentSession == nil }
+    }
+
+    func testSetupDelayIsExcludedFromRecordedDuration() async {
+        let audio = FakeAudioCapture()
+        let gate = PermissionGate()
+        let clock = FakeClock()
+        let history = FakeHistoryStore()
+        let app = makeApp(
+            audio: audio,
+            engines: [FakeSpeechEngine(text: "Zwei Sekunden Aufnahme")],
+            permission: { await gate.request() },
+            history: history,
+            now: { clock.now }
+        )
+
+        app.startDictation()
+        await waitUntil { await gate.requested }
+        clock.advance(by: 10)
+        await gate.resolve(true)
+        await waitUntil { audio.isRunning }
+
+        XCTAssertEqual(app.phase, .recording)
+        XCTAssertEqual(app.recordStart, clock.now)
+        XCTAssertEqual(app.elapsed, 0)
+
+        clock.advance(by: 2)
+        app.updateElapsedFromPoll(now: clock.now)
+        app.stopDictation(commit: true)
+        await waitUntil { app.phase == .idle }
+
+        XCTAssertEqual(history.records.first?.durationSecs ?? -1, 2, accuracy: 0.001)
+    }
+
+    func testSetupDelayDoesNotSatisfyShortTapThreshold() async {
+        let audio = FakeAudioCapture()
+        let gate = PermissionGate()
+        let clock = FakeClock()
+        let history = FakeHistoryStore()
+        let app = makeApp(
+            audio: audio,
+            engines: [FakeSpeechEngine(text: "Zu kurz")],
+            permission: { await gate.request() },
+            minimumPushToTalkDuration: PillChrome.presentationDelay,
+            history: history,
+            now: { clock.now }
+        )
+
+        app.startDictation()
+        await waitUntil { await gate.requested }
+        clock.advance(by: 10)
+        await gate.resolve(true)
+        await waitUntil { audio.isRunning }
+        clock.advance(by: PillChrome.presentationDelay - 0.001)
+
+        app.stopDictation(commit: true)
+        await waitUntil { app.phase == .idle }
+
+        XCTAssertTrue(history.records.isEmpty)
+    }
+
     func testSetupErrorTearsEverythingDown() async {
         let directory = makeDirectory()
         let audio = FakeAudioCapture()
@@ -1247,7 +1356,7 @@ final class DictationSessionTests: XCTestCase {
         let app = makeApp(audio: audio, engines: [speech], directory: directory)
 
         app.startDictation()
-        await waitUntil { app.phase == .idle }
+        await waitUntil { app.currentSession == nil }
 
         let metrics = await speech.metrics()
         XCTAssertFalse(audio.isRunning)
@@ -1268,9 +1377,12 @@ final class DictationSessionTests: XCTestCase {
         let app = makeApp(audio: audio, engines: [speech])
 
         app.startDictation()
-        await waitUntil { app.phase == .idle }
+        await waitUntil { app.currentSession == nil }
 
         let metrics = await speech.metrics()
+        XCTAssertEqual(app.phase, .idle)
+        XCTAssertNil(app.recordStart)
+        XCTAssertEqual(app.elapsed, 0)
         XCTAssertEqual(audio.startCount, 1)
         XCTAssertEqual(audio.stopCount, 1)
         XCTAssertEqual(metrics.finishCount, 1)

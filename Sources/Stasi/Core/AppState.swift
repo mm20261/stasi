@@ -89,7 +89,8 @@ final class AppState {
     private static let unreadableHistoryMessage =
         "Verlauf konnte nicht geladen werden. Die vorhandene Datei ist beschädigt und bleibt schreibgeschützt."
     private var didPresentUnreadableHistory = false
-    private var recordStart: Date?
+    private(set) var recordStart: Date?
+    private let now: @MainActor () -> Date
     private let levelTraceEnabled: Bool
     private let consumeTimeoutNanoseconds: UInt64
     private let minimumPushToTalkDuration: TimeInterval
@@ -202,7 +203,8 @@ final class AppState {
          copyToClipboard: @escaping @MainActor (String) -> Void = { text in
              NSPasteboard.general.clearContents()
              NSPasteboard.general.setString(text, forType: .string)
-         }) {
+         },
+         now: @escaping @MainActor () -> Date = { Date() }) {
         self.settings = settings
         self.dictionary = dictionary ?? DictionaryStore()
         self.history = history ?? HistoryStore()
@@ -232,6 +234,7 @@ final class AppState {
         self.isTextFieldEditable = isTextFieldEditable
         self.injectText = injectText
         self.copyToClipboard = copyToClipboard
+        self.now = now
         levelTraceEnabled = ProcessInfo.processInfo.environment["STASI_LEVEL_TRACE"] == "1"
         (commandStream, commandContinuation) = AsyncStream.makeStream(of: HotkeyCommand.self)
         accessibilityGranted = Permissions.accessibilityGranted
@@ -457,8 +460,8 @@ final class AppState {
     // MARK: Aufnahme-Steuerung
 
     func startDictation(source: RecordingSource = .pushToTalk) {
-        guard phase == .idle, !teardownInProgress else {
-            if currentSession?.completionIntent == .shortTap || teardownInProgress {
+        guard phase == .idle, currentSession == nil, !teardownInProgress else {
+            if currentSession != nil || teardownInProgress {
                 onToast?("Vorherige Aufnahme wird noch beendet.", false)
             }
             return
@@ -467,10 +470,8 @@ final class AppState {
         discardRequested = false
         commitRequested = false
         recordingSource = source
-        phase = .recording
-        recordStart = Date()
+        recordStart = nil
         elapsed = 0
-        playStartSound()
 
         let locale = settings.transcriptionLocale
         let dictionaryEntries = dictionary.entries
@@ -493,7 +494,7 @@ final class AppState {
         )
         currentSession = session
 
-        DebugLog.log("STASI-APP: startDictation → Phase recording")
+        DebugLog.log("STASI-APP: startDictation → Setup")
         session.setupTask = Task { @MainActor [weak self, weak session] in
             guard let self, let session,
                   session === self.currentSession,
@@ -582,7 +583,11 @@ final class AppState {
                 ) { chunk in
                     health.ingest(chunk, into: audioContinuation)
                 }
-                session.state = .recording
+                guard session.beginRecording() else { return }
+                self.recordStart = self.now()
+                self.elapsed = 0
+                self.phase = .recording
+                self.playStartSound()
                 DebugLog.log("STASI-APP: audio.start fertig – Aufnahme läuft")
             } catch {
                 DebugLog.log("STASI-APP: startDictation FEHLER: \(error.localizedDescription)")
@@ -595,7 +600,22 @@ final class AppState {
     }
 
     func stopDictation(commit: Bool) {
-        guard phase == .recording else {
+        guard let session = currentSession else {
+            DebugLog.log("STASI-APP: stopDictation ignoriert (keine Session)")
+            return
+        }
+        if session.state == .settingUp {
+            DebugLog.log("STASI-APP: stopDictation während Setup")
+            session.beginCompletion(commit ? .shortTap : .discard)
+            session.state = .stopping
+            Task { @MainActor [weak self, weak session] in
+                guard let self, let session else { return }
+                await self.teardown(session)
+                self.finishAbortedSession(session)
+            }
+            return
+        }
+        guard phase == .recording, session.state == .recording else {
             DebugLog.log("STASI-APP: stopDictation ignoriert (Phase \(phase.rawValue))")
             return
         }
@@ -604,10 +624,9 @@ final class AppState {
             requestDiscard()
             return
         }
-        guard let session = currentSession else { return }
         let duration = max(
             elapsed,
-            recordStart.map { Date().timeIntervalSince($0) } ?? 0
+            recordStart.map { now().timeIntervalSince($0) } ?? 0
         )
         if recordingSource == .pushToTalk,
            duration < minimumPushToTalkDuration {

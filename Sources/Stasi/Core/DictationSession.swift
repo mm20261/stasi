@@ -53,6 +53,12 @@ final class DictationSession {
         self.locale = locale
     }
 
+    func beginRecording() -> Bool {
+        guard state == .settingUp else { return false }
+        state = .recording
+        return true
+    }
+
     func preserveAudioFile() {
         shouldPreserveAudioFile = true
     }
