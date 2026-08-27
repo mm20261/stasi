@@ -229,7 +229,90 @@ final class AudioCaptureFileTests: XCTestCase {
         _ = capture.stop()
     }
 
-    func testInputFormatConfigurationReadsHardwareSideAndWritesMatchingClientSide() throws {
+    func testDifferentFormatsWithUnavailableConverterTearDownAudioUnitAndCloseFile() throws {
+        let url = makeDirectory().appendingPathComponent("converter-unavailable.wav")
+        let targetFormat = format()
+        let nativeFormat = try XCTUnwrap(AVAudioFormat(
+            commonFormat: .pcmFormatFloat32,
+            sampleRate: 48_000,
+            channels: 1,
+            interleaved: false
+        ))
+        var teardownOrder: [String] = []
+        let capture = AudioCapture(
+            audioUnitHooks: hooks(
+                format: nativeFormat,
+                stop: { teardownOrder.append("stop") },
+                uninitialize: { teardownOrder.append("uninitialize") },
+                dispose: { teardownOrder.append("dispose") }
+            ),
+            converterFactory: { _, _ in nil }
+        )
+
+        XCTAssertThrowsError(
+            try capture.start(outputFormat: targetFormat, recordTo: url) { _ in }
+        ) { error in
+            guard case let AudioCaptureError.converterUnavailable(input, output) = error else {
+                return XCTFail("Erwartet converterUnavailable, erhalten: \(error)")
+            }
+            XCTAssertEqual(input, nativeFormat)
+            XCTAssertEqual(output, targetFormat)
+        }
+        XCTAssertEqual(teardownOrder, ["dispose"])
+        XCTAssertFalse(capture.hasOpenOutputFile)
+        XCTAssertFalse(capture.hasConverter)
+        XCTAssertFalse(capture.isRunning)
+    }
+
+    func testClientInputFormatLimitsSixChannelHardwareToMono() throws {
+        var nativeDescription = AudioStreamBasicDescription(
+            mSampleRate: 48_000,
+            mFormatID: kAudioFormatLinearPCM,
+            mFormatFlags: kAudioFormatFlagIsFloat | kAudioFormatFlagIsPacked,
+            mBytesPerPacket: 24,
+            mFramesPerPacket: 1,
+            mBytesPerFrame: 24,
+            mChannelsPerFrame: 6,
+            mBitsPerChannel: 32,
+            mReserved: 0
+        )
+        let layout = try XCTUnwrap(AVAudioChannelLayout(
+            layoutTag: kAudioChannelLayoutTag_DiscreteInOrder | 6
+        ))
+        let nativeFormat = try XCTUnwrap(AVAudioFormat(streamDescription: &nativeDescription,
+                                                       channelLayout: layout))
+
+        let clientFormat = try AudioCapture.clientInputFormat(for: nativeFormat)
+
+        XCTAssertEqual(clientFormat.sampleRate, 48_000)
+        XCTAssertEqual(clientFormat.channelCount, 1)
+        XCTAssertEqual(clientFormat.commonFormat, .pcmFormatFloat32)
+        XCTAssertFalse(clientFormat.isInterleaved)
+    }
+
+    func testInputFormatConfigurationAcceptsSixChannelHardwareDescription() throws {
+        let hardwareDescription = AudioStreamBasicDescription(
+            mSampleRate: 48_000,
+            mFormatID: kAudioFormatLinearPCM,
+            mFormatFlags: kAudioFormatFlagIsFloat | kAudioFormatFlagIsPacked,
+            mBytesPerPacket: 24,
+            mFramesPerPacket: 1,
+            mBytesPerFrame: 24,
+            mChannelsPerFrame: 6,
+            mBitsPerChannel: 32,
+            mReserved: 0
+        )
+
+        let formats = try AudioCapture.configureInputFormats(
+            readHardwareFormat: { _, _ in (noErr, hardwareDescription) },
+            setClientFormat: { _, _, _ in noErr }
+        )
+
+        XCTAssertEqual(formats.hardware.channelCount, 6)
+        XCTAssertEqual(formats.client.channelCount, 1)
+    }
+
+    func testInputFormatConfigurationReadsHardwareSideAndWritesSupportedMonoClientSide() throws {
         let hardwareFormat = try XCTUnwrap(AVAudioFormat(
             commonFormat: .pcmFormatInt16,
             sampleRate: 48_000,
@@ -264,14 +347,14 @@ final class AudioCaptureFileTests: XCTestCase {
         XCTAssertEqual(formats.hardware.sampleRate, 48_000)
         XCTAssertEqual(formats.hardware.channelCount, 2)
         XCTAssertEqual(formats.client.sampleRate, 48_000)
-        XCTAssertEqual(formats.client.channelCount, 2)
+        XCTAssertEqual(formats.client.channelCount, 1)
         XCTAssertEqual(formats.client.commonFormat, .pcmFormatFloat32)
         XCTAssertFalse(formats.client.isInterleaved)
 
         var written = try XCTUnwrap(writtenDescription)
         let writtenFormat = AVAudioFormat(streamDescription: &written)
         XCTAssertEqual(writtenFormat?.sampleRate, 48_000)
-        XCTAssertEqual(writtenFormat?.channelCount, 2)
+        XCTAssertEqual(writtenFormat?.channelCount, 1)
         XCTAssertEqual(writtenFormat?.commonFormat, .pcmFormatFloat32)
         XCTAssertEqual(writtenFormat?.isInterleaved, false)
     }

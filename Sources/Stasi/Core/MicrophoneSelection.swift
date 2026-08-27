@@ -5,6 +5,14 @@ import Foundation
 // Popover-Geräteliste + Auswahl fuer die input-only AUHAL. Das
 // System-Standardgeraet selbst bleibt unangetastet.
 
+enum MicrophoneTransport: Equatable, Sendable {
+    case builtIn
+    case wired
+    case bluetooth
+    case virtual
+    case unknown(UInt32)
+}
+
 /// Ein Eintrag der Mikrofon-Liste.
 struct MicDevice: Equatable, Identifiable {
     /// Stabile Transport-UID (überlebt Reboots, im Gegensatz zur DeviceID).
@@ -12,6 +20,9 @@ struct MicDevice: Equatable, Identifiable {
     let name: String
     /// Aktives macOS-Eingabegerät → Label „STANDARD“.
     let isDefault: Bool
+    let transport: MicrophoneTransport
+    let inputChannels: Int
+    let isSupportedForSpeech: Bool
     var id: String { uid }
 }
 
@@ -39,6 +50,39 @@ enum MicrophoneCatalog {
             return $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
         }
     }
+
+    /// Ohne explizite Auswahl werden geeignete eingebaute oder kabelgebundene
+    /// Mikrofone vor Bluetooth-Geraeten bevorzugt. Innerhalb dieser Gruppe bleibt
+    /// das macOS-Standardgeraet massgeblich.
+    static func automaticDefault(from devices: [MicDevice]) -> MicDevice? {
+        let supported = devices.filter(\.isSupportedForSpeech)
+        let preferredTransports = supported.filter {
+            $0.transport == .builtIn || $0.transport == .wired
+        }
+        if let systemDefault = preferredTransports.first(where: \.isDefault) {
+            return systemDefault
+        }
+        if let builtIn = preferredTransports.first(where: { $0.transport == .builtIn }) {
+            return builtIn
+        }
+        if let wired = preferredTransports.first(where: { $0.transport == .wired }) {
+            return wired
+        }
+        return supported.first(where: \.isDefault) ?? supported.first
+    }
+
+    /// Eine explizit gespeicherte, weiterhin geeignete UID gewinnt auch dann,
+    /// wenn sie Bluetooth verwendet. Nur fehlende/ungeeignete UIDs fallen auf
+    /// die automatische, Bluetooth-meidende Auswahl zurueck.
+    static func resolve(preferredUID: String?, devices: [MicDevice]) -> MicDevice? {
+        if let preferredUID,
+           let preferred = devices.first(where: {
+               $0.uid == preferredUID && $0.isSupportedForSpeech
+           }) {
+            return preferred
+        }
+        return automaticDefault(from: devices)
+    }
 }
 
 // MARK: CoreAudio-Erkennung
@@ -48,7 +92,9 @@ enum MicrophoneScanner {
         let deviceID: AudioDeviceID
         let name: String
         let transportUID: String?
+        let transport: MicrophoneTransport
         let inputChannels: Int
+        let isSupportedForSpeech: Bool
     }
 
     private static let systemObject = AudioObjectID(kAudioObjectSystemObject)
@@ -59,7 +105,10 @@ enum MicrophoneScanner {
         return MicrophoneCatalog.catalog(from: scan().map { raw in
             MicDevice(uid: raw.transportUID ?? raw.name,
                       name: raw.name,
-                      isDefault: raw.transportUID != nil && raw.transportUID == defaultUID)
+                      isDefault: raw.transportUID != nil && raw.transportUID == defaultUID,
+                      transport: raw.transport,
+                      inputChannels: raw.inputChannels,
+                      isSupportedForSpeech: raw.isSupportedForSpeech)
         })
     }
 
@@ -83,7 +132,9 @@ enum MicrophoneScanner {
             return RawDevice(deviceID: id,
                              name: deviceName(id),
                              transportUID: transportUID(id),
-                             inputChannels: channels)
+                             transport: transportType(id),
+                             inputChannels: channels,
+                             isSupportedForSpeech: channels > 0)
         }
     }
 
@@ -114,16 +165,29 @@ enum MicrophoneScanner {
         scan().first(where: { $0.transportUID == uid })?.deviceID
     }
 
-    /// Wunsch-UID oder explizit das aktuelle Default-Input-Geraet. Eine nicht
-    /// mehr vorhandene Wunsch-UID faellt kontrolliert auf den Standard zurueck.
+    /// Wunsch-UID oder eine Bluetooth-meidende automatische Auswahl. Eine
+    /// explizit gespeicherte geeignete Bluetooth-UID bleibt dabei respektiert.
     static func inputDeviceID(preferredUID: String?) -> AudioDeviceID? {
-        if let preferredUID {
-            if let selected = deviceID(forTransportUID: preferredUID) {
-                return selected
-            }
-            DebugLog.log("STASI-AUDIO: Wunsch-Mikrofon nicht gefunden (\(preferredUID)) – nutze Standard")
+        let rawDevices = scan()
+        let defaultID = defaultInputDeviceID()
+        let devices = rawDevices.map { raw in
+            MicDevice(uid: raw.transportUID ?? raw.name,
+                      name: raw.name,
+                      isDefault: raw.deviceID == defaultID,
+                      transport: raw.transport,
+                      inputChannels: raw.inputChannels,
+                      isSupportedForSpeech: raw.isSupportedForSpeech)
         }
-        return defaultInputDeviceID()
+        guard let selected = MicrophoneCatalog.resolve(preferredUID: preferredUID,
+                                                       devices: devices)
+        else { return nil }
+        if let preferredUID, selected.uid != preferredUID {
+            DebugLog.log("STASI-AUDIO: Wunsch-Mikrofon nicht gefunden oder ungeeignet "
+                         + "(\(preferredUID)) – nutze \(selected.name)")
+        }
+        return rawDevices.first(where: {
+            ($0.transportUID ?? $0.name) == selected.uid
+        })?.deviceID
     }
 
     private static func stringProperty(_ selector: AudioObjectPropertySelector,
@@ -146,6 +210,38 @@ enum MicrophoneScanner {
         stringProperty(kAudioDevicePropertyDeviceUID, on: id)
     }
 
+    private static func transportType(_ id: AudioDeviceID) -> MicrophoneTransport {
+        var rawValue: UInt32 = 0
+        var size = UInt32(MemoryLayout<UInt32>.size)
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyTransportType,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain)
+        guard AudioObjectGetPropertyData(id, &address, 0, nil, &size, &rawValue) == noErr else {
+            return .unknown(0)
+        }
+        return microphoneTransport(from: rawValue)
+    }
+
+    static func microphoneTransport(from rawValue: UInt32) -> MicrophoneTransport {
+        switch rawValue {
+        case kAudioDeviceTransportTypeBuiltIn:
+            return .builtIn
+        case kAudioDeviceTransportTypePCI,
+             kAudioDeviceTransportTypeUSB,
+             kAudioDeviceTransportTypeFireWire,
+             kAudioDeviceTransportTypeThunderbolt:
+            return .wired
+        case kAudioDeviceTransportTypeBluetooth,
+             kAudioDeviceTransportTypeBluetoothLE:
+            return .bluetooth
+        case kAudioDeviceTransportTypeVirtual:
+            return .virtual
+        default:
+            return .unknown(rawValue)
+        }
+    }
+
     private static func inputChannelCount(_ id: AudioDeviceID) -> Int {
         var address = AudioObjectPropertyAddress(
             mSelector: kAudioDevicePropertyStreamConfiguration,
@@ -160,15 +256,13 @@ enum MicrophoneScanner {
         guard AudioObjectGetPropertyData(id, &address, 0, nil, &size, buffer) == noErr else {
             return 0
         }
-        let list = buffer.bindMemory(to: AudioBufferList.self, capacity: 1).pointee
-        var count = 0
-        for i in 0..<Int(list.mNumberBuffers) {
-            let buf = withUnsafeBytes(of: list.mBuffers) { raw in
-                raw.loadUnaligned(fromByteOffset: i * MemoryLayout<AudioBuffer>.stride,
-                                  as: AudioBuffer.self)
-            }
-            count += Int(buf.mNumberChannels)
+        let list = buffer.bindMemory(to: AudioBufferList.self, capacity: 1)
+        return inputChannelCount(from: list)
+    }
+
+    static func inputChannelCount(from audioBufferList: UnsafeMutablePointer<AudioBufferList>) -> Int {
+        UnsafeMutableAudioBufferListPointer(audioBufferList).reduce(0) {
+            $0 + Int($1.mNumberChannels)
         }
-        return count
     }
 }

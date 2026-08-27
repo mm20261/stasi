@@ -15,6 +15,8 @@ struct AudioChunk: @unchecked Sendable {
 /// Schmale Capture-Schnittstelle, damit der Session-Lebenszyklus ohne echte
 /// Mikrofon-Hardware getestet werden kann.
 typealias AudioCaptureFactory = @MainActor () -> any AudioCapturing
+typealias AudioConverterFactory =
+    @Sendable (AVAudioFormat, AVAudioFormat) -> AVAudioConverter?
 
 enum AudioCaptureError: LocalizedError {
     case alreadyRunning
@@ -22,6 +24,7 @@ enum AudioCaptureError: LocalizedError {
     case noInputDevice
     case invalidInputFormat
     case invalidMaximumFrames
+    case converterUnavailable(input: AVAudioFormat, output: AVAudioFormat)
     case audioUnit(operation: String, status: OSStatus)
 
     var errorDescription: String? {
@@ -36,6 +39,10 @@ enum AudioCaptureError: LocalizedError {
             return "Das Eingabeformat des Mikrofons ist ungueltig."
         case .invalidMaximumFrames:
             return "Die AUHAL meldet keine gueltige maximale Slice-Groesse."
+        case let .converterUnavailable(input, output):
+            return "Audiokonvertierung nicht verfuegbar (\(input.sampleRate) Hz/"
+                + "\(input.channelCount) ch -> \(output.sampleRate) Hz/"
+                + "\(output.channelCount) ch)."
         case let .audioUnit(operation, status):
             return "AudioUnit-Fehler bei \(operation) (OSStatus \(status))."
         }
@@ -104,6 +111,7 @@ final class AudioCapture: AudioCapturing, @unchecked Sendable {
     private nonisolated(unsafe) var audioUnit: AudioUnit?
     private nonisolated(unsafe) var inputBuffer: AVAudioPCMBuffer?
     private let audioUnitHooks: AudioUnitHooks?
+    private let converterFactory: AudioConverterFactory
     private var audioUnitPrepared = false
     private var audioUnitInitialized = false
     private var audioUnitStarted = false
@@ -138,8 +146,12 @@ final class AudioCapture: AudioCapturing, @unchecked Sendable {
         return rawLevel
     }
 
-    init(audioUnitHooks: AudioUnitHooks? = nil) {
+    init(audioUnitHooks: AudioUnitHooks? = nil,
+         converterFactory: @escaping AudioConverterFactory = { input, output in
+             AVAudioConverter(from: input, to: output)
+         }) {
         self.audioUnitHooks = audioUnitHooks
+        self.converterFactory = converterFactory
     }
 
     func start(outputFormat: AVAudioFormat,
@@ -181,8 +193,16 @@ final class AudioCapture: AudioCapturing, @unchecked Sendable {
                 native = try configureAUHAL(preferredMicUID: preferredMicUID)
             }
 
-            converter = native == outputFormat ? nil : AVAudioConverter(from: native,
-                                                                         to: outputFormat)
+            if native == outputFormat {
+                converter = nil
+            } else {
+                guard let converter = converterFactory(native, outputFormat) else {
+                    teardownAudioUnit()
+                    throw AudioCaptureError.converterUnavailable(input: native,
+                                                                 output: outputFormat)
+                }
+                self.converter = converter
+            }
             if let audioUnitHooks {
                 try audioUnitHooks.initialize()
             } else {
@@ -348,8 +368,21 @@ final class AudioCapture: AudioCapturing, @unchecked Sendable {
         return clientFormat
     }
 
+    /// Das AUHAL-Clientformat bleibt auf der nativen Rate, begrenzt die Speech-
+    /// Strecke aber unabhaengig von der Hardware-Kanalzahl auf unterstuetztes Mono.
+    static func clientInputFormat(for hardwareFormat: AVAudioFormat) throws -> AVAudioFormat {
+        guard hardwareFormat.sampleRate > 0,
+              hardwareFormat.channelCount > 0,
+              let clientFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32,
+                                               sampleRate: hardwareFormat.sampleRate,
+                                               channels: 1,
+                                               interleaved: false)
+        else { throw AudioCaptureError.invalidInputFormat }
+        return clientFormat
+    }
+
     /// Liest die Geraeteseite des AUHAL-Input-Busses und setzt dessen Client-Seite
-    /// auf Float32 non-interleaved bei unveraenderter Hardware-Rate/Kanalzahl.
+    /// auf Float32 non-interleaved in Mono bei unveraenderter Hardware-Rate.
     /// Die Closures halten die Scope-/Formatwahl ohne echte AUHAL unit-testbar.
     static func configureInputFormats(
         readHardwareFormat: (
@@ -369,14 +402,19 @@ final class AudioCapture: AudioCapturing, @unchecked Sendable {
         }
 
         var hardwareDescription = hardwareResult.description
-        guard let hardwareFormat = AVAudioFormat(streamDescription: &hardwareDescription),
-              hardwareFormat.sampleRate > 0,
-              hardwareFormat.channelCount > 0,
-              let clientFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32,
-                                               sampleRate: hardwareFormat.sampleRate,
-                                               channels: hardwareFormat.channelCount,
-                                               interleaved: false)
-        else { throw AudioCaptureError.invalidInputFormat }
+        let hardwareFormat: AVAudioFormat?
+        if hardwareDescription.mChannelsPerFrame > 2,
+           let channelLayout = AVAudioChannelLayout(
+               layoutTag: kAudioChannelLayoutTag_DiscreteInOrder
+                   | hardwareDescription.mChannelsPerFrame
+           ) {
+            hardwareFormat = AVAudioFormat(streamDescription: &hardwareDescription,
+                                           channelLayout: channelLayout)
+        } else {
+            hardwareFormat = AVAudioFormat(streamDescription: &hardwareDescription)
+        }
+        guard let hardwareFormat else { throw AudioCaptureError.invalidInputFormat }
+        let clientFormat = try clientInputFormat(for: hardwareFormat)
 
         let setStatus = setClientFormat(clientFormat.streamDescription.pointee,
                                         kAudioUnitScope_Output,
