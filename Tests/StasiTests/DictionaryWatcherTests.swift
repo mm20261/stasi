@@ -11,6 +11,27 @@ final class DictionaryWatcherTests: XCTestCase {
         return directory
     }
 
+    private func encode(_ entries: [DictionaryEntry]) throws -> Data {
+        try JSONEncoder().encode(DictionaryFile(entries: entries))
+    }
+
+    func testWatchesExistingDictionaryImmediatelyAfterInit() async throws {
+        let directory = makeDirectory()
+        let url = directory.appendingPathComponent("dictionary.json")
+        try encode([DictionaryEntry(type: .word, value: "Alt")]).write(to: url)
+
+        let store = DictionaryStore(directory: directory)
+        try encode([DictionaryEntry(type: .word, value: "Neu")])
+            .write(to: url, options: .atomic)
+
+        let deadline = ContinuousClock.now + .seconds(1)
+        while store.entries.map(\.value) != ["Neu"], ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+
+        XCTAssertEqual(store.entries.map(\.value), ["Neu"])
+    }
+
     func testRepeatedSavesRestartWatcherWithoutCrash() {
         let directory = makeDirectory()
         var store: DictionaryStore? = DictionaryStore(directory: directory)

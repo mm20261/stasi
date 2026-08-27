@@ -24,6 +24,7 @@ final class DictionaryStore {
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         fileURL = dir.appendingPathComponent("dictionary.json")
         load()
+        restartWatcher()
     }
 
     // MARK: Laden / Speichern
