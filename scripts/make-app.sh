@@ -1,5 +1,5 @@
 #!/bin/bash
-# Baut die doppelklickbare Stasi.app (Release-Build + Bundle + Ad-hoc-Signatur).
+# Baut die doppelklickbare Stasi.app (Release-Build + Bundle + lokale Signatur).
 # Aufruf: ./scripts/make-app.sh [Ausgabeordner]
 set -euo pipefail
 
@@ -8,6 +8,16 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 APP_NAME="Stasi"
 BUNDLE_ID="app.stasi.macos"
 VERSION="0.9.0"
+SIGNING_MODE="${STASI_SIGNING_MODE:-local}"
+ENTITLEMENTS="$ROOT/Release/Stasi.entitlements"
+
+case "$SIGNING_MODE" in
+    local|none) ;;
+    *)
+        echo "Unbekannter STASI_SIGNING_MODE: $SIGNING_MODE (erlaubt: local, none)" >&2
+        exit 2
+        ;;
+esac
 
 APP="$OUT_DIR/$APP_NAME.app"
 CONTENTS="$APP/Contents"
@@ -110,16 +120,25 @@ ICON_SIZES
 iconutil -c icns "$ICONSET" -o "$RESOURCES/AppIcon.icns"
 rm -rf "$ICONSET"
 
-# Stabile Signatur: "Stasi Dev Signing" (selbstsigniertes Zertifikat im
-# Login-Schlüsselbund) hält die Signatur über Builds konstant → TCC-Rechte
-# (Bedienungshilfen etc.) bleiben gültig. Fallback: ad hoc ("-"), dann müssen
-# die Rechte nach jedem Build neu erteilt werden (AGENTS.md Regel 9).
-SIGN_ID="Stasi Dev Signing"
-if ! security find-identity -v -p codesigning 2>/dev/null | grep -q "$SIGN_ID"; then
-    SIGN_ID="-"
+if [[ "$SIGNING_MODE" == "local" ]]; then
+    test -f "$ENTITLEMENTS" || {
+        echo "Entitlements-Datei fehlt: $ENTITLEMENTS" >&2
+        exit 1
+    }
+
+    # Stabile lokale Signatur: Das selbstsignierte Zertifikat hält die Code-
+    # Identität über Builds konstant. Ohne Zertifikat fällt der lokale Modus auf
+    # ad hoc ("-") zurück; nach einem Signaturwechsel sind TCC-Rechte neu zu erteilen.
+    SIGN_ID="Stasi Dev Signing"
+    if ! security find-identity -v -p codesigning 2>/dev/null \
+        | grep -Fq "\"$SIGN_ID\""; then
+        SIGN_ID="-"
+    fi
+    echo "▸ Lokale Signatur ($SIGN_ID)…"
+    codesign --force --deep --entitlements "$ENTITLEMENTS" --sign "$SIGN_ID" "$APP"
+else
+    echo "▸ Signatur übersprungen (Diagnosemodus none)"
 fi
-echo "▸ Signatur ($SIGN_ID)…"
-codesign --force --deep --sign "$SIGN_ID" "$APP"
 
 echo ""
 echo "✓ Fertig: $APP"
