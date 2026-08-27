@@ -1,6 +1,8 @@
 # Build-Artefakte
 .build/
 build/
+.stasi-AppIcon.iconset/
+icon-check.iconset/
 
 # macOS
 .DS_Store

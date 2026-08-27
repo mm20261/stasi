@@ -18,6 +18,7 @@ CLEAN_APP=""
 LOG=""
 PID=""
 STOP_STATUS=""
+ICON_CHECK_DIR="$APP_OUTPUT_DIR/icon-check.iconset"
 
 stop_process() {
     local status=0
@@ -49,6 +50,7 @@ stop_process() {
 
 cleanup() {
     stop_process || true
+    rm -rf "$ICON_CHECK_DIR"
     if [[ -n "$CLEAN_ROOM" ]]; then
         rm -rf "$CLEAN_ROOM"
     fi
@@ -70,6 +72,19 @@ test -f "$MIT_FILE"
 test -f "$OFL_FILE"
 grep -q 'MIT License' "$MIT_FILE"
 grep -q 'SIL OPEN FONT LICENSE Version 1.1' "$OFL_FILE"
+
+test -f "$APP/Contents/Resources/AppIcon.icns"
+rm -rf "$ICON_CHECK_DIR"
+iconutil -c iconset "$APP/Contents/Resources/AppIcon.icns" -o "$ICON_CHECK_DIR"
+test -f "$ICON_CHECK_DIR/icon_512x512@2x.png"
+
+TRACKED_ICON_DERIVATIVE_COUNT="$(
+    git -C "$ROOT" ls-files \
+        | { grep -E '(^|/)(icon_[^/]+\.png|AppIcon\.icns)$' || true; } \
+        | wc -l \
+        | tr -d ' '
+)"
+test "$TRACKED_ICON_DERIVATIVE_COUNT" -eq 0
 
 codesign --verify --deep --strict --verbose=2 "$APP"
 

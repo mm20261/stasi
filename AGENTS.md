@@ -181,8 +181,7 @@ Sources/Stasi/
 └── Support/                   Permissions.swift (Mikrofon/AX; ListenEvent nur Diagnose),
                                DebugLog.swift (Rotation >2 MB nach debug.log.1), VirtualKey.swift
 
-scripts/make-app.sh            → build/Stasi.app (stabil signiert, Icon aus import/…/icons/anthrazit)
-scripts/gen_icon.swift         → Fallback-Icon-Generator
+scripts/make-app.sh            → build/Stasi.app (stabil signiert, Icon aus Resources/AppIcon.png)
 Tests/StasiTests/              → vollständige XCTest-Suite: AutoLearnScout/TextTidy/FillerFilter/
                                  SelfCorrectionResolver/TranscriptPolisher/DictationSession/
                                  HotkeyReenablePolicy/AudioCaptureFile/DictionaryWatcher/ThemeV3/
@@ -331,4 +330,4 @@ Nach Rebuild: TCC neu erteilen (App zeigt Status im Bericht + Einstellungen).
   `~/.claude/plans/kannst-du-bitte-einmal-floating-chipmunk.md`.
 - whisper.cpp-Fallback mit echtem Initial-Prompt-Biasing (BiasProvider-Hook existiert)
 - Sprachwechsel pro Äußerung · Snippets
-- Design-Feinschliff: weitere Änderungen über den `import/design_handoff_stasi/`-Prozess
+- Design-Feinschliff: historischer Handoff nur als Referenz unter `docs/archive/design_handoff_stasi/`; neue Änderungen direkt aus dem aktuellen App-Stand ableiten

@@ -88,29 +88,27 @@ if [[ -n "${STASI_RELEASE_API_URL:-}" ]]; then
 fi
 
 echo "▸ Icon…"
-ICON_PNG_DIR="$ROOT/import/design_handoff_stasi/icons/anthrazit"
-if [ -d "$ICON_PNG_DIR" ]; then
-    # Handoff-Icon nutzen
-    ICONSET="$ROOT/build/icon.iconset"
-    rm -rf "$ICONSET"; mkdir -p "$ICONSET"
-    cp "$ICON_PNG_DIR/icon_16x16.png"   "$ICONSET/icon_16x16.png"
-    cp "$ICON_PNG_DIR/icon_32x32.png"   "$ICONSET/icon_32x32.png"
-    cp "$ICON_PNG_DIR/icon_32x32.png"   "$ICONSET/icon_16x16@2x.png"
-    cp "$ICON_PNG_DIR/icon_64x64.png"   "$ICONSET/icon_32x32@2x.png"
-    cp "$ICON_PNG_DIR/icon_128x128.png" "$ICONSET/icon_128x128.png"
-    cp "$ICON_PNG_DIR/icon_256x256.png" "$ICONSET/icon_128x128@2x.png"
-    cp "$ICON_PNG_DIR/icon_256x256.png" "$ICONSET/icon_256x256.png"
-    cp "$ICON_PNG_DIR/icon_512x512.png" "$ICONSET/icon_256x256@2x.png"
-    cp "$ICON_PNG_DIR/icon_512x512.png" "$ICONSET/icon_512x512.png"
-    cp "$ICON_PNG_DIR/icon_1024x1024.png" "$ICONSET/icon_512x512@2x.png"
-    iconutil -c icns "$ICONSET" -o "$RESOURCES/AppIcon.icns"
-else
-    if [ ! -f "Resources/Assets/AppIcon.icns" ]; then
-        echo "  generiere Icon…"
-        swift scripts/gen_icon.swift Resources/Assets >/dev/null
-    fi
-    cp "Resources/Assets/AppIcon.icns" "$RESOURCES/AppIcon.icns"
-fi
+ICON_SOURCE="$ROOT/Resources/AppIcon.png"
+ICONSET="$OUT_DIR/.stasi-AppIcon.iconset"
+test -f "$ICON_SOURCE" || { echo "App-Icon-Quelle fehlt: $ICON_SOURCE" >&2; exit 1; }
+rm -rf "$ICONSET"
+mkdir -p "$ICONSET"
+while read -r filename pixels; do
+    sips -z "$pixels" "$pixels" "$ICON_SOURCE" --out "$ICONSET/$filename" >/dev/null
+done <<'ICON_SIZES'
+icon_16x16.png 16
+icon_16x16@2x.png 32
+icon_32x32.png 32
+icon_32x32@2x.png 64
+icon_128x128.png 128
+icon_128x128@2x.png 256
+icon_256x256.png 256
+icon_256x256@2x.png 512
+icon_512x512.png 512
+icon_512x512@2x.png 1024
+ICON_SIZES
+iconutil -c icns "$ICONSET" -o "$RESOURCES/AppIcon.icns"
+rm -rf "$ICONSET"
 
 # Stabile Signatur: "Stasi Dev Signing" (selbstsigniertes Zertifikat im
 # Login-Schlüsselbund) hält die Signatur über Builds konstant → TCC-Rechte

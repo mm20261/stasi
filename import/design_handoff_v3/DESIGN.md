@@ -160,7 +160,8 @@ Sektionen mit Mono-Kickern, je eine Karte:
 
 ## 5. Assets
 
-- App-Icon: `import/design_handoff_stasi/icons/anthrazit/` (PNG 16–1024 + SVG).
+- App-Icon (kanonische Build-Quelle): `Resources/AppIcon.png` (1024×1024 PNG).
+- Historische Icon-/UI-Referenzen: `docs/archive/design_handoff_stasi/` (kein Build-Input).
 - Menubar-Icons: `Sources/Stasi/Resources/Assets/menubar*.png`.
 - Fonts: `Sources/Stasi/Resources/Fonts/Geist.ttf` + `GeistMono.ttf`.
 

@@ -1,5 +1,7 @@
 # Handoff: Stasi — lokales Diktier- & Transkriptions-Tool (macOS)
 
+> Historisches Designarchiv, kein Runtime- oder Build-Input. Die kanonische App-Icon-Quelle liegt unter `Resources/AppIcon.png`; generierte PNG-/ICNS-Derivate gehören nicht in Git.
+
 ## Overview
 Stasi ist eine lokale macOS-Diktier-App im Stil von Wispr Flow: systemweites Diktieren per Hotkey, Transkript-Verlauf, Wörterbuch mit Ersetzungen, Einstellungen, lokales Konto ohne Login. UI-Sprache: Deutsch. Der Name wird mit dezenter Ironie in der Copy gespielt („Wir hören zu.", „Überwachungsbericht") — abschaltbar.
 
@@ -9,7 +11,7 @@ Die Dateien in diesem Bundle sind **Design-Referenzen in HTML** (interaktiver Pr
 - `Stasi v2.dc.html` — **maßgebliches finales Design** (Flow-artige Anordnung, einklappbare Sidebar, Mini-Pill mit Pegel-Waveform). Im Browser öffnen.
 - `Stasi.dc.html` — ältere v1 als Referenz.
 - `Stasi Icons.dc.html` — Icon-Showcase.
-- `assets/` + `icons/` — SVG-Master und exportfertige PNGs (siehe `icons/README.md`).
+- `assets/` + `icons/` — historische SVG-Referenzen; die früheren exportierten PNG-Derivate wurden aus Git entfernt.
 - `macos-window.jsx`, `image-slot.js`, `support.js` — Prototyp-Laufzeit, NICHT übernehmen.
 
 ## Fidelity
@@ -137,7 +139,7 @@ Dunkle Pill (pill-bg, radius 999, Schatten, Slide-up 250ms):
 - Aufnahme: `recording`, `liveWords[]`, `recSecs`
 
 ## Assets
-- `icons/` — Dock-Icon (PNG 16–1024 + SVG), Menubar-Template-Icons 22/44px (+ Recording-Variante mit rotem Punkt), Favicons. Details in `icons/README.md`
+- `icons/` — historische Dock-Icon-SVG-Referenz; exportierte PNG-Größen wurden als generierte Derivate entfernt. Menubar-/Favicon-SVGs liegen unter `assets/`.
 - Fonts: Geist + Geist Mono (Google Fonts / Vercel, OFL)
 - Alle UI-Icons sind Inline-SVGs (24er-ViewBox, stroke 1.7–1.8, round caps) — aus `Stasi.dc.html` übernehmbar
 
