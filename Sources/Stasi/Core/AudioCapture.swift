@@ -131,11 +131,13 @@ final class AudioCapture: AudioCapturing, @unchecked Sendable {
     private nonisolated(unsafe) var onBuffer: (@Sendable (AudioChunk) -> Void)?
     private let backlogCapacity: Int
     private let beforeBacklogDequeue: @Sendable () -> Void
+    private let afterBacklogFinish: @Sendable () -> Void
     private let beforeProcessing: @Sendable () -> Void
     private let processingFailure: @Sendable (AVAudioPCMBuffer) -> AudioCaptureRuntimeError?
     private let processingQueue = DispatchQueue(label: "app.stasi.audio.processing",
                                                 qos: .userInitiated)
     private nonisolated(unsafe) var processingBacklog: ProcessingBacklog?
+    private var processingWorkerStarted = false
     private let runtimeErrorReporter = RuntimeErrorReporter()
     private let stateLock = NSLock()
     private var isRunningStorage = false
@@ -174,6 +176,7 @@ final class AudioCapture: AudioCapturing, @unchecked Sendable {
          },
          backlogCapacity: Int = AudioCapture.defaultBacklogCapacity,
          beforeBacklogDequeue: @escaping @Sendable () -> Void = {},
+         afterBacklogFinish: @escaping @Sendable () -> Void = {},
          beforeProcessing: @escaping @Sendable () -> Void = {},
          processingFailure: @escaping @Sendable (AVAudioPCMBuffer) -> AudioCaptureRuntimeError? = { _ in nil }) {
         precondition(backlogCapacity > 0)
@@ -181,6 +184,7 @@ final class AudioCapture: AudioCapturing, @unchecked Sendable {
         self.converterFactory = converterFactory
         self.backlogCapacity = backlogCapacity
         self.beforeBacklogDequeue = beforeBacklogDequeue
+        self.afterBacklogFinish = afterBacklogFinish
         self.beforeProcessing = beforeProcessing
         self.processingFailure = processingFailure
     }
@@ -242,6 +246,9 @@ final class AudioCapture: AudioCapturing, @unchecked Sendable {
                 }
                 self.converter = converter
             }
+            // CoreAudio darf bereits innerhalb von AudioOutputUnitStart rendern.
+            // Der Consumer muss deshalb vor Initialize/Start bereitstehen.
+            startProcessingWorker()
             if let audioUnitHooks {
                 try audioUnitHooks.initialize()
             } else {
@@ -255,13 +262,16 @@ final class AudioCapture: AudioCapturing, @unchecked Sendable {
                 try check(AudioOutputUnitStart(try requireAudioUnit()), operation: "Start")
             }
             audioUnitStarted = true
-            startProcessingWorker()
             isRunningStorage = true
             DebugLog.log("STASI-AUDIO: Input-only AUHAL laeuft – Client \(native.sampleRate) Hz -> Engine \(outputFormat.sampleRate) Hz")
         } catch {
             teardownAudioUnit()
-            processingBacklog?.discard()
-            processingBacklog = nil
+            if processingWorkerStarted {
+                stopProcessingWorkerAfterStartFailure()
+            } else {
+                processingBacklog?.discard()
+                processingBacklog = nil
+            }
             closeOutputFile()
             converter = nil
             self.outputFormat = nil
@@ -658,15 +668,18 @@ final class AudioCapture: AudioCapturing, @unchecked Sendable {
             runtimeErrorReporter.report(.bufferCopyFailed)
             return
         }
-        guard let processingBacklog,
-              processingBacklog.tryEnqueue(owned) else {
-            runtimeErrorReporter.report(.processingBacklog)
+        guard let processingBacklog else { return }
+        switch processingBacklog.tryEnqueue(owned) {
+        case .enqueued, .closed:
             return
+        case .full:
+            runtimeErrorReporter.report(.processingBacklog)
         }
     }
 
     private func startProcessingWorker() {
         guard let backlog = processingBacklog else { return }
+        processingWorkerStarted = true
         processingQueue.async { [weak self] in
             while let buffer = backlog.next() {
                 guard let self else { return }
@@ -678,11 +691,24 @@ final class AudioCapture: AudioCapturing, @unchecked Sendable {
     private func stopProcessingWorker() async {
         guard let backlog = processingBacklog else { return }
         backlog.finish()
+        afterBacklogFinish()
         await withCheckedContinuation { continuation in
             // Genau ein bounded Drain-Marker pro stop(); er laeuft erst, nachdem
             // die eine langlebige Worker-Closure die Queue verlassen hat.
             processingQueue.async { continuation.resume() }
         }
+        processingWorkerStarted = false
+        processingBacklog = nil
+    }
+
+    /// `start` ist synchron; sein Fehlerpfad muss den bereits vor Initialize/Start
+    /// gestarteten Worker daher synchron beenden. Dieser Pfad ist bounded auf die
+    /// feste Queue und wird nur ausgefuehrt, wenn Hardware-Setup fehlschlaegt.
+    private func stopProcessingWorkerAfterStartFailure() {
+        guard let backlog = processingBacklog else { return }
+        backlog.finish()
+        processingQueue.sync {}
+        processingWorkerStarted = false
         processingBacklog = nil
     }
 
@@ -789,33 +815,70 @@ final class AudioCapture: AudioCapturing, @unchecked Sendable {
     }
 
     /// Lock-freier Single-Producer/Single-Consumer-Ring mit exakt fester
-    /// Kapazitaet. AUHAL ist der einzige Producer, der serielle Worker der einzige
-    /// Consumer. `.processingBacklog` bedeutet dadurch ausschliesslich, dass alle
-    /// Slots belegt sind; Consumer-Konkurrenz kann keinen falschen Ueberlauf mehr
-    /// erzeugen.
-    private final class ProcessingBacklog: @unchecked Sendable {
+    /// Kapazitaet. Die Slots liegen in explizit verwaltetem Pointer-Speicher;
+    /// Swift-Array-Exklusivitaet wird deshalb nicht producer-/consumer-uebergreifend
+    /// verletzt. ARC-Besitz wird pro belegtem Slot mit Unmanaged exakt einmal
+    /// uebernommen und beim Dequeue, Discard oder Deinit exakt einmal abgegeben.
+    final class ProcessingBacklog: @unchecked Sendable {
+        enum EnqueueResult: Equatable {
+            case enqueued
+            case full
+            case closed
+        }
+
         private let available = DispatchSemaphore(value: 0)
         private let readIndex = Atomic<UInt64>(0)
         private let writeIndex = Atomic<UInt64>(0)
         private let finishing = Atomic<Bool>(false)
+        private let producerActive = Atomic<Bool>(false)
+        private let afterProducerAdmissionCheck: @Sendable () -> Void
         private let beforeDequeue: @Sendable () -> Void
-        private nonisolated(unsafe) var slots: [AVAudioPCMBuffer?]
+        private let capacity: Int
+        private let slots: UnsafeMutablePointer<Unmanaged<AVAudioPCMBuffer>?>
 
-        init(capacity: Int, beforeDequeue: @escaping @Sendable () -> Void) {
-            slots = Array(repeating: nil, count: capacity)
+        init(capacity: Int,
+             afterProducerAdmissionCheck: @escaping @Sendable () -> Void = {},
+             beforeDequeue: @escaping @Sendable () -> Void = {}) {
+            precondition(capacity > 0)
+            self.capacity = capacity
+            self.afterProducerAdmissionCheck = afterProducerAdmissionCheck
             self.beforeDequeue = beforeDequeue
+            slots = .allocate(capacity: capacity)
+            slots.initialize(repeating: nil, count: capacity)
         }
 
-        func tryEnqueue(_ buffer: AVAudioPCMBuffer) -> Bool {
-            guard !finishing.load(ordering: .acquiring) else { return false }
+        deinit {
+            releaseAllSlots()
+            slots.deinitialize(count: capacity)
+            slots.deallocate()
+        }
+
+        func tryEnqueue(_ buffer: AVAudioPCMBuffer) -> EnqueueResult {
+            guard !finishing.load(ordering: .sequentiallyConsistent) else {
+                return .closed
+            }
+            afterProducerAdmissionCheck()
+            producerActive.store(true, ordering: .sequentiallyConsistent)
+            guard !finishing.load(ordering: .sequentiallyConsistent) else {
+                completeProducer()
+                return .closed
+            }
+
             let write = writeIndex.load(ordering: .relaxed)
             let read = readIndex.load(ordering: .acquiring)
-            guard write &- read < UInt64(slots.count) else { return false }
+            guard write &- read < UInt64(capacity) else {
+                let result: EnqueueResult = finishing.load(ordering: .sequentiallyConsistent)
+                    ? .closed : .full
+                completeProducer()
+                return result
+            }
 
-            slots[Int(write % UInt64(slots.count))] = buffer
+            let slot = Int(write % UInt64(capacity))
+            slots.advanced(by: slot).pointee = Unmanaged.passRetained(buffer)
             writeIndex.store(write &+ 1, ordering: .releasing)
+            completeProducer()
             available.signal()
-            return true
+            return .enqueued
         }
 
         func next() -> AVAudioPCMBuffer? {
@@ -825,25 +888,52 @@ final class AudioCapture: AudioCapturing, @unchecked Sendable {
                 let write = writeIndex.load(ordering: .acquiring)
                 if read != write {
                     beforeDequeue()
-                    let slot = Int(read % UInt64(slots.count))
-                    let buffer = slots[slot]
-                    slots[slot] = nil
+                    let slot = Int(read % UInt64(capacity))
+                    let pointer = slots.advanced(by: slot)
+                    guard let retained = pointer.pointee else {
+                        preconditionFailure("Publizierter Audio-Slot ist leer")
+                    }
+                    pointer.pointee = nil
                     readIndex.store(read &+ 1, ordering: .releasing)
-                    return buffer
+                    return retained.takeRetainedValue()
                 }
-                if finishing.load(ordering: .acquiring) { return nil }
+                if finishing.load(ordering: .sequentiallyConsistent) {
+                    // Ein Producer, der die Finish-Grenze gerade kreuzt, publiziert
+                    // entweder noch einen Slot oder signalisiert seinen Closed-Abgang.
+                    guard !producerActive.load(ordering: .sequentiallyConsistent) else {
+                        continue
+                    }
+                    let finalWrite = writeIndex.load(ordering: .acquiring)
+                    if read == finalWrite { return nil }
+                }
             }
         }
 
         func finish() {
-            finishing.store(true, ordering: .releasing)
+            finishing.store(true, ordering: .sequentiallyConsistent)
             available.signal()
         }
 
-        /// Nur im synchronen Start-Fehlerpfad, bevor ein Worker gestartet wurde.
+        /// Nur im synchronen Start-Fehlerpfad, wenn noch kein Worker existiert.
         func discard() {
-            finishing.store(true, ordering: .releasing)
-            for index in slots.indices { slots[index] = nil }
+            finishing.store(true, ordering: .sequentiallyConsistent)
+            releaseAllSlots()
+            readIndex.store(writeIndex.load(ordering: .acquiring), ordering: .releasing)
+        }
+
+        private func completeProducer() {
+            producerActive.store(false, ordering: .sequentiallyConsistent)
+            if finishing.load(ordering: .sequentiallyConsistent) {
+                available.signal()
+            }
+        }
+
+        private func releaseAllSlots() {
+            for index in 0..<capacity {
+                let pointer = slots.advanced(by: index)
+                pointer.pointee?.release()
+                pointer.pointee = nil
+            }
         }
     }
 

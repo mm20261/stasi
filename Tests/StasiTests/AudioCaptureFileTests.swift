@@ -58,6 +58,27 @@ final class AudioCaptureFileTests: XCTestCase {
         }
     }
 
+    private final class EnqueueResultBox: @unchecked Sendable {
+        private let lock = NSLock()
+        private var storage: AudioCapture.ProcessingBacklog.EnqueueResult?
+
+        var value: AudioCapture.ProcessingBacklog.EnqueueResult? {
+            lock.lock()
+            defer { lock.unlock() }
+            return storage
+        }
+
+        func store(_ result: AudioCapture.ProcessingBacklog.EnqueueResult) {
+            lock.lock()
+            storage = result
+            lock.unlock()
+        }
+    }
+
+    private final class WeakBufferBox {
+        weak var value: AVAudioPCMBuffer?
+    }
+
     private final class FloatSpy: @unchecked Sendable {
         private let lock = NSLock()
         private var storage: [Float] = []
@@ -210,6 +231,96 @@ final class AudioCaptureFileTests: XCTestCase {
         XCTAssertFalse(capture.hasOpenOutputFile)
         XCTAssertFalse(capture.isRunning)
         XCTAssertEqual(teardownOrder, ["uninitialize", "dispose"])
+    }
+
+    func testWorkerConsumesMoreThanCapacityDuringAudioUnitStartHook() async throws {
+        let outputFormat = format()
+        let sinkBox = SinkBox()
+        let processed = DispatchSemaphore(value: 0)
+        let delivered = expectation(description: "Start-Callbacks werden laufend gedraint")
+        delivered.expectedFulfillmentCount = AudioCapture.defaultBacklogCapacity + 16
+        let errorSpy = ErrorSpy()
+        let renderBuffer = try XCTUnwrap(AVAudioPCMBuffer(
+            pcmFormat: outputFormat,
+            frameCapacity: 16
+        ))
+        renderBuffer.frameLength = 16
+        let capture = AudioCapture(audioUnitHooks: AudioCapture.AudioUnitHooks(
+            configureInput: { _, _, sink in
+                sinkBox.store(sink)
+                return outputFormat
+            },
+            initialize: {},
+            start: {
+                let sink = try XCTUnwrap(sinkBox.load())
+                for _ in 0..<(AudioCapture.defaultBacklogCapacity + 16) {
+                    sink(renderBuffer)
+                    guard processed.wait(timeout: .now() + 0.25) == .success else {
+                        throw StartError.failed
+                    }
+                }
+            },
+            stop: {}, uninitialize: {}, dispose: {}
+        ))
+
+        try capture.start(
+            outputFormat: outputFormat,
+            recordTo: nil,
+            onRuntimeError: { error in errorSpy.record(error) }
+        ) { _ in
+            delivered.fulfill()
+            processed.signal()
+        }
+
+        await fulfillment(of: [delivered], timeout: 1)
+        XCTAssertTrue(errorSpy.values.isEmpty)
+        _ = await capture.stop()
+    }
+
+    func testAudioUnitStartFailureAfterCallbackDrainsAndCleansWorker() async throws {
+        let outputFormat = format()
+        let sinkBox = SinkBox()
+        let processed = DispatchSemaphore(value: 0)
+        let renderBuffer = try XCTUnwrap(AVAudioPCMBuffer(
+            pcmFormat: outputFormat,
+            frameCapacity: 16
+        ))
+        renderBuffer.frameLength = 16
+        var teardownOrder: [String] = []
+        let capture = AudioCapture(audioUnitHooks: AudioCapture.AudioUnitHooks(
+            configureInput: { _, _, sink in
+                sinkBox.store(sink)
+                return outputFormat
+            },
+            initialize: {},
+            start: {
+                try XCTUnwrap(sinkBox.load())(renderBuffer)
+                guard processed.wait(timeout: .now() + 0.25) == .success else {
+                    throw StartError.failed
+                }
+                throw StartError.failed
+            },
+            stop: { teardownOrder.append("stop") },
+            uninitialize: { teardownOrder.append("uninitialize") },
+            dispose: { teardownOrder.append("dispose") }
+        ))
+
+        do {
+            try capture.start(outputFormat: outputFormat, recordTo: nil) { _ in
+                processed.signal()
+            }
+            XCTFail("Startfehler erwartet")
+        } catch StartError.failed {
+            // Erwarteter Fehler nach einem bereits verarbeiteten Callback.
+        } catch {
+            XCTFail("Unerwarteter Fehler: \(error)")
+        }
+
+        XCTAssertFalse(capture.isRunning)
+        XCTAssertFalse(capture.hasOpenOutputFile)
+        XCTAssertEqual(teardownOrder, ["uninitialize", "dispose"])
+        let stoppedURL = await capture.stop()
+        XCTAssertNil(stoppedURL)
     }
 
     func testSecondStartWhileRunningThrowsAlreadyRunning() async throws {
@@ -600,6 +711,139 @@ final class AudioCaptureFileTests: XCTestCase {
         await fulfillment(of: [received], timeout: 1)
         XCTAssertEqual(samples.values, [0.25])
         _ = await capture.stop()
+    }
+
+    func testFinishedBacklogReturnsClosedAndReleasesLateProducer() throws {
+        var buffer: AVAudioPCMBuffer? = try XCTUnwrap(AVAudioPCMBuffer(
+            pcmFormat: format(),
+            frameCapacity: 16
+        ))
+        buffer?.frameLength = 16
+        let weakBuffer = WeakBufferBox()
+        weakBuffer.value = buffer
+        let backlog = AudioCapture.ProcessingBacklog(capacity: 1)
+
+        backlog.finish()
+        XCTAssertEqual(backlog.tryEnqueue(try XCTUnwrap(buffer)), .closed)
+        buffer = nil
+        XCTAssertNil(backlog.next())
+        XCTAssertNil(weakBuffer.value)
+    }
+
+    func testFinishCrossingProducerReturnsClosedWithoutPublishingSlot() throws {
+        let producerEntered = DispatchSemaphore(value: 0)
+        let allowProducer = DispatchSemaphore(value: 0)
+        let producerCompleted = DispatchSemaphore(value: 0)
+        let resultBox = EnqueueResultBox()
+        let backlog = AudioCapture.ProcessingBacklog(
+            capacity: 1,
+            afterProducerAdmissionCheck: {
+                producerEntered.signal()
+                allowProducer.wait()
+            }
+        )
+        let buffer = try XCTUnwrap(AVAudioPCMBuffer(
+            pcmFormat: format(),
+            frameCapacity: 16
+        ))
+        buffer.frameLength = 16
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            resultBox.store(backlog.tryEnqueue(buffer))
+            producerCompleted.signal()
+        }
+        XCTAssertEqual(producerEntered.wait(timeout: .now() + 1), .success)
+        backlog.finish()
+        allowProducer.signal()
+        XCTAssertEqual(producerCompleted.wait(timeout: .now() + 1), .success)
+
+        XCTAssertEqual(resultBox.value, .closed)
+        XCTAssertNil(backlog.next())
+    }
+
+    func testBacklogDrainTransfersAndReleasesSlotOwnership() throws {
+        let backlog = AudioCapture.ProcessingBacklog(capacity: 1)
+        let weakBuffer = WeakBufferBox()
+        var buffer: AVAudioPCMBuffer? = try XCTUnwrap(AVAudioPCMBuffer(
+            pcmFormat: format(),
+            frameCapacity: 16
+        ))
+        buffer?.frameLength = 16
+        weakBuffer.value = buffer
+
+        XCTAssertEqual(backlog.tryEnqueue(try XCTUnwrap(buffer)), .enqueued)
+        buffer = nil
+        XCTAssertNotNil(weakBuffer.value)
+
+        var dequeued: AVAudioPCMBuffer? = backlog.next()
+        XCTAssertNotNil(dequeued)
+        XCTAssertNotNil(weakBuffer.value)
+        dequeued = nil
+        XCTAssertNil(weakBuffer.value)
+
+        backlog.finish()
+        XCTAssertNil(backlog.next())
+    }
+
+    func testBacklogDiscardAndDeinitReleaseQueuedSlotOwnership() throws {
+        let discardedWeakBuffer = WeakBufferBox()
+        var discarded: AVAudioPCMBuffer? = try XCTUnwrap(AVAudioPCMBuffer(
+            pcmFormat: format(),
+            frameCapacity: 16
+        ))
+        discarded?.frameLength = 16
+        discardedWeakBuffer.value = discarded
+        let discardedBacklog = AudioCapture.ProcessingBacklog(capacity: 1)
+        XCTAssertEqual(discardedBacklog.tryEnqueue(try XCTUnwrap(discarded)), .enqueued)
+        discarded = nil
+        discardedBacklog.discard()
+        XCTAssertNil(discardedWeakBuffer.value)
+
+        let deinitWeakBuffer = WeakBufferBox()
+        var retained: AVAudioPCMBuffer? = try XCTUnwrap(AVAudioPCMBuffer(
+            pcmFormat: format(),
+            frameCapacity: 16
+        ))
+        retained?.frameLength = 16
+        deinitWeakBuffer.value = retained
+        var retainedBacklog: AudioCapture.ProcessingBacklog? = .init(capacity: 1)
+        XCTAssertEqual(retainedBacklog?.tryEnqueue(try XCTUnwrap(retained)), .enqueued)
+        retained = nil
+        retainedBacklog = nil
+        XCTAssertNil(deinitWeakBuffer.value)
+    }
+
+    func testLateProducerAfterFinishDoesNotReportProcessingBacklog() async throws {
+        let outputFormat = format()
+        let sinkBox = SinkBox()
+        let errorReported = expectation(description: "Kein falscher Backlogfehler")
+        errorReported.isInverted = true
+        let capture = AudioCapture(
+            audioUnitHooks: AudioCapture.AudioUnitHooks(
+                configureInput: { _, _, sink in
+                    sinkBox.store(sink)
+                    return outputFormat
+                },
+                initialize: {}, start: {}, stop: {}, uninitialize: {}, dispose: {}
+            ),
+            afterBacklogFinish: {
+                guard let buffer = AVAudioPCMBuffer(
+                    pcmFormat: outputFormat,
+                    frameCapacity: 16
+                ) else { return }
+                buffer.frameLength = 16
+                sinkBox.load()?(buffer)
+            }
+        )
+        try capture.start(
+            outputFormat: outputFormat,
+            recordTo: nil,
+            onRuntimeError: { _ in errorReported.fulfill() }
+        ) { _ in }
+
+        _ = await capture.stop()
+
+        await fulfillment(of: [errorReported], timeout: 0.05)
     }
 
     func testProducerConsumerConcurrencyDoesNotReportBacklogWhileCapacityRemains() async throws {
