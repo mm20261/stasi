@@ -62,8 +62,9 @@ swift build --build-tests
 xcrun xctest "$(swift build --show-bin-path)/StasiPackageTests.xctest"
 ```
 
-`swift test` kann in der Runner-Infrastruktur hängen; der direkte, vom aktuellen
-Swift-Binärpfad unabhängige `xctest`-Aufruf ist der zuverlässige Weg.
+`swift test` kann in der Runner-Infrastruktur hängen; der direkte `xctest`-Aufruf ist
+portabel, weil SwiftPM den aktuellen Binärpfad ermittelt und kein Architektur- oder
+Konfigurationspfad fest verdrahtet ist.
 
 ## Erster Start – Berechtigungen
 
