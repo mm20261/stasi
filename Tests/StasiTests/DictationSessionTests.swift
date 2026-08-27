@@ -329,6 +329,25 @@ final class DictationSessionTests: XCTestCase {
         }
     }
 
+    @MainActor
+    private final class SoundFeedbackSpy: SoundFeedback, @unchecked Sendable {
+        private(set) var events: [SoundEvent] = []
+        private let timeline: EventLog?
+        private let onPlay: ((SoundEvent) async -> Void)?
+
+        init(timeline: EventLog? = nil,
+             onPlay: ((SoundEvent) async -> Void)? = nil) {
+            self.timeline = timeline
+            self.onPlay = onPlay
+        }
+
+        func play(_ event: SoundEvent) async {
+            events.append(event)
+            timeline?.append("sound.\(event)")
+            await onPlay?(event)
+        }
+    }
+
     private final class FocusGateRaceStub: @unchecked Sendable {
         private let lock = NSLock()
         private var current: TargetApplication?
@@ -434,7 +453,7 @@ final class DictationSessionTests: XCTestCase {
                          revealRecoveryFile: @escaping @MainActor (URL) -> Void = { _ in },
                          directory: URL? = nil,
                          now: @escaping @MainActor () -> Date = { Date() },
-                         playStartCue: @escaping @MainActor () async -> Void = {}) -> AppState {
+                         soundFeedback: any SoundFeedback = SoundFeedbackSpy()) -> AppState {
         let root = directory ?? makeDirectory("makeApp")
         let dictionary = DictionaryStore(directory: root.appendingPathComponent("dictionary"))
         let history = history ?? HistoryStore(directory: root.appendingPathComponent("history"))
@@ -459,7 +478,7 @@ final class DictationSessionTests: XCTestCase {
             injectText: injectText,
             copyToClipboard: copyToClipboard,
             now: now,
-            playStartCue: playStartCue
+            soundFeedback: soundFeedback
         )
     }
 
@@ -1152,6 +1171,7 @@ final class DictationSessionTests: XCTestCase {
         let history = FakeHistoryStore()
         let textInjector = TextInjectorSpy()
         let reveal = RevealSpy()
+        let sound = SoundFeedbackSpy()
         let recoveryDirectory = directory.appendingPathComponent("recovery", isDirectory: true)
         let app = makeApp(
             audio: audio,
@@ -1161,8 +1181,10 @@ final class DictationSessionTests: XCTestCase {
             injectText: { textInjector.inject($0) },
             recoveryStore: AudioRecoveryStore(directory: recoveryDirectory),
             revealRecoveryFile: { reveal.reveal($0) },
-            directory: directory
+            directory: directory,
+            soundFeedback: sound
         )
+        app.settings.soundOn = true
         let pasteboard = NSPasteboard.general
         let previousClipboard = pasteboard.string(forType: .string)
         defer {
@@ -1188,6 +1210,7 @@ final class DictationSessionTests: XCTestCase {
         await waitUntil { app.phase == .idle }
 
         XCTAssertEqual(audio.stopCount, 1)
+        XCTAssertEqual(sound.events, [.recordingStarted, .recordingStopped, .failed])
         XCTAssertTrue(history.records.isEmpty)
         XCTAssertEqual(history.insertCount, 0)
         XCTAssertEqual(textInjector.callCount, 0)
@@ -1415,7 +1438,10 @@ final class DictationSessionTests: XCTestCase {
             audio: audio,
             engines: [FakeSpeechEngine()],
             frontmostApplication: { frontmost.current },
-            playStartCue: { _ = await cueGate.request() }
+            soundFeedback: SoundFeedbackSpy(onPlay: { event in
+                guard event == .recordingStarted else { return }
+                _ = await cueGate.request()
+            })
         )
         app.settings.soundOn = true
 
@@ -1488,11 +1514,12 @@ final class DictationSessionTests: XCTestCase {
         let app = makeApp(
             audio: audio,
             engines: [FakeSpeechEngine()],
-            playStartCue: {
+            soundFeedback: SoundFeedbackSpy(onPlay: { event in
+                guard event == .recordingStarted else { return }
                 XCTAssertEqual(appReference?.phase, .preparing)
                 XCTAssertNil(appReference?.recordStart)
                 events.append("cue")
-            }
+            })
         )
         appReference = app
         app.settings.soundOn = true
@@ -1847,5 +1874,140 @@ final class DictationSessionTests: XCTestCase {
         XCTAssertNotNil(app.currentSession)
         app.requestDiscard()
         await waitUntil { app.phase == .idle }
+    }
+
+    func testSoundFeedbackSuccessTimelineWaitsForCueAndAudioStop() async {
+        let timeline = EventLog()
+        let audio = FakeAudioCapture()
+        audio.onStart = { timeline.append("audio.start") }
+        audio.onStop = { timeline.append("audio.stop") }
+        let sound = SoundFeedbackSpy(timeline: timeline)
+        let app = makeApp(
+            audio: audio,
+            engines: [FakeSpeechEngine(text: "Erfolgreich")],
+            soundFeedback: sound
+        )
+        app.settings.soundOn = true
+
+        app.startDictation()
+        await waitUntil { audio.isRunning }
+        app.stopDictation()
+        await waitUntil { app.phase == .idle }
+
+        XCTAssertEqual(sound.events, [
+            .recordingStarted, .recordingStopped, .processingCompleted,
+        ])
+        XCTAssertEqual(timeline.events, [
+            "sound.recordingStarted", "audio.start", "audio.stop",
+            "sound.recordingStopped", "sound.processingCompleted",
+        ])
+    }
+
+    func testSetupFailurePlaysOnlyFailedFeedback() async {
+        let sound = SoundFeedbackSpy()
+        let app = makeApp(
+            engines: [FakeSpeechEngine(startError: FakeError.setup)],
+            soundFeedback: sound
+        )
+        app.settings.soundOn = true
+
+        app.startDictation()
+        await waitUntil { app.currentSession == nil }
+
+        XCTAssertEqual(sound.events, [.failed])
+    }
+
+    func testRuntimeFailureAfterStartStopsBeforeSingleFailureFeedback() async {
+        let timeline = EventLog()
+        let audio = FakeAudioCapture()
+        audio.onStop = { timeline.append("audio.stop") }
+        let sound = SoundFeedbackSpy(timeline: timeline)
+        let app = makeApp(
+            audio: audio,
+            engines: [FakeSpeechEngine(text: "Fehler")],
+            soundFeedback: sound
+        )
+        app.settings.soundOn = true
+
+        app.startDictation()
+        await waitUntil { audio.isRunning }
+        audio.fail(.processingBacklog)
+        audio.fail(.conversionFailed("doppelt"))
+        await waitUntil { app.phase == .idle }
+
+        XCTAssertEqual(sound.events, [.recordingStarted, .recordingStopped, .failed])
+        XCTAssertEqual(timeline.events, [
+            "sound.recordingStarted", "audio.stop", "sound.recordingStopped", "sound.failed",
+        ])
+    }
+
+    func testDiscardAndShortTapPlayStartedThenStoppedWithoutTerminalFeedback() async {
+        let factory = AudioFactorySpy()
+        let sound = SoundFeedbackSpy()
+        let clock = FakeClock()
+        let app = makeApp(
+            audioFactory: { factory.make() },
+            engines: [FakeSpeechEngine(), FakeSpeechEngine()],
+            minimumPushToTalkDuration: PillChrome.presentationDelay,
+            now: { clock.now },
+            soundFeedback: sound
+        )
+        app.settings.soundOn = true
+
+        app.startDictation()
+        await waitUntil { factory.captures.first?.isRunning == true }
+        app.requestDiscard()
+        await waitUntil { app.phase == .idle }
+
+        app.startDictation()
+        await waitUntil { factory.captures.count == 2 && factory.captures[1].isRunning }
+        clock.advance(by: PillChrome.presentationDelay - 0.001)
+        app.stopDictation()
+        await waitUntil { app.phase == .idle }
+
+        XCTAssertEqual(sound.events, [
+            .recordingStarted, .recordingStopped,
+            .recordingStarted, .recordingStopped,
+        ])
+    }
+
+    func testHistoryFailurePlaysStoppedThenFailedWithoutCompleted() async {
+        let history = FakeHistoryStore()
+        history.insertError = FakeError.history
+        let sound = SoundFeedbackSpy()
+        let audio = FakeAudioCapture()
+        let app = makeApp(
+            audio: audio,
+            engines: [FakeSpeechEngine(text: "Nicht gespeichert")],
+            history: history,
+            soundFeedback: sound
+        )
+        app.settings.soundOn = true
+
+        app.startDictation()
+        await waitUntil { audio.isRunning }
+        app.stopDictation()
+        await waitUntil { app.phase == .idle }
+
+        XCTAssertEqual(sound.events, [.recordingStarted, .recordingStopped, .failed])
+    }
+
+    func testSoundOffPreservesLifecycleWithoutFeedbackCalls() async {
+        let sound = SoundFeedbackSpy()
+        let audio = FakeAudioCapture()
+        let app = makeApp(
+            audio: audio,
+            engines: [FakeSpeechEngine(text: "Still erfolgreich")],
+            soundFeedback: sound
+        )
+        app.settings.soundOn = false
+
+        app.startDictation()
+        await waitUntil { audio.isRunning }
+        app.stopDictation()
+        await waitUntil { app.phase == .idle }
+
+        XCTAssertTrue(sound.events.isEmpty)
+        XCTAssertEqual(app.history.records.first?.rawText, "Still erfolgreich")
     }
 }

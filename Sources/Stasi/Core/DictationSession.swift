@@ -44,6 +44,7 @@ final class DictationSession {
     private var shouldPreserveAudioFile = false
     private var shouldRecoverClosedAudioFile = false
     private var runtimeFailureHandled = false
+    private var emittedSoundEvents: Set<SoundEvent> = []
     private(set) var recoveredAudioURL: URL?
 
     var teardownStarted: Bool { teardownTask != nil }
@@ -78,6 +79,23 @@ final class DictationSession {
               !runtimeFailureHandled else { return false }
         runtimeFailureHandled = true
         shouldRecoverClosedAudioFile = true
+        return true
+    }
+
+    func claimSoundEvent(_ event: SoundEvent) -> Bool {
+        guard !emittedSoundEvents.contains(event) else { return false }
+        switch event {
+        case .recordingStarted:
+            break
+        case .recordingStopped:
+            guard emittedSoundEvents.contains(.recordingStarted) else { return false }
+        case .processingCompleted:
+            guard emittedSoundEvents.contains(.recordingStopped) else { return false }
+        case .failed:
+            guard !emittedSoundEvents.contains(.recordingStarted)
+                    || emittedSoundEvents.contains(.recordingStopped) else { return false }
+        }
+        emittedSoundEvents.insert(event)
         return true
     }
 

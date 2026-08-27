@@ -3,46 +3,6 @@ import SwiftUI
 import AppKit
 import AVFoundation
 
-@MainActor
-final class NSSoundCompletionPlayer: NSObject, NSSoundDelegate {
-    typealias Starter = @MainActor (NSSound, NSSoundDelegate) -> Bool
-
-    private var continuation: CheckedContinuation<Void, Never>?
-    private var sound: NSSound?
-    private var lifetime: NSSoundCompletionPlayer?
-
-    static func play(_ sound: NSSound,
-                     starter: @escaping Starter = { sound, _ in sound.play() }) async {
-        let player = NSSoundCompletionPlayer()
-        await player.play(sound, starter: starter)
-    }
-
-    private func play(_ sound: NSSound, starter: @escaping Starter) async {
-        await withCheckedContinuation { continuation in
-            self.continuation = continuation
-            self.sound = sound
-            lifetime = self
-            sound.delegate = self
-            if !starter(sound, self) {
-                finish()
-            }
-        }
-    }
-
-    func sound(_ sound: NSSound, didFinishPlaying finishedPlaying: Bool) {
-        finish()
-    }
-
-    private func finish() {
-        guard let continuation else { return }
-        self.continuation = nil
-        sound?.delegate = nil
-        sound = nil
-        lifetime = nil
-        continuation.resume()
-    }
-}
-
 // MARK: - AppState
 // Zentrale State-Machine: idle → recording → transcribing → polishing → injecting → idle.
 // Hotkey-Modi: Push-to-talk (halten) oder Umschalten (togglen).
@@ -94,7 +54,7 @@ final class AppState {
     private let isTextFieldEditable: @Sendable () -> Bool
     private let injectText: @Sendable (String) -> Void
     private let copyToClipboard: @MainActor (String) -> Void
-    private let playStartCue: @MainActor () async -> Void
+    private let soundFeedback: any SoundFeedback
     private(set) var modelReadyByLocale: [String: Bool] = [:]
     @ObservationIgnored private var modelPreparationTasks: [String: Task<Bool, Never>] = [:]
     @ObservationIgnored private var knownWordCache: [String: Bool] = [:]
@@ -248,10 +208,7 @@ final class AppState {
              NSPasteboard.general.setString(text, forType: .string)
          },
          now: @escaping @MainActor () -> Date = { Date() },
-         playStartCue: @escaping @MainActor () async -> Void = {
-             guard let sound = NSSound(named: "Tink") else { return }
-             await NSSoundCompletionPlayer.play(sound)
-         }) {
+         soundFeedback: any SoundFeedback = SystemSoundFeedback()) {
         self.settings = settings
         self.dictionary = dictionary ?? DictionaryStore()
         self.history = history ?? HistoryStore()
@@ -282,7 +239,7 @@ final class AppState {
         self.injectText = injectText
         self.copyToClipboard = copyToClipboard
         self.now = now
-        self.playStartCue = playStartCue
+        self.soundFeedback = soundFeedback
         levelTraceEnabled = ProcessInfo.processInfo.environment["STASI_LEVEL_TRACE"] == "1"
         (commandStream, commandContinuation) = AsyncStream.makeStream(of: HotkeyCommand.self)
         accessibilityGranted = Permissions.accessibilityGranted
@@ -501,14 +458,9 @@ final class AppState {
         stopDictation()
     }
 
-    func playStartSound() async {
-        guard settings.soundOn else { return }
-        await playStartCue()
-    }
-
-    func playStopSound() {
-        guard settings.soundOn else { return }
-        NSSound(named: "Pop")?.play()
+    private func playSound(_ event: SoundEvent, for session: DictationSession) async {
+        guard session.claimSoundEvent(event), settings.soundOn else { return }
+        await soundFeedback.play(event)
     }
 
     // MARK: Aufnahme-Steuerung
@@ -592,6 +544,7 @@ final class AppState {
                         }
                     }
                     await self.teardown(session)
+                    await self.playSound(.failed, for: session)
                     self.finishAbortedSession(session)
                     return
                 }
@@ -640,7 +593,7 @@ final class AppState {
                     }
                 }
 
-                await self.playStartSound()
+                await self.playSound(.recordingStarted, for: session)
                 guard await self.setupShouldContinue(session) else { return }
                 session.updateTargetApplication(self.captureTargetApplication())
                 let recordingStartCandidate = self.now()
@@ -678,6 +631,7 @@ final class AppState {
                 }
                 guard session.state == .settingUp else { return }
                 await self.teardown(session)
+                await self.playSound(.failed, for: session)
                 self.onToast?(error.localizedDescription, false)
                 self.finishAbortedSession(session)
             }
@@ -720,7 +674,6 @@ final class AppState {
         session.beginCompletion(.commit)
         session.state = .stopping
         phase = .transcribing
-        playStopSound()
 
         Task { @MainActor [weak self, weak session] in
             guard let self, let session else { return }
@@ -735,6 +688,7 @@ final class AppState {
             }
 
             let recordedURL = await session.stopAudioOnce()
+            await self.playSound(.recordingStopped, for: session)
             if session.health.failure == .audioRuntimeFailure {
                 DebugLog.log("STASI-APP: Commit-Drain wegen Audio-Runtimefehler abgebrochen")
                 return
@@ -772,6 +726,7 @@ final class AppState {
                     session.preserveAudioFile()
                 }
                 await self.teardown(session)
+                await self.playSound(.failed, for: session)
                 self.finishAbortedSession(session)
                 if recovered != nil {
                     self.onToast?("Die Aufnahme ist unvollständig. Die Wiederherstellungsdatei wurde im Finder geöffnet.", false)
@@ -797,6 +752,7 @@ final class AppState {
         session.state = .stopping
         phase = .transcribing
         await teardown(session)
+        await playSound(.failed, for: session)
         let recoveredURL = session.recoveredAudioURL.flatMap { registerRecoveryAudio(at: $0) }
         finishAbortedSession(session)
         if recoveredURL != nil {
@@ -826,7 +782,6 @@ final class AppState {
         session.beginCompletion(.discard)
         session.state = .stopping
         phase = .transcribing
-        playStopSound()
         Task { @MainActor [weak self, weak session] in
             guard let self, let session else { return }
             await session.setupTask?.value
@@ -949,6 +904,7 @@ final class AppState {
             DebugLog.log("STASI-APP: Verlauf speichern fehlgeschlagen: \(error.localizedDescription)")
             session.preserveAudioFile()
             await teardown(session)
+            await playSound(.failed, for: session)
             resetSessionPresentationToIdle()
             onToast?("Verlauf konnte nicht gespeichert werden. Die Audiodatei bleibt erhalten.", false)
             return
@@ -970,6 +926,7 @@ final class AppState {
 
         session.preserveAudioFile()
         await teardown(session)
+        await playSound(.processingCompleted, for: session)
         phase = .injecting
         partialText = trimmed
         // Auto-Kopieren: Das letzte Protokoll liegt immer in der Zwischenablage,
@@ -1020,11 +977,13 @@ final class AppState {
     private func teardown(_ session: DictationSession) async {
         if session.teardownStarted {
             await session.teardown()
+            await playSound(.recordingStopped, for: session)
             return
         }
         teardownInProgress = true
         defer { teardownInProgress = false }
         await session.teardown()
+        await playSound(.recordingStopped, for: session)
         if currentSession === session {
             currentSession = nil
         }
