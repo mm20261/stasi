@@ -101,10 +101,12 @@ private let auhalInputCallback: AURenderCallback = {
     _,
     frameCount,
     _ in
-    let capture = Unmanaged<AudioCapture>.fromOpaque(refCon).takeUnretainedValue()
-    return capture.renderInput(actionFlags: actionFlags,
-                               timeStamp: timeStamp,
-                               frameCount: frameCount)
+    let run = Unmanaged<AudioCapture.AudioCaptureRun>
+        .fromOpaque(refCon)
+        .takeUnretainedValue()
+    return run.renderInput(actionFlags: actionFlags,
+                           timeStamp: timeStamp,
+                           frameCount: frameCount)
 }
 
 // MARK: - AudioCapture (input-only AUHAL + WAV-Mitschrieb + VU-Level)
@@ -120,53 +122,12 @@ final class AudioCapture: AudioCapturing, @unchecked Sendable {
         static let inputOnly = IOConfiguration(inputEnabled: true, outputEnabled: false)
     }
 
-    private enum CaptureAdmission: UInt64 {
+    fileprivate enum CaptureAdmission: UInt64 {
         case suspended
         case activating
         case active
         case failed
         case stopped
-    }
-
-    private static let admissionPhaseBits: UInt64 = 3
-    private static let admissionPhaseMask: UInt64 = (1 << admissionPhaseBits) - 1
-
-    private static func admissionToken(generation: UInt64,
-                                       phase: CaptureAdmission) -> UInt64 {
-        (generation << admissionPhaseBits) | phase.rawValue
-    }
-
-    private static func admissionGeneration(_ token: UInt64) -> UInt64 {
-        token >> admissionPhaseBits
-    }
-
-    private static func admissionPhase(_ token: UInt64) -> CaptureAdmission? {
-        CaptureAdmission(rawValue: token & admissionPhaseMask)
-    }
-
-    private final class RunContext: @unchecked Sendable {
-        let generation: UInt64
-        let backlog: ProcessingBacklog
-        let reporter: RuntimeErrorReporter
-
-        init(generation: UInt64,
-             backlog: ProcessingBacklog,
-             reporter: RuntimeErrorReporter) {
-            self.generation = generation
-            self.backlog = backlog
-            self.reporter = reporter
-        }
-    }
-
-    private struct RenderAdmissionSnapshot {
-        let token: UInt64
-        let context: RunContext?
-
-        var generation: UInt64 { AudioCapture.admissionGeneration(token) }
-        var admitted: Bool {
-            AudioCapture.admissionPhase(token) == .active
-                && context?.generation == generation
-        }
     }
 
     /// Schmale Hardware-Naht fuer Dateilebenszyklus-Tests ohne Mikrofon/TCC.
@@ -183,20 +144,233 @@ final class AudioCapture: AudioCapturing, @unchecked Sendable {
         let dispose: () -> Void
     }
 
+    typealias RenderOperation = (
+        _ audioUnit: AudioUnit?,
+        _ actionFlags: UnsafeMutablePointer<AudioUnitRenderActionFlags>?,
+        _ timeStamp: UnsafePointer<AudioTimeStamp>,
+        _ frameCount: UInt32,
+        _ buffer: AVAudioPCMBuffer
+    ) -> OSStatus
+
+    /// Unveraenderliche Identitaet eines Hardware-Runs. Der CoreAudio-refCon und
+    /// jeder konfigurierte Test-Sink binden direkt dieses Objekt; sie lesen nie den
+    /// aktuellen Run des AudioCapture-Control-Planes.
+    fileprivate final class AudioCaptureRun: @unchecked Sendable {
+        let backlog: ProcessingBacklog
+        let reporter: RuntimeErrorReporter
+        let renderOperation: RenderOperation
+        let afterAdmissionSnapshot: @Sendable () -> Void
+        let onDeinit: @Sendable () -> Void
+        let admission: Atomic<UInt64>
+
+        nonisolated(unsafe) var audioUnit: AudioUnit?
+        nonisolated(unsafe) var inputBuffer: AVAudioPCMBuffer?
+        var audioUnitPrepared = false
+        var audioUnitInitialized = false
+        var audioUnitStarted = false
+
+        private let callbackCount = Atomic<Int>(0)
+        private let callbacksClosing = Atomic<Bool>(false)
+        private let disposalRequested = Atomic<Bool>(false)
+        private let disposalLock = NSLock()
+        private var disposalAction: (() -> Void)?
+
+        init(initialAdmission: CaptureAdmission,
+             backlog: ProcessingBacklog,
+             reporter: RuntimeErrorReporter,
+             renderOperation: @escaping RenderOperation,
+             afterAdmissionSnapshot: @escaping @Sendable () -> Void,
+             onDeinit: @escaping @Sendable () -> Void) {
+            self.backlog = backlog
+            self.reporter = reporter
+            self.renderOperation = renderOperation
+            self.afterAdmissionSnapshot = afterAdmissionSnapshot
+            self.onDeinit = onDeinit
+            admission = Atomic(initialAdmission.rawValue)
+        }
+
+        deinit { onDeinit() }
+
+        var phase: CaptureAdmission? {
+            CaptureAdmission(rawValue: admission.load(ordering: .acquiring))
+        }
+
+        func activate() -> Bool {
+            transition(expected: .suspended, desired: .activating)
+                || phase == .activating || phase == .active
+        }
+
+        func open() -> Bool {
+            transition(expected: .activating, desired: .active)
+        }
+
+        func stopAdmission() {
+            while true {
+                let current = admission.load(ordering: .acquiring)
+                guard current != CaptureAdmission.stopped.rawValue else { return }
+                if admission.compareExchange(
+                    expected: current,
+                    desired: CaptureAdmission.stopped.rawValue,
+                    ordering: .acquiringAndReleasing
+                ).exchanged { return }
+            }
+        }
+
+        private func transition(expected: CaptureAdmission,
+                                desired: CaptureAdmission) -> Bool {
+            admission.compareExchange(
+                expected: expected.rawValue,
+                desired: desired.rawValue,
+                ordering: .acquiringAndReleasing
+            ).exchanged
+        }
+
+        func reportRuntimeError(_ error: AudioCaptureRuntimeError) {
+            while true {
+                let current = admission.load(ordering: .acquiring)
+                switch CaptureAdmission(rawValue: current) {
+                case .suspended, .activating, .active:
+                    if admission.compareExchange(
+                        expected: current,
+                        desired: CaptureAdmission.failed.rawValue,
+                        ordering: .acquiringAndReleasing
+                    ).exchanged {
+                        reporter.report(error)
+                        return
+                    }
+                case .stopped:
+                    reporter.report(error)
+                    return
+                case .failed, nil:
+                    return
+                }
+            }
+        }
+
+        fileprivate func renderInput(
+            actionFlags: UnsafeMutablePointer<AudioUnitRenderActionFlags>?,
+            timeStamp: UnsafePointer<AudioTimeStamp>,
+            frameCount: UInt32
+        ) -> OSStatus {
+            guard beginCallback() else { return noErr }
+            defer { endCallback() }
+            let admissionAtEntry = admission.load(ordering: .acquiring)
+            afterAdmissionSnapshot()
+            guard let inputBuffer else {
+                let status = kAudio_ParamError
+                reportRuntimeError(.renderFailed(status))
+                return status
+            }
+            let preparationStatus = AudioCapture.prepareRenderBuffer(inputBuffer,
+                                                                     frameCount: frameCount)
+            guard preparationStatus == noErr else {
+                reportRuntimeError(.bufferCopyFailed)
+                return preparationStatus
+            }
+            let status = renderOperation(audioUnit,
+                                         actionFlags,
+                                         timeStamp,
+                                         frameCount,
+                                         inputBuffer)
+            guard status == noErr else {
+                reportRuntimeError(.renderFailed(status))
+                return status
+            }
+            enqueueRenderedBuffer(inputBuffer, admissionAtEntry: admissionAtEntry)
+            return noErr
+        }
+
+        func acceptRenderedBuffer(_ buffer: AVAudioPCMBuffer) {
+            guard beginCallback() else { return }
+            defer { endCallback() }
+            let admissionAtEntry = admission.load(ordering: .acquiring)
+            afterAdmissionSnapshot()
+            enqueueRenderedBuffer(buffer, admissionAtEntry: admissionAtEntry)
+        }
+
+        private func enqueueRenderedBuffer(_ buffer: AVAudioPCMBuffer,
+                                           admissionAtEntry: UInt64) {
+            guard admissionAtEntry == CaptureAdmission.active.rawValue,
+                  admission.load(ordering: .acquiring) == admissionAtEntry,
+                  !reporter.hasReported else { return }
+            guard let owned = AudioCapture.copy(buffer) else {
+                reportRuntimeError(.bufferCopyFailed)
+                return
+            }
+            switch backlog.tryEnqueue(owned) {
+            case .enqueued, .closed:
+                return
+            case .full:
+                reportRuntimeError(.processingBacklog)
+            }
+        }
+
+        func closeCallbacksAndRequestDisposal(_ action: @escaping () -> Void) {
+            callbacksClosing.store(true, ordering: .releasing)
+            disposalLock.withLock { disposalAction = action }
+            disposalRequested.store(true, ordering: .releasing)
+            performDisposalIfQuiescent()
+        }
+
+        private func beginCallback() -> Bool {
+            guard !callbacksClosing.load(ordering: .acquiring) else { return false }
+            incrementCallbackCount()
+            guard !callbacksClosing.load(ordering: .acquiring) else {
+                endCallback()
+                return false
+            }
+            return true
+        }
+
+        private func endCallback() {
+            let remaining = decrementCallbackCount()
+            if remaining == 0 { performDisposalIfQuiescent() }
+        }
+
+        private func incrementCallbackCount() {
+            while true {
+                let current = callbackCount.load(ordering: .relaxed)
+                if callbackCount.compareExchange(
+                    expected: current,
+                    desired: current + 1,
+                    ordering: .acquiringAndReleasing
+                ).exchanged { return }
+            }
+        }
+
+        private func decrementCallbackCount() -> Int {
+            while true {
+                let current = callbackCount.load(ordering: .relaxed)
+                precondition(current > 0)
+                if callbackCount.compareExchange(
+                    expected: current,
+                    desired: current - 1,
+                    ordering: .acquiringAndReleasing
+                ).exchanged { return current - 1 }
+            }
+        }
+
+        private func performDisposalIfQuiescent() {
+            guard disposalRequested.load(ordering: .acquiring),
+                  callbackCount.load(ordering: .acquiring) == 0 else { return }
+            let action = disposalLock.withLock { () -> (() -> Void)? in
+                let action = disposalAction
+                disposalAction = nil
+                return action
+            }
+            action?()
+        }
+    }
+
     private static let inputElement: AudioUnitElement = 1
     private static let outputElement: AudioUnitElement = 0
     private static let requestedMaximumFrames: UInt32 = 4_096
     static let defaultBacklogCapacity = 64
 
-    /// Pro Aufnahme neu erzeugt und nach stop() vollstaendig disposed. Output
-    /// bleibt ueber den gesamten Lebenszyklus explizit deaktiviert.
-    private nonisolated(unsafe) var audioUnit: AudioUnit?
-    private nonisolated(unsafe) var inputBuffer: AVAudioPCMBuffer?
     private let audioUnitHooks: AudioUnitHooks?
     private let converterFactory: AudioConverterFactory
-    private var audioUnitPrepared = false
-    private var audioUnitInitialized = false
-    private var audioUnitStarted = false
+    private let renderOperation: RenderOperation
+    private let onRunDeinit: @Sendable () -> Void
     private nonisolated(unsafe) var converter: AVAudioConverter?
     private nonisolated(unsafe) var outputFormat: AVAudioFormat?
     private nonisolated(unsafe) var onBuffer: (@Sendable (AudioChunk) -> Void)?
@@ -208,17 +382,9 @@ final class AudioCapture: AudioCapturing, @unchecked Sendable {
     private let processingFailure: @Sendable (AVAudioPCMBuffer) -> AudioCaptureRuntimeError?
     private let processingQueue = DispatchQueue(label: "app.stasi.audio.processing",
                                                 qos: .userInitiated)
-    private nonisolated(unsafe) var processingBacklog: ProcessingBacklog?
-    private nonisolated(unsafe) var currentRunContext: RunContext?
-    /// Run-Kontexte bleiben bis zum AudioCapture-Deinit erhalten. Dadurch kann ein
-    /// extrem verspäteter Callback seine alte Queue gefahrlos stark referenzieren,
-    /// ohne je einen Kontext der nächsten Generation zu berühren.
-    private var retainedRunContexts: [RunContext] = []
     private var processingWorkerStarted = false
     private let stateLock = NSLock()
-    private let captureAdmission = Atomic<UInt64>(
-        AudioCapture.admissionToken(generation: 0, phase: .stopped)
-    )
+    private var currentRun: AudioCaptureRun?
     private var isRunningStorage = false
     private var isStoppingStorage = false
     var isRunning: Bool {
@@ -253,15 +419,27 @@ final class AudioCapture: AudioCapturing, @unchecked Sendable {
          converterFactory: @escaping AudioConverterFactory = { input, output in
              AVAudioConverter(from: input, to: output)
          },
+         renderOperation: @escaping RenderOperation = { unit, flags, timeStamp, frameCount, buffer in
+             guard let unit else { return kAudio_ParamError }
+             return AudioUnitRender(unit,
+                                    flags,
+                                    timeStamp,
+                                    AudioCapture.inputElement,
+                                    frameCount,
+                                    buffer.mutableAudioBufferList)
+         },
          backlogCapacity: Int = AudioCapture.defaultBacklogCapacity,
          beforeBacklogDequeue: @escaping @Sendable () -> Void = {},
          afterBacklogFinish: @escaping @Sendable () -> Void = {},
          afterAdmissionSnapshot: @escaping @Sendable () -> Void = {},
          beforeProcessing: @escaping @Sendable () -> Void = {},
-         processingFailure: @escaping @Sendable (AVAudioPCMBuffer) -> AudioCaptureRuntimeError? = { _ in nil }) {
+         processingFailure: @escaping @Sendable (AVAudioPCMBuffer) -> AudioCaptureRuntimeError? = { _ in nil },
+         onRunDeinit: @escaping @Sendable () -> Void = {}) {
         precondition(backlogCapacity > 0)
         self.audioUnitHooks = audioUnitHooks
         self.converterFactory = converterFactory
+        self.renderOperation = renderOperation
+        self.onRunDeinit = onRunDeinit
         self.backlogCapacity = backlogCapacity
         self.beforeBacklogDequeue = beforeBacklogDequeue
         self.afterBacklogFinish = afterBacklogFinish
@@ -281,8 +459,6 @@ final class AudioCapture: AudioCapturing, @unchecked Sendable {
         guard !isRunningStorage, !isStoppingStorage else {
             throw AudioCaptureError.alreadyRunning
         }
-        let previousToken = captureAdmission.load(ordering: .acquiring)
-        let generation = Self.admissionGeneration(previousToken) &+ 1
         let initialAdmission: CaptureAdmission = captureInitiallyActive ? .active : .suspended
         let backlog = ProcessingBacklog(
             capacity: backlogCapacity,
@@ -290,16 +466,13 @@ final class AudioCapture: AudioCapturing, @unchecked Sendable {
         )
         let reporter = RuntimeErrorReporter()
         reporter.reset(callback: onRuntimeError)
-        let runContext = RunContext(generation: generation,
-                                    backlog: backlog,
-                                    reporter: reporter)
-        retainedRunContexts.append(runContext)
-        currentRunContext = runContext
-        processingBacklog = backlog
-        captureAdmission.store(
-            Self.admissionToken(generation: generation, phase: initialAdmission),
-            ordering: .releasing
-        )
+        let run = AudioCaptureRun(initialAdmission: initialAdmission,
+                                  backlog: backlog,
+                                  reporter: reporter,
+                                  renderOperation: renderOperation,
+                                  afterAdmissionSnapshot: afterAdmissionSnapshot,
+                                  onDeinit: onRunDeinit)
+        currentRun = run
         self.onBuffer = onBuffer
         self.outputFormat = outputFormat
         recordURL = url
@@ -314,22 +487,25 @@ final class AudioCapture: AudioCapturing, @unchecked Sendable {
                     commonFormat: outputFormat.commonFormat,
                     interleaved: outputFormat.isInterleaved
                 )
-                outputFileLock.lock()
-                outputFile = file
-                outputFileLock.unlock()
+                outputFileLock.withLock { outputFile = file }
             }
 
-            let sink: @Sendable (AVAudioPCMBuffer) -> Void = { [weak self] buffer in
-                self?.acceptRenderedBuffer(buffer)
+            let sink: @Sendable (AVAudioPCMBuffer) -> Void = { [run] buffer in
+                run.acceptRenderedBuffer(buffer)
             }
-            audioUnitPrepared = true
+            run.audioUnitPrepared = true
             let native: AVAudioFormat
             if let audioUnitHooks {
                 native = try audioUnitHooks.configureInput(.inputOnly,
                                                            preferredMicUID,
                                                            sink)
+                guard let inputBuffer = AVAudioPCMBuffer(
+                    pcmFormat: native,
+                    frameCapacity: Self.requestedMaximumFrames
+                ) else { throw AudioCaptureError.invalidInputFormat }
+                run.inputBuffer = inputBuffer
             } else {
-                native = try configureAUHAL(preferredMicUID: preferredMicUID)
+                native = try configureAUHAL(run: run, preferredMicUID: preferredMicUID)
             }
 
             if native == outputFormat {
@@ -343,58 +519,39 @@ final class AudioCapture: AudioCapturing, @unchecked Sendable {
             }
             // CoreAudio darf bereits innerhalb von AudioOutputUnitStart rendern.
             // Der Consumer muss deshalb vor Initialize/Start bereitstehen.
-            startProcessingWorker(runContext)
+            startProcessingWorker(run)
             if let audioUnitHooks {
                 try audioUnitHooks.initialize()
             } else {
-                try check(AudioUnitInitialize(try requireAudioUnit()), operation: "Initialize")
+                try check(AudioUnitInitialize(try requireAudioUnit(run)), operation: "Initialize")
             }
-            audioUnitInitialized = true
+            run.audioUnitInitialized = true
 
             if let audioUnitHooks {
                 try audioUnitHooks.start()
             } else {
-                try check(AudioOutputUnitStart(try requireAudioUnit()), operation: "Start")
+                try check(AudioOutputUnitStart(try requireAudioUnit(run)), operation: "Start")
             }
-            audioUnitStarted = true
+            run.audioUnitStarted = true
             isRunningStorage = true
             DebugLog.log("STASI-AUDIO: Input-only AUHAL laeuft – Client \(native.sampleRate) Hz -> Engine \(outputFormat.sampleRate) Hz")
         } catch {
-            teardownAudioUnit()
+            run.stopAdmission()
+            teardownAudioUnit(run)
             if processingWorkerStarted {
-                stopProcessingWorkerAfterStartFailure(runContext)
+                stopProcessingWorkerAfterStartFailure(run)
             } else {
-                processingBacklog?.discard()
-                processingBacklog = nil
+                run.backlog.discard()
             }
             closeOutputFile()
             converter = nil
             self.outputFormat = nil
             self.onBuffer = nil
             recordURL = nil
-            transitionToStopped(generation: generation)
             reporter.clearCallback()
-            if currentRunContext === runContext {
-                currentRunContext = nil
-            }
+            if currentRun === run { currentRun = nil }
             isRunningStorage = false
             throw error
-        }
-    }
-
-    private func transitionToStopped(generation: UInt64) {
-        while true {
-            let current = captureAdmission.load(ordering: .acquiring)
-            guard Self.admissionGeneration(current) == generation else { return }
-            if Self.admissionPhase(current) == .stopped { return }
-            let stopped = Self.admissionToken(generation: generation, phase: .stopped)
-            if captureAdmission.compareExchange(
-                expected: current,
-                desired: stopped,
-                ordering: .acquiringAndReleasing
-            ).exchanged {
-                return
-            }
         }
     }
 
@@ -402,76 +559,42 @@ final class AudioCapture: AudioCapturing, @unchecked Sendable {
     /// Bis `openCapture()` bleiben alle Render-Puffer gesperrt, damit der Cue nicht einfliesst.
     @discardableResult
     func activateCapture() -> Bool {
-        while true {
-            let current = captureAdmission.load(ordering: .acquiring)
-            let generation = Self.admissionGeneration(current)
-            switch Self.admissionPhase(current) {
-            case .suspended:
-                let activating = Self.admissionToken(generation: generation,
-                                                      phase: .activating)
-                if captureAdmission.compareExchange(
-                    expected: current,
-                    desired: activating,
-                    ordering: .acquiringAndReleasing
-                ).exchanged {
-                    return true
-                }
-            case .activating, .active:
-                return true
-            case .failed, .stopped, nil:
-                return false
-            }
-        }
+        stateLock.withLock { currentRun?.activate() ?? false }
     }
 
     /// Oeffnet nach dem vollstaendigen Cue die eigentliche Render-Zulassung.
     @discardableResult
     func openCapture() -> Bool {
-        while true {
-            let current = captureAdmission.load(ordering: .acquiring)
-            guard Self.admissionPhase(current) == .activating else { return false }
-            let active = Self.admissionToken(
-                generation: Self.admissionGeneration(current),
-                phase: .active
-            )
-            if captureAdmission.compareExchange(
-                expected: current,
-                desired: active,
-                ordering: .acquiringAndReleasing
-            ).exchanged {
-                return true
-            }
-        }
+        stateLock.withLock { currentRun?.open() ?? false }
     }
 
     /// Stoppt und entsorgt nur die input-only AUHAL, laesst den Mitschrieb
     /// ausschreiben und liefert die Datei-URL.
     @discardableResult
     func stop() async -> URL? {
-        let stoppingContext = stateLock.withLock { () -> RunContext? in
-            guard isRunningStorage, let runContext = currentRunContext else { return nil }
-            transitionToStopped(generation: runContext.generation)
+        let stoppingRun = stateLock.withLock { () -> AudioCaptureRun? in
+            guard isRunningStorage, let run = currentRun else { return nil }
+            currentRun = nil
+            run.stopAdmission()
             isRunningStorage = false
             isStoppingStorage = true
-            // Der Hardware-Teil bleibt synchron und beendet weitere Render-Callbacks,
-            // bevor der MainActor fuer den Worker-Drain freigegeben wird.
-            teardownAudioUnit()
-            return runContext
+            // AudioOutputUnitStop ist die Produktions-Quiescence-Grenze. Fuer
+            // injizierte Hooks bleibt Disposal zusaetzlich bis zum letzten bereits
+            // eingetretenen Callback aufgeschoben.
+            teardownAudioUnit(run)
+            return run
         }
-        guard let stoppingContext else { return nil }
+        guard let stoppingRun else { return nil }
 
         // Suspension statt DispatchGroup.wait(): Der serielle Worker leert die
         // feste Queue vollstaendig, ohne den aufrufenden MainActor zu blockieren.
-        await stopProcessingWorker(stoppingContext)
+        await stopProcessingWorker(stoppingRun)
 
         return stateLock.withLock {
             converter = nil
             outputFormat = nil
             onBuffer = nil
-            stoppingContext.reporter.clearCallback()
-            if currentRunContext === stoppingContext {
-                currentRunContext = nil
-            }
+            stoppingRun.reporter.clearCallback()
             lock.withLock { rawLevel = 0 }
             closeOutputFile()
             let url = recordURL
@@ -483,7 +606,8 @@ final class AudioCapture: AudioCapturing, @unchecked Sendable {
 
     // MARK: AUHAL-Konfiguration
 
-    private func configureAUHAL(preferredMicUID: String?) throws -> AVAudioFormat {
+    private func configureAUHAL(run: AudioCaptureRun,
+                                preferredMicUID: String?) throws -> AVAudioFormat {
         var description = AudioComponentDescription(
             componentType: kAudioUnitType_Output,
             componentSubType: kAudioUnitSubType_HALOutput,
@@ -498,15 +622,17 @@ final class AudioCapture: AudioCapturing, @unchecked Sendable {
         var instance: AudioUnit?
         try check(AudioComponentInstanceNew(component, &instance), operation: "Instanz erzeugen")
         guard let instance else { throw AudioCaptureError.componentUnavailable }
-        audioUnit = instance
+        run.audioUnit = instance
 
         // Output zuerst abschalten, solange die Unit noch nicht initialisiert
         // ist. Danach ausschliesslich das Input-Element aktivieren.
         try setIOEnabled(IOConfiguration.inputOnly.outputEnabled,
+                         run: run,
                          scope: kAudioUnitScope_Output,
                          element: Self.outputElement,
                          operation: "Output deaktivieren")
         try setIOEnabled(IOConfiguration.inputOnly.inputEnabled,
+                         run: run,
                          scope: kAudioUnitScope_Input,
                          element: Self.inputElement,
                          operation: "Input aktivieren")
@@ -515,6 +641,7 @@ final class AudioCapture: AudioCapturing, @unchecked Sendable {
         else { throw AudioCaptureError.noInputDevice }
         var selectedDevice = deviceID
         try setProperty(&selectedDevice,
+                        run: run,
                         id: kAudioOutputUnitProperty_CurrentDevice,
                         scope: kAudioUnitScope_Global,
                         element: Self.outputElement,
@@ -577,13 +704,14 @@ final class AudioCapture: AudioCapturing, @unchecked Sendable {
         guard let inputBuffer = AVAudioPCMBuffer(pcmFormat: clientFormat,
                                                  frameCapacity: capacity)
         else { throw AudioCaptureError.invalidInputFormat }
-        self.inputBuffer = inputBuffer
+        run.inputBuffer = inputBuffer
 
         var callback = AURenderCallbackStruct(
             inputProc: auhalInputCallback,
-            inputProcRefCon: Unmanaged.passUnretained(self).toOpaque()
+            inputProcRefCon: Unmanaged.passUnretained(run).toOpaque()
         )
         try setProperty(&callback,
+                        run: run,
                         id: kAudioOutputUnitProperty_SetInputCallback,
                         scope: kAudioUnitScope_Global,
                         element: Self.outputElement,
@@ -680,11 +808,13 @@ final class AudioCapture: AudioCapturing, @unchecked Sendable {
     }
 
     private func setIOEnabled(_ enabled: Bool,
+                              run: AudioCaptureRun,
                               scope: AudioUnitScope,
                               element: AudioUnitElement,
                               operation: String) throws {
         var value: UInt32 = enabled ? 1 : 0
         try setProperty(&value,
+                        run: run,
                         id: kAudioOutputUnitProperty_EnableIO,
                         scope: scope,
                         element: element,
@@ -692,11 +822,12 @@ final class AudioCapture: AudioCapturing, @unchecked Sendable {
     }
 
     private func setProperty<T>(_ value: inout T,
+                                run: AudioCaptureRun,
                                 id: AudioUnitPropertyID,
                                 scope: AudioUnitScope,
                                 element: AudioUnitElement,
                                 operation: String) throws {
-        let unit = try requireAudioUnit()
+        let unit = try requireAudioUnit(run)
         let status = withUnsafePointer(to: &value) { pointer in
             AudioUnitSetProperty(unit,
                                  id,
@@ -708,8 +839,10 @@ final class AudioCapture: AudioCapturing, @unchecked Sendable {
         try check(status, operation: operation)
     }
 
-    private func requireAudioUnit() throws -> AudioUnit {
-        guard let audioUnit else { throw AudioCaptureError.componentUnavailable }
+    private func requireAudioUnit(_ run: AudioCaptureRun) throws -> AudioUnit {
+        guard let audioUnit = run.audioUnit else {
+            throw AudioCaptureError.componentUnavailable
+        }
         return audioUnit
     }
 
@@ -721,140 +854,63 @@ final class AudioCapture: AudioCapturing, @unchecked Sendable {
 
     /// Reihenfolge ist strikt: stop -> uninitialize -> dispose. Erst danach
     /// duerfen der Render-Puffer und die Unit-Referenz freigegeben werden.
-    private func teardownAudioUnit() {
-        if audioUnitStarted {
+    private func teardownAudioUnit(_ run: AudioCaptureRun) {
+        if run.audioUnitStarted {
             if let audioUnitHooks {
                 audioUnitHooks.stop()
-            } else if let audioUnit {
+            } else if let audioUnit = run.audioUnit {
+                // CoreAudio garantiert nach der synchronen Rueckkehr keine weiteren
+                // Render-Aufrufe dieser Unit. Bereits eingetretene Callbacks halten
+                // den Run dennoch bis zu ihrem defer-Ende stark am Leben.
                 AudioOutputUnitStop(audioUnit)
             }
         }
-        audioUnitStarted = false
+        run.audioUnitStarted = false
 
-        if audioUnitInitialized {
-            if let audioUnitHooks {
-                audioUnitHooks.uninitialize()
-            } else if let audioUnit {
-                AudioUnitUninitialize(audioUnit)
+        let initialized = run.audioUnitInitialized
+        run.audioUnitInitialized = false
+        let prepared = run.audioUnitPrepared
+        run.audioUnitPrepared = false
+        let unit = run.audioUnit
+        run.closeCallbacksAndRequestDisposal { [audioUnitHooks] in
+            if initialized {
+                if let audioUnitHooks {
+                    audioUnitHooks.uninitialize()
+                } else if let unit {
+                    AudioUnitUninitialize(unit)
+                }
             }
-        }
-        audioUnitInitialized = false
-
-        if audioUnitPrepared {
+            guard prepared else { return }
             if let audioUnitHooks {
                 audioUnitHooks.dispose()
-            } else if let audioUnit {
-                AudioComponentInstanceDispose(audioUnit)
+            } else if let unit {
+                AudioComponentInstanceDispose(unit)
             }
         }
-        audioUnitPrepared = false
-        inputBuffer = nil
-        audioUnit = nil
     }
 
     // MARK: Audio-Thread
 
-    nonisolated private func renderAdmissionSnapshot() -> RenderAdmissionSnapshot {
-        let token = captureAdmission.load(ordering: .acquiring)
-        return RenderAdmissionSnapshot(token: token, context: currentRunContext)
-    }
-
-    /// Testnaht durch denselben Admission-Snapshot-/Validierungspfad wie der echte
-    /// AUHAL-Rendercallback; lediglich AudioUnitRender selbst ist bereits simuliert.
-    nonisolated func renderInputForTesting(_ buffer: AVAudioPCMBuffer) {
-        let snapshot = renderAdmissionSnapshot()
-        afterAdmissionSnapshot()
-        enqueueRenderBuffer(buffer, snapshot: snapshot)
-    }
-
-    nonisolated func renderFailureForTesting(_ error: AudioCaptureRuntimeError) {
-        let snapshot = renderAdmissionSnapshot()
-        afterAdmissionSnapshot()
-        reportRuntimeError(error,
-                           generation: snapshot.generation,
-                           reporter: snapshot.context?.reporter)
-    }
-
-    /// Der Zustandswechsel gewinnt atomar gegen `activateCapture()`/`openCapture()`.
-    /// Generation und Reporter stammen aus demselben Run-Kontext; ein alter Callback
-    /// kann deshalb niemals die nachfolgende Generation fehlschlagen lassen.
+    /// Control-plane Fehler werden unter dem State-Lock an den zu diesem Zeitpunkt
+    /// aktuellen Run gebunden. Render- und Workerfehler rufen dagegen direkt ihren
+    /// eigenen Run auf.
     nonisolated func reportRuntimeError(_ error: AudioCaptureRuntimeError) {
-        let snapshot = renderAdmissionSnapshot()
-        reportRuntimeError(error,
-                           generation: snapshot.generation,
-                           reporter: snapshot.context?.reporter)
+        let run = stateLock.withLock { currentRun }
+        run?.reportRuntimeError(error)
     }
 
-    nonisolated private func reportRuntimeError(
-        _ error: AudioCaptureRuntimeError,
-        generation: UInt64,
-        reporter: RuntimeErrorReporter?
-    ) {
-        guard let reporter else { return }
-        while true {
-            let current = captureAdmission.load(ordering: .acquiring)
-            guard Self.admissionGeneration(current) == generation else { return }
-            switch Self.admissionPhase(current) {
-            case .suspended, .activating, .active:
-                let failed = Self.admissionToken(generation: generation, phase: .failed)
-                if captureAdmission.compareExchange(
-                    expected: current,
-                    desired: failed,
-                    ordering: .acquiringAndReleasing
-                ).exchanged {
-                    reporter.report(error)
-                    return
-                }
-            case .stopped:
-                // Worker-Drain-Fehler nach synchronem Hardware-Stop bleiben fatal.
-                reporter.report(error)
-                return
-            case .failed, nil:
-                return
-            }
+    /// Testet exakt den produktiven `AudioCaptureRun.renderInput`-Pfad; nur die
+    /// eigentliche AudioUnitRender-Operation ist per Initializer injiziert.
+    nonisolated func renderCurrentInputForTesting(frameCount: UInt32) -> OSStatus {
+        guard let run = stateLock.withLock({ currentRun }) else {
+            return kAudio_ParamError
         }
-    }
-
-    nonisolated fileprivate func renderInput(
-        actionFlags: UnsafeMutablePointer<AudioUnitRenderActionFlags>?,
-        timeStamp: UnsafePointer<AudioTimeStamp>,
-        frameCount: UInt32
-    ) -> OSStatus {
-        let snapshot = renderAdmissionSnapshot()
-        let callbackAudioUnit = audioUnit
-        let callbackInputBuffer = inputBuffer
-        afterAdmissionSnapshot()
-        guard let callbackAudioUnit, let callbackInputBuffer else {
-            let status = kAudio_ParamError
-            reportRuntimeError(.renderFailed(status),
-                               generation: snapshot.generation,
-                               reporter: snapshot.context?.reporter)
-            return status
+        var timeStamp = AudioTimeStamp()
+        return withUnsafePointer(to: &timeStamp) { pointer in
+            run.renderInput(actionFlags: nil,
+                            timeStamp: pointer,
+                            frameCount: frameCount)
         }
-
-        let preparationStatus = Self.prepareRenderBuffer(callbackInputBuffer,
-                                                         frameCount: frameCount)
-        guard preparationStatus == noErr else {
-            reportRuntimeError(.bufferCopyFailed,
-                               generation: snapshot.generation,
-                               reporter: snapshot.context?.reporter)
-            return preparationStatus
-        }
-
-        let status = AudioUnitRender(callbackAudioUnit,
-                                     actionFlags,
-                                     timeStamp,
-                                     Self.inputElement,
-                                     frameCount,
-                                     callbackInputBuffer.mutableAudioBufferList)
-        guard status == noErr else {
-            reportRuntimeError(.renderFailed(status),
-                               generation: snapshot.generation,
-                               reporter: snapshot.context?.reporter)
-            return status
-        }
-        enqueueRenderBuffer(callbackInputBuffer, snapshot: snapshot)
-        return noErr
     }
 
     /// Stellt die von AudioUnitRender erwartete ABL-Topologie fuer den aktuellen
@@ -894,42 +950,7 @@ final class AudioCapture: AudioCapturing, @unchecked Sendable {
         return noErr
     }
 
-    /// Hook-Sinks repraesentieren einen bereits gerenderten Callback. Auch hier
-    /// wird die Zulassung genau einmal am Callback-Eintritt gesnapshottet.
-    nonisolated private func acceptRenderedBuffer(_ buffer: AVAudioPCMBuffer) {
-        let snapshot = renderAdmissionSnapshot()
-        afterAdmissionSnapshot()
-        enqueueRenderBuffer(buffer, snapshot: snapshot)
-    }
-
-    /// Der AUHAL-Puffer wird noch im synchronen Callback-Aufruf tief kopiert.
-    /// Diese verbleibende AVAudioPCMBuffer-Allokation ist bewusst dokumentiert:
-    /// Ein sicherer vorallozierter Pool ist mit variablen Slice-Laengen und den
-    /// AVFoundation-Objektlebenszeiten hier nicht klein genug nachweisbar. Hinter
-    /// der Besitzkopie ist der Backlog strikt auf `backlogCapacity` begrenzt.
-    nonisolated private func enqueueRenderBuffer(_ buffer: AVAudioPCMBuffer,
-                                                 snapshot: RenderAdmissionSnapshot) {
-        guard snapshot.admitted,
-              captureAdmission.load(ordering: .acquiring) == snapshot.token,
-              let context = snapshot.context,
-              !context.reporter.hasReported else { return }
-        guard let owned = Self.copy(buffer) else {
-            reportRuntimeError(.bufferCopyFailed,
-                               generation: snapshot.generation,
-                               reporter: context.reporter)
-            return
-        }
-        switch context.backlog.tryEnqueue(owned) {
-        case .enqueued, .closed:
-            return
-        case .full:
-            reportRuntimeError(.processingBacklog,
-                               generation: snapshot.generation,
-                               reporter: context.reporter)
-        }
-    }
-
-    private func startProcessingWorker(_ context: RunContext) {
+    private func startProcessingWorker(_ context: AudioCaptureRun) {
         let backlog = context.backlog
         processingWorkerStarted = true
         processingQueue.async { [weak self] in
@@ -940,7 +961,7 @@ final class AudioCapture: AudioCapturing, @unchecked Sendable {
         }
     }
 
-    private func stopProcessingWorker(_ context: RunContext) async {
+    private func stopProcessingWorker(_ context: AudioCaptureRun) async {
         let backlog = context.backlog
         backlog.finish()
         afterBacklogFinish()
@@ -950,31 +971,23 @@ final class AudioCapture: AudioCapturing, @unchecked Sendable {
             processingQueue.async { continuation.resume() }
         }
         processingWorkerStarted = false
-        if currentRunContext === context {
-            processingBacklog = nil
-        }
     }
 
     /// `start` ist synchron; sein Fehlerpfad muss den bereits vor Initialize/Start
     /// gestarteten Worker daher synchron beenden. Dieser Pfad ist bounded auf die
     /// feste Queue und wird nur ausgefuehrt, wenn Hardware-Setup fehlschlaegt.
-    private func stopProcessingWorkerAfterStartFailure(_ context: RunContext) {
+    private func stopProcessingWorkerAfterStartFailure(_ context: AudioCaptureRun) {
         context.backlog.finish()
         processingQueue.sync {}
         processingWorkerStarted = false
-        if currentRunContext === context {
-            processingBacklog = nil
-        }
     }
 
     nonisolated private func process(_ buffer: AVAudioPCMBuffer,
-                                     context: RunContext) {
+                                     context: AudioCaptureRun) {
         beforeProcessing()
         guard !context.reporter.hasReported else { return }
         if let failure = processingFailure(buffer) {
-            reportRuntimeError(failure,
-                               generation: context.generation,
-                               reporter: context.reporter)
+            context.reportRuntimeError(failure)
             return
         }
 
@@ -990,9 +1003,9 @@ final class AudioCapture: AudioCapturing, @unchecked Sendable {
             let capacity = AVAudioFrameCount((Double(buffer.frameLength) * ratio).rounded(.up)) + 64
             guard let converted = AVAudioPCMBuffer(pcmFormat: outputFormat,
                                                    frameCapacity: capacity) else {
-                reportRuntimeError(.conversionFailed("Zielpuffer konnte nicht angelegt werden."),
-                                   generation: context.generation,
-                                   reporter: context.reporter)
+                context.reportRuntimeError(.conversionFailed(
+                    "Zielpuffer konnte nicht angelegt werden."
+                ))
                 return
             }
             nonisolated(unsafe) let input = buffer
@@ -1008,9 +1021,7 @@ final class AudioCapture: AudioCapturing, @unchecked Sendable {
             }
             guard error == nil, status != .error, converted.frameLength > 0 else {
                 let details = error?.localizedDescription ?? "AVAudioConverter lieferte keine Audiodaten."
-                reportRuntimeError(.conversionFailed(details),
-                                   generation: context.generation,
-                                   reporter: context.reporter)
+                context.reportRuntimeError(.conversionFailed(details))
                 return
             }
             processed = converted
@@ -1025,9 +1036,7 @@ final class AudioCapture: AudioCapturing, @unchecked Sendable {
             do {
                 try file.write(from: processed)
             } catch {
-                reportRuntimeError(.wavWriteFailed(error.localizedDescription),
-                                   generation: context.generation,
-                                   reporter: context.reporter)
+                context.reportRuntimeError(.wavWriteFailed(error.localizedDescription))
                 return
             }
         }
@@ -1203,7 +1212,7 @@ final class AudioCapture: AudioCapturing, @unchecked Sendable {
 
     /// Genau ein Runtimefehler pro Start. Selbst aus dem Render-Callback entsteht
     /// hoechstens eine Dispatch-Closure; der Fehler-Backlog kann daher nicht wachsen.
-    private final class RuntimeErrorReporter: @unchecked Sendable {
+    fileprivate final class RuntimeErrorReporter: @unchecked Sendable {
         private let reported = Atomic<Bool>(false)
         private let deliveryQueue = DispatchQueue(label: "app.stasi.audio.runtime-error")
         private nonisolated(unsafe) var callback: (@Sendable (AudioCaptureRuntimeError) -> Void)?

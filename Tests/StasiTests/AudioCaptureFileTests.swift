@@ -41,6 +41,25 @@ final class AudioCaptureFileTests: XCTestCase {
         }
     }
 
+    private final class LockedInt: @unchecked Sendable {
+        private let lock = NSLock()
+        private var storage = 0
+
+        @discardableResult
+        func increment() -> Int {
+            lock.lock()
+            defer { lock.unlock() }
+            storage += 1
+            return storage
+        }
+
+        var value: Int {
+            lock.lock()
+            defer { lock.unlock() }
+            return storage
+        }
+    }
+
     private final class ErrorSpy: @unchecked Sendable {
         private let lock = NSLock()
         private var storage: [AudioCaptureRuntimeError] = []
@@ -827,43 +846,109 @@ final class AudioCaptureFileTests: XCTestCase {
         XCTAssertEqual(file.length, 16)
     }
 
-    func testOldRenderCallbackCannotCrossStopRestartGeneration() async throws {
+    func testConfiguredSinkRemainsBoundToItsOriginalRunAfterRestart() async throws {
         let outputFormat = format()
-        let firstURL = makeDirectory().appendingPathComponent("generation-first.wav")
-        let secondURL = makeDirectory().appendingPathComponent("generation-second.wav")
+        let firstURL = makeDirectory().appendingPathComponent("sink-first.wav")
+        let secondURL = makeDirectory().appendingPathComponent("sink-second.wav")
+        let sinkBox = SinkBox()
+        let delivered = expectation(description: "Nur Sink des zweiten Runs liefert")
+        let errors = ErrorSpy()
+        let capture = AudioCapture(audioUnitHooks: AudioCapture.AudioUnitHooks(
+            configureInput: { _, _, sink in
+                sinkBox.store(sink)
+                return outputFormat
+            },
+            initialize: {}, start: {}, stop: {}, uninitialize: {}, dispose: {}
+        ))
+
+        try capture.start(
+            outputFormat: outputFormat,
+            recordTo: firstURL,
+            onRuntimeError: { errors.record($0) }
+        ) { _ in XCTFail("Erster Run darf nach Stop nicht liefern") }
+        let oldSink = try XCTUnwrap(sinkBox.load())
+        _ = await capture.stop()
+
+        try capture.start(
+            outputFormat: outputFormat,
+            recordTo: secondURL,
+            onRuntimeError: { errors.record($0) }
+        ) { _ in delivered.fulfill() }
+        let currentSink = try XCTUnwrap(sinkBox.load())
+        let buffer = try XCTUnwrap(AVAudioPCMBuffer(
+            pcmFormat: outputFormat,
+            frameCapacity: 16
+        ))
+        buffer.frameLength = 16
+
+        oldSink(buffer)
+        currentSink(buffer)
+        await fulfillment(of: [delivered], timeout: 1)
+        _ = await capture.stop()
+
+        let firstFile = try AVAudioFile(forReading: firstURL)
+        let secondFile = try AVAudioFile(forReading: secondURL)
+        XCTAssertEqual(firstFile.length, 0)
+        XCTAssertEqual(secondFile.length, 16)
+        XCTAssertTrue(errors.values.isEmpty)
+    }
+
+    func testProductionRenderPathKeepsPausedCallbackOnOriginalRunAcrossRestart() async throws {
+        let outputFormat = try XCTUnwrap(AVAudioFormat(
+            commonFormat: .pcmFormatFloat32,
+            sampleRate: 48_000,
+            channels: 1,
+            interleaved: false
+        ))
+        let firstURL = makeDirectory().appendingPathComponent("render-first.wav")
+        let secondURL = makeDirectory().appendingPathComponent("render-second.wav")
         let callbackPaused = DispatchSemaphore(value: 0)
         let resumeOldCallback = DispatchSemaphore(value: 0)
         let oldCallbackFinished = DispatchSemaphore(value: 0)
-        let didPause = LockedFlag()
-        let secondDelivered = expectation(description: "Nur Callback aus zweiter Generation")
+        let invocation = LockedInt()
+        let firstRunUninitialized = LockedFlag()
+        let firstRunDisposed = LockedFlag()
+        let lifecycleInvocation = LockedInt()
+        let secondDelivered = expectation(description: "Nur Callback des zweiten Runs liefert")
         let errors = ErrorSpy()
         let capture = AudioCapture(
-            audioUnitHooks: hooks(format: outputFormat),
-            afterAdmissionSnapshot: {
-                guard !didPause.get() else { return }
-                didPause.set(true)
-                callbackPaused.signal()
-                resumeOldCallback.wait()
+            audioUnitHooks: AudioCapture.AudioUnitHooks(
+                configureInput: { _, _, _ in outputFormat },
+                initialize: {}, start: {}, stop: {},
+                uninitialize: {
+                    if lifecycleInvocation.increment() == 1 {
+                        firstRunUninitialized.set(true)
+                    }
+                },
+                dispose: {
+                    if lifecycleInvocation.value == 1 {
+                        firstRunDisposed.set(true)
+                    }
+                }
+            ),
+            renderOperation: { _, _, _, frameCount, buffer in
+                buffer.frameLength = AVAudioFrameCount(frameCount)
+                if invocation.increment() == 1 {
+                    callbackPaused.signal()
+                    resumeOldCallback.wait()
+                }
+                return noErr
             }
         )
         try capture.start(
             outputFormat: outputFormat,
             recordTo: firstURL,
             onRuntimeError: { errors.record($0) }
-        ) { _ in XCTFail("Erste Generation darf nach Stop nicht liefern") }
-        let buffer = try XCTUnwrap(AVAudioPCMBuffer(
-            pcmFormat: outputFormat,
-            frameCapacity: 16
-        ))
-        buffer.frameLength = 16
-        nonisolated(unsafe) let oldBuffer = buffer
+        ) { _ in XCTFail("Erster Run darf nach Stop nicht liefern") }
 
         DispatchQueue.global(qos: .userInitiated).async {
-            capture.renderInputForTesting(oldBuffer)
+            XCTAssertEqual(capture.renderCurrentInputForTesting(frameCount: 16), noErr)
             oldCallbackFinished.signal()
         }
         XCTAssertEqual(callbackPaused.wait(timeout: .now() + 1), .success)
         _ = await capture.stop()
+        XCTAssertFalse(firstRunUninitialized.get())
+        XCTAssertFalse(firstRunDisposed.get())
 
         try capture.start(
             outputFormat: outputFormat,
@@ -872,8 +957,10 @@ final class AudioCaptureFileTests: XCTestCase {
         ) { _ in secondDelivered.fulfill() }
         resumeOldCallback.signal()
         XCTAssertEqual(oldCallbackFinished.wait(timeout: .now() + 1), .success)
+        XCTAssertTrue(firstRunUninitialized.get())
+        XCTAssertTrue(firstRunDisposed.get())
 
-        capture.renderInputForTesting(buffer)
+        XCTAssertEqual(capture.renderCurrentInputForTesting(frameCount: 16), noErr)
         await fulfillment(of: [secondDelivered], timeout: 1)
         _ = await capture.stop()
 
@@ -884,21 +971,29 @@ final class AudioCaptureFileTests: XCTestCase {
         XCTAssertTrue(errors.values.isEmpty)
     }
 
-    func testOldRenderFailureCannotFailRestartedGeneration() async throws {
-        let outputFormat = format()
+    func testProductionRenderFailureFromOldRunCannotPoisonRestartReporter() async throws {
+        let outputFormat = try XCTUnwrap(AVAudioFormat(
+            commonFormat: .pcmFormatFloat32,
+            sampleRate: 48_000,
+            channels: 1,
+            interleaved: false
+        ))
         let callbackPaused = DispatchSemaphore(value: 0)
         let resumeOldCallback = DispatchSemaphore(value: 0)
         let oldCallbackFinished = DispatchSemaphore(value: 0)
-        let didPause = LockedFlag()
+        let invocation = LockedInt()
         let errors = ErrorSpy()
-        let delivered = expectation(description: "Neue Generation bleibt aktiv")
+        let delivered = expectation(description: "Neuer Run bleibt aktiv")
         let capture = AudioCapture(
             audioUnitHooks: hooks(format: outputFormat),
-            afterAdmissionSnapshot: {
-                guard !didPause.get() else { return }
-                didPause.set(true)
-                callbackPaused.signal()
-                resumeOldCallback.wait()
+            renderOperation: { _, _, _, frameCount, buffer in
+                buffer.frameLength = AVAudioFrameCount(frameCount)
+                if invocation.increment() == 1 {
+                    callbackPaused.signal()
+                    resumeOldCallback.wait()
+                    return -50
+                }
+                return noErr
             }
         )
         try capture.start(
@@ -908,7 +1003,7 @@ final class AudioCaptureFileTests: XCTestCase {
         ) { _ in }
 
         DispatchQueue.global(qos: .userInitiated).async {
-            capture.renderFailureForTesting(.renderFailed(-50))
+            XCTAssertEqual(capture.renderCurrentInputForTesting(frameCount: 16), -50)
             oldCallbackFinished.signal()
         }
         XCTAssertEqual(callbackPaused.wait(timeout: .now() + 1), .success)
@@ -922,16 +1017,27 @@ final class AudioCaptureFileTests: XCTestCase {
         resumeOldCallback.signal()
         XCTAssertEqual(oldCallbackFinished.wait(timeout: .now() + 1), .success)
 
-        let buffer = try XCTUnwrap(AVAudioPCMBuffer(
-            pcmFormat: outputFormat,
-            frameCapacity: 16
-        ))
-        buffer.frameLength = 16
-        capture.renderInputForTesting(buffer)
+        XCTAssertEqual(capture.renderCurrentInputForTesting(frameCount: 16), noErr)
         await fulfillment(of: [delivered], timeout: 1)
         _ = await capture.stop()
 
         XCTAssertTrue(errors.values.isEmpty)
+    }
+
+    func testRepeatedRestartReleasesEveryCompletedRun() async throws {
+        let outputFormat = format()
+        let deinitCount = LockedInt()
+        let capture = AudioCapture(
+            audioUnitHooks: hooks(format: outputFormat),
+            onRunDeinit: { deinitCount.increment() }
+        )
+
+        for _ in 0..<64 {
+            try capture.start(outputFormat: outputFormat, recordTo: nil) { _ in }
+            _ = await capture.stop()
+        }
+
+        XCTAssertEqual(deinitCount.value, 64)
     }
 
     func testInputCallbackDeliversBufferFromBackgroundThread() async throws {
