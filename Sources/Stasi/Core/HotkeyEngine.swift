@@ -36,6 +36,21 @@ struct HotkeyReenablePolicy {
     }
 }
 
+// MARK: - Physischer Modifier-Zustand
+
+struct PhysicalModifierState {
+    private(set) var pressedKeyCodes: Set<UInt64> = []
+
+    mutating func processFlagsChanged(keyCode: UInt64, familyFlagIsSet: Bool) -> Bool {
+        if pressedKeyCodes.remove(keyCode) != nil {
+            return false
+        }
+        guard familyFlagIsSet else { return false }
+        pressedKeyCodes.insert(keyCode)
+        return true
+    }
+}
+
 // MARK: - HotkeyEngine
 // Globaler Push-to-Talk-Hotkey via CGEventTap (listen-only).
 // Standard: Rechte Command-Taste HALTEN = aufnehmen, loslassen = stoppen.
@@ -60,6 +75,7 @@ final class HotkeyEngine: @unchecked Sendable {
     private(set) var isDown = false
     private(set) var isOperational = false
     private var tapWasDisabled = false
+    private var pttModifierState = PhysicalModifierState()
     private var shortcut: ShortcutDetector
     private var reenablePolicy: HotkeyReenablePolicy
 
@@ -164,6 +180,7 @@ final class HotkeyEngine: @unchecked Sendable {
         tap = nil
         runLoopSource = nil
         isDown = false
+        pttModifierState = PhysicalModifierState()
         isOperational = false
     }
 
@@ -180,12 +197,18 @@ final class HotkeyEngine: @unchecked Sendable {
         // PTT
         switch type {
         case .flagsChanged where matchesKey && isModifier:
-            // Modifier-Taste (z. B. rechte Command): Down/Up aus Flags ableiten.
+            // Das Familienflag bleibt gesetzt, solange die jeweils andere Seite
+            // gehalten wird. Der physische KeyCode entscheidet daher über Up/Down.
+            let modifierFlag = Self.modifierFlag(for: keyCodeU)!
+            var down = pttModifierState.processFlagsChanged(
+                keyCode: keyCodeU,
+                familyFlagIsSet: event.flags.contains(modifierFlag)
+            )
             // Ist bei Command gleichzeitig Control gedrückt, ist es ein Chord,
             // kein Diktat-Start.
-            var down = event.flags.contains(Self.modifierFlag(for: keyCodeU)!)
-            if Self.modifierFlag(for: keyCodeU) == .maskCommand,
-               event.flags.contains(.maskControl) { down = false }
+            if modifierFlag == .maskCommand, event.flags.contains(.maskControl) {
+                down = false
+            }
             transition(to: down)
         case .keyDown where matchesKey && !isModifier:
             // Normale Taste: Down, wenn geforderte Modifier gehalten werden.
@@ -259,7 +282,7 @@ struct ShortcutDetector {
     var handsFreeKeyCode: UInt64
     var doubleTapWindow: TimeInterval = 0.35
 
-    private var modifierWasDown = false
+    private var physicalModifierState = PhysicalModifierState()
     private var lastModifierDownAt: Date?
 
     init(chords: [HotkeyEngine.Combo] = [], handsFreeEnabled: Bool = false,
@@ -284,8 +307,11 @@ struct ShortcutDetector {
 
         if handsFreeEnabled, kind == .flagsChanged, keyCode == handsFreeKeyCode,
            let modifierMask = Self.modifierMask(for: handsFreeKeyCode) {
-            let down = (flags & modifierMask) != 0
-            if down && !modifierWasDown {
+            let down = physicalModifierState.processFlagsChanged(
+                keyCode: keyCode,
+                familyFlagIsSet: (flags & modifierMask) != 0
+            )
+            if down {
                 if let last = lastModifierDownAt,
                    now.timeIntervalSince(last) <= doubleTapWindow {
                     events.append(.handsFreeTap)
@@ -294,7 +320,6 @@ struct ShortcutDetector {
                     lastModifierDownAt = now
                 }
             }
-            modifierWasDown = down
         }
 
         return events

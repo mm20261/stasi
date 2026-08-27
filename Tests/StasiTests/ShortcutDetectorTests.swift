@@ -131,6 +131,24 @@ final class ShortcutDetectorTests: XCTestCase {
         XCTAssertEqual(events, [.handsFreeTap])
     }
 
+    func testConfiguredRightCommandDoubleTapSurvivesLeftCommandRemainingPressed() {
+        var d = ShortcutDetector(handsFreeKeyCode: 54)
+        d.handsFreeEnabled = true
+        let t0 = Date(timeIntervalSince1970: 0)
+
+        _ = d.process(kind: .flagsChanged, keyCode: 54,
+                      flags: CGEventFlags.maskCommand.rawValue, now: t0)
+        _ = d.process(kind: .flagsChanged, keyCode: 55,
+                      flags: CGEventFlags.maskCommand.rawValue, now: t0.addingTimeInterval(0.05))
+        _ = d.process(kind: .flagsChanged, keyCode: 54,
+                      flags: CGEventFlags.maskCommand.rawValue, now: t0.addingTimeInterval(0.1))
+        let events = d.process(kind: .flagsChanged, keyCode: 54,
+                               flags: CGEventFlags.maskCommand.rawValue,
+                               now: t0.addingTimeInterval(0.2))
+
+        XCTAssertEqual(events, [.handsFreeTap])
+    }
+
     func testConfiguredOptionDoubleTapOutsideWindowDoesNotFire() {
         var d = ShortcutDetector(handsFreeKeyCode: 58)
         d.handsFreeEnabled = true
