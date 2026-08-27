@@ -19,6 +19,7 @@ final class DictationSession {
     let audioURL: URL?
     let speech: any SpeechEngining
     let audio: any AudioCapturing
+    let health = DictationSessionHealth()
 
     var audioContinuation: AsyncStream<AudioChunk>.Continuation?
     var feedTask: Task<Void, Never>?

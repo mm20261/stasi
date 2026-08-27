@@ -1,3 +1,4 @@
+import AppKit
 import AVFoundation
 import XCTest
 @testable import Stasi
@@ -39,6 +40,8 @@ final class DictationSessionTests: XCTestCase {
         private(set) var stopCount = 0
         var startError: Error?
         var stoppedURL: URL?
+        private(set) var startedURL: URL?
+        private var onBuffer: (@Sendable (AudioChunk) -> Void)?
         var onStop: (() -> Void)?
 
         func ingestNativeBuffer(_ buffer: AVAudioPCMBuffer) {
@@ -51,7 +54,13 @@ final class DictationSessionTests: XCTestCase {
                    onBuffer: @escaping @Sendable (AudioChunk) -> Void) throws {
             startCount += 1
             if let startError { throw startError }
+            startedURL = url
+            self.onBuffer = onBuffer
             isRunning = true
+        }
+
+        func emit(_ chunk: AudioChunk) {
+            onBuffer?(chunk)
         }
 
         func stop() -> URL? {
@@ -78,6 +87,7 @@ final class DictationSessionTests: XCTestCase {
     private actor FakeSpeechEngine: SpeechEngining {
         struct Metrics: Sendable {
             let startCount: Int
+            let feedCount: Int
             let finishCount: Int
             let streamCancellationCount: Int
             let finalizeStillRunning: Bool
@@ -94,6 +104,8 @@ final class DictationSessionTests: XCTestCase {
         var timeoutNanoseconds: UInt64?
         var finishEndsResultStream = true
         private(set) var finalizeStillRunning = false
+        private var shouldBlockNextFeed = false
+        private var blockedFeedContinuation: CheckedContinuation<Void, Never>?
 
         init(text: String = "", startError: Error? = nil) {
             self.text = text
@@ -109,8 +121,18 @@ final class DictationSessionTests: XCTestCase {
             finishEndsResultStream = value
         }
 
+        func blockNextFeed() {
+            shouldBlockNextFeed = true
+        }
+
+        func unblockFeed() {
+            blockedFeedContinuation?.resume()
+            blockedFeedContinuation = nil
+        }
+
         func metrics() -> Metrics {
             Metrics(startCount: startCount,
+                    feedCount: feedCount,
                     finishCount: finishCount,
                     streamCancellationCount: streamCancellationCount,
                     finalizeStillRunning: finalizeStillRunning)
@@ -138,7 +160,12 @@ final class DictationSessionTests: XCTestCase {
                           interleaved: false)
         }
 
-        func feed(_ chunk: AudioChunk) async { feedCount += 1 }
+        func feed(_ chunk: AudioChunk) async {
+            feedCount += 1
+            guard shouldBlockNextFeed else { return }
+            shouldBlockNextFeed = false
+            await withCheckedContinuation { blockedFeedContinuation = $0 }
+        }
 
         func finish() async {
             finishCount += 1
@@ -221,6 +248,18 @@ final class DictationSessionTests: XCTestCase {
             calls.append((word, language))
             return false
         }
+    }
+
+    private func makeAudioChunk() throws -> AudioChunk {
+        let format = try XCTUnwrap(AVAudioFormat(
+            commonFormat: .pcmFormatInt16,
+            sampleRate: 16_000,
+            channels: 1,
+            interleaved: false
+        ))
+        let buffer = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 1))
+        buffer.frameLength = 1
+        return AudioChunk(buffer: buffer)
     }
 
     private func makeDirectory(_ name: String = #function) -> URL {
@@ -485,6 +524,59 @@ final class DictationSessionTests: XCTestCase {
         XCTAssertEqual(metrics.startCount, 0)
         XCTAssertTrue(toasts.isEmpty)
         XCTAssertTrue(app.history.records.isEmpty)
+    }
+
+    func testSpeechBufferOverflowFailsSessionWithoutHistoryClipboardOrInjection() async throws {
+        let directory = makeDirectory()
+        let audio = FakeAudioCapture()
+        let speech = FakeSpeechEngine(text: "Darf nicht gespeichert werden")
+        await speech.blockNextFeed()
+        let history = FakeHistoryStore()
+        let textInjector = TextInjectorSpy()
+        let app = makeApp(
+            audio: audio,
+            engines: [speech],
+            history: history,
+            isTextFieldEditable: { true },
+            injectText: { textInjector.inject($0) },
+            directory: directory
+        )
+        var toasts: [String] = []
+        app.onToast = { message, _ in toasts.append(message) }
+        let pasteboard = NSPasteboard.general
+        let previousClipboard = pasteboard.string(forType: .string)
+        defer {
+            pasteboard.clearContents()
+            if let previousClipboard {
+                pasteboard.setString(previousClipboard, forType: .string)
+            }
+        }
+        pasteboard.clearContents()
+        pasteboard.setString("vorheriger Inhalt", forType: .string)
+
+        app.startDictation()
+        await waitUntil { audio.isRunning && app.partialText == "Darf nicht gespeichert werden" }
+        let finishedWAV = try XCTUnwrap(audio.startedURL)
+        try Data("finished audio".utf8).write(to: finishedWAV)
+        audio.stoppedURL = finishedWAV
+        let chunk = try makeAudioChunk()
+        audio.emit(chunk)
+        await waitUntil { await speech.metrics().feedCount == 1 }
+        for _ in 0..<65 {
+            audio.emit(chunk)
+        }
+
+        app.stopDictation(commit: true)
+        await speech.unblockFeed()
+        await waitUntil { app.phase == .idle }
+
+        XCTAssertTrue(history.records.isEmpty)
+        XCTAssertEqual(history.insertCount, 0)
+        XCTAssertEqual(textInjector.callCount, 0)
+        XCTAssertEqual(pasteboard.string(forType: .string), "vorheriger Inhalt")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: finishedWAV.path))
+        XCTAssertTrue(toasts.contains { $0.localizedCaseInsensitiveContains("unvollständig") })
+        XCTAssertNil(app.currentSession)
     }
 
     func testHistoryInsertFailurePreservesFinishedAudioAndSkipsInjection() async throws {

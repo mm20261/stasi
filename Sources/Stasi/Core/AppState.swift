@@ -498,7 +498,7 @@ final class AppState {
                 // Audio muss die Engine in Aufnahme-Reihenfolge erreichen:
                 // ein Stream + EIN Drain-Task (kein Task pro Puffer!).
                 let (audioStream, audioContinuation) = AsyncStream<AudioChunk>.makeStream(
-                    bufferingPolicy: .bufferingNewest(64)
+                    bufferingPolicy: .bufferingOldest(64)
                 )
                 session.audioContinuation = audioContinuation
                 let speech = session.speech
@@ -520,10 +520,11 @@ final class AppState {
                     }
                 }
 
+                let health = session.health
                 try session.audio.start(outputFormat: format,
                                 recordTo: session.audioURL,
                                 preferredMicUID: self.settings.preferredMicUID) { chunk in
-                    audioContinuation.yield(chunk)
+                    health.record(audioContinuation.yield(chunk))
                 }
                 session.state = .recording
                 DebugLog.log("STASI-APP: audio.start fertig – Aufnahme läuft")
@@ -598,6 +599,15 @@ final class AppState {
             session.setupTask = nil
             session.state = .finished
             self.resetLevel()
+
+            if session.health.failure != nil {
+                DebugLog.log("STASI-APP: Speech-Puffer unvollständig – Session wird verworfen")
+                session.preserveAudioFile()
+                await self.teardown(session)
+                self.finishAbortedSession(session)
+                self.onToast?("Die Aufnahme ist unvollständig. Die Audiodatei bleibt erhalten.", false)
+                return
+            }
 
             let raw = self.partialText
             DebugLog.log("STASI-APP: Transkription fertig (\(raw.count) Zeichen)")
