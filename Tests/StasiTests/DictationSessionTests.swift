@@ -258,6 +258,37 @@ final class DictationSessionTests: XCTestCase {
         )
     }
 
+    func testUnreadableHistoryIsReportedWhenToastChannelIsInstalled() throws {
+        let directory = makeDirectory()
+        let historyDirectory = directory.appendingPathComponent("history", isDirectory: true)
+        try FileManager.default.createDirectory(at: historyDirectory, withIntermediateDirectories: true)
+        try Data("{not-json".utf8).write(
+            to: historyDirectory.appendingPathComponent("history.json")
+        )
+        let history = HistoryStore(directory: historyDirectory)
+        let app = makeApp(
+            audio: FakeAudioCapture(),
+            engines: [FakeSpeechEngine()],
+            history: history,
+            directory: directory
+        )
+        var toasts: [(String, Bool)] = []
+
+        app.settings.retention = .oneDay
+        app.onToast = { toasts.append(($0, $1)) }
+        app.applyRetention()
+
+        XCTAssertEqual(toasts.count, 2)
+        XCTAssertEqual(
+            toasts.map(\.0),
+            Array(
+                repeating: "Verlauf konnte nicht geladen werden. Die vorhandene Datei ist beschädigt und bleibt schreibgeschützt.",
+                count: 2
+            )
+        )
+        XCTAssertEqual(toasts.map(\.1), [false, false])
+    }
+
     func testModelReadinessIsTrackedPerLocale() async {
         let spy = ModelInstallerSpy()
         let app = makeApp(

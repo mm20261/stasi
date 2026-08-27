@@ -72,9 +72,16 @@ final class AppState {
     var discardRequested = false
     /// Wird von der Pill gesetzt: Nutzer will sofort beenden + einfügen (✓)
     var commitRequested = false
-    /// Toast-Rückmeldung (von AppDelegate an die Pill gebunden)
-    var onToast: ((String, Bool) -> Void)?
+    /// Toast-Rückmeldung (von AppDelegate an die Pill gebunden).
+    /// Ein beim Start erkannter, unlesbarer Verlauf wird beim Installieren
+    /// des Kanals unmittelbar und genau einmal sichtbar gemacht.
+    var onToast: ((String, Bool) -> Void)? {
+        didSet { presentUnreadableHistoryIfNeeded() }
+    }
 
+    private static let unreadableHistoryMessage =
+        "Verlauf konnte nicht geladen werden. Die vorhandene Datei ist beschädigt und bleibt schreibgeschützt."
+    private var didPresentUnreadableHistory = false
     private var recordStart: Date?
     private let levelTraceEnabled: Bool
     private let consumeTimeoutNanoseconds: UInt64
@@ -194,6 +201,14 @@ final class AppState {
 
         // Audio→Engine-Verdrahtung passiert pro Diktat in startDictation
         // (Stream + EIN Drain-Task, garantiert Puffer-Reihenfolge).
+    }
+
+    private func presentUnreadableHistoryIfNeeded() {
+        guard !didPresentUnreadableHistory,
+              case .unreadable = history.state,
+              let onToast else { return }
+        didPresentUnreadableHistory = true
+        onToast(Self.unreadableHistoryMessage, false)
     }
 
     // MARK: Hotkey
@@ -852,7 +867,13 @@ final class AppState {
             }
         } catch {
             DebugLog.log("STASI-APP: Retention fehlgeschlagen: \(error.localizedDescription)")
-            onToast?("Aufbewahrungsdauer konnte nicht angewendet werden.", false)
+            let message: String
+            if case .unreadable = history.state {
+                message = Self.unreadableHistoryMessage
+            } else {
+                message = "Aufbewahrungsdauer konnte nicht angewendet werden."
+            }
+            onToast?(message, false)
         }
     }
 
