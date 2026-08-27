@@ -521,9 +521,17 @@ final class AppState {
                 }
 
                 let health = session.health
-                try session.audio.start(outputFormat: format,
-                                recordTo: session.audioURL,
-                                preferredMicUID: self.settings.preferredMicUID) { chunk in
+                try session.audio.start(
+                    outputFormat: format,
+                    recordTo: session.audioURL,
+                    preferredMicUID: self.settings.preferredMicUID,
+                    onRuntimeError: { [weak self, weak session] error in
+                        Task { @MainActor in
+                            guard let self, let session else { return }
+                            await self.handleAudioRuntimeError(error, session: session)
+                        }
+                    }
+                ) { chunk in
                     health.record(audioContinuation.yield(chunk))
                 }
                 session.state = .recording
@@ -615,6 +623,22 @@ final class AppState {
                                            duration: duration,
                                            audioURL: recordedURL ?? session.audioURL,
                                            session: session)
+        }
+    }
+
+    private func handleAudioRuntimeError(_ error: AudioCaptureRuntimeError,
+                                         session: DictationSession) async {
+        guard session === currentSession, session.beginRuntimeFailure() else { return }
+        DebugLog.log("STASI-AUDIO: Runtimefehler – \(String(describing: error))")
+        session.state = .stopping
+        phase = .transcribing
+        await teardown(session)
+        let recovered = session.recoveredAudioURL != nil
+        finishAbortedSession(session)
+        if recovered {
+            onToast?("Die Aufnahme ist unvollständig. Die Audiodatei bleibt erhalten.", false)
+        } else {
+            onToast?("Die Audioaufnahme ist fehlgeschlagen und wurde verworfen.", false)
         }
     }
 

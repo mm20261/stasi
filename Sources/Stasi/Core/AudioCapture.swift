@@ -2,6 +2,7 @@ import AudioToolbox
 import AVFoundation
 import CoreAudio
 import Foundation
+import Synchronization
 
 // MARK: - AudioChunk
 // Ein Puffer auf dem Weg vom Audio-Thread zur Speech-Engine. Die AUHAL rendert
@@ -17,6 +18,14 @@ struct AudioChunk: @unchecked Sendable {
 typealias AudioCaptureFactory = @MainActor () -> any AudioCapturing
 typealias AudioConverterFactory =
     @Sendable (AVAudioFormat, AVAudioFormat) -> AVAudioConverter?
+
+enum AudioCaptureRuntimeError: Equatable, Sendable {
+    case renderFailed(OSStatus)
+    case bufferCopyFailed
+    case conversionFailed(String)
+    case wavWriteFailed(String)
+    case processingBacklog
+}
 
 enum AudioCaptureError: LocalizedError {
     case alreadyRunning
@@ -56,6 +65,7 @@ protocol AudioCapturing: AnyObject, Sendable {
     func start(outputFormat: AVAudioFormat,
                recordTo url: URL?,
                preferredMicUID: String?,
+               onRuntimeError: @escaping @Sendable (AudioCaptureRuntimeError) -> Void,
                onBuffer: @escaping @Sendable (AudioChunk) -> Void) throws
 
     @discardableResult
@@ -105,6 +115,7 @@ final class AudioCapture: AudioCapturing, @unchecked Sendable {
     private static let inputElement: AudioUnitElement = 1
     private static let outputElement: AudioUnitElement = 0
     private static let requestedMaximumFrames: UInt32 = 4_096
+    static let defaultBacklogCapacity = 64
 
     /// Pro Aufnahme neu erzeugt und nach stop() vollstaendig disposed. Output
     /// bleibt ueber den gesamten Lebenszyklus explizit deaktiviert.
@@ -118,7 +129,14 @@ final class AudioCapture: AudioCapturing, @unchecked Sendable {
     private nonisolated(unsafe) var converter: AVAudioConverter?
     private nonisolated(unsafe) var outputFormat: AVAudioFormat?
     private nonisolated(unsafe) var onBuffer: (@Sendable (AudioChunk) -> Void)?
-    private let renderDiagnostics = RenderDiagnostics()
+    private let backlogCapacity: Int
+    private let beforeProcessing: @Sendable () -> Void
+    private let processingFailure: @Sendable (AVAudioPCMBuffer) -> AudioCaptureRuntimeError?
+    private let processingQueue = DispatchQueue(label: "app.stasi.audio.processing",
+                                                qos: .userInitiated)
+    private nonisolated(unsafe) var processingBacklog: ProcessingBacklog?
+    private nonisolated(unsafe) var processingGroup: DispatchGroup?
+    private let runtimeErrorReporter = RuntimeErrorReporter()
     private let stateLock = NSLock()
     private var isRunningStorage = false
     var isRunning: Bool {
@@ -127,17 +145,20 @@ final class AudioCapture: AudioCapturing, @unchecked Sendable {
         return isRunningStorage
     }
 
-    // WAV-Mitschrieb: ausschliesslich eigene Puffer, auf serialer Queue.
-    private let writeQueue = DispatchQueue(label: "app.stasi.audio.write")
-    // Zugriff ausschliesslich synchron/asynchron auf `writeQueue`.
+    // WAV-Mitschrieb: ausschliesslich eigene Puffer auf der seriellen
+    // Verarbeitungsqueue. Der Lock schuetzt nur Lebenszyklus/Test-Lesezugriffe.
+    private let outputFileLock = NSLock()
     private nonisolated(unsafe) var outputFile: AVAudioFile?
     private var recordURL: URL?
 
-    /// Nur fuer Verifikation des Dateilebenszyklus; liest ebenfalls auf der Queue.
-    var hasOpenOutputFile: Bool { writeQueue.sync { outputFile != nil } }
+    var hasOpenOutputFile: Bool {
+        outputFileLock.lock()
+        defer { outputFileLock.unlock() }
+        return outputFile != nil
+    }
     var hasConverter: Bool { converter != nil }
 
-    // VU-Level: Render-Thread schreibt unter Lock, Main-Poll liest.
+    // VU-Level: Verarbeitungsqueue schreibt unter Lock, Main-Poll liest.
     private let lock = NSLock()
     private nonisolated(unsafe) var rawLevel: Double = 0
     var latestLevel: Double {
@@ -149,14 +170,22 @@ final class AudioCapture: AudioCapturing, @unchecked Sendable {
     init(audioUnitHooks: AudioUnitHooks? = nil,
          converterFactory: @escaping AudioConverterFactory = { input, output in
              AVAudioConverter(from: input, to: output)
-         }) {
+         },
+         backlogCapacity: Int = AudioCapture.defaultBacklogCapacity,
+         beforeProcessing: @escaping @Sendable () -> Void = {},
+         processingFailure: @escaping @Sendable (AVAudioPCMBuffer) -> AudioCaptureRuntimeError? = { _ in nil }) {
+        precondition(backlogCapacity > 0)
         self.audioUnitHooks = audioUnitHooks
         self.converterFactory = converterFactory
+        self.backlogCapacity = backlogCapacity
+        self.beforeProcessing = beforeProcessing
+        self.processingFailure = processingFailure
     }
 
     func start(outputFormat: AVAudioFormat,
                recordTo url: URL?,
                preferredMicUID: String? = nil,
+               onRuntimeError: @escaping @Sendable (AudioCaptureRuntimeError) -> Void = { _ in },
                onBuffer: @escaping @Sendable (AudioChunk) -> Void) throws {
         stateLock.lock()
         defer { stateLock.unlock() }
@@ -164,24 +193,25 @@ final class AudioCapture: AudioCapturing, @unchecked Sendable {
         self.onBuffer = onBuffer
         self.outputFormat = outputFormat
         recordURL = url
-        renderDiagnostics.reset()
+        runtimeErrorReporter.reset(callback: onRuntimeError)
 
         do {
             // Synchron VOR der Input-Konfiguration: Der erste Render-Puffer
             // darf bereits in eine vollstaendig geoeffnete WAV-Datei laufen.
             if let url {
-                try writeQueue.sync {
-                    outputFile = try AVAudioFile(
-                        forWriting: url,
-                        settings: outputFormat.settings,
-                        commonFormat: outputFormat.commonFormat,
-                        interleaved: outputFormat.isInterleaved
-                    )
-                }
+                let file = try AVAudioFile(
+                    forWriting: url,
+                    settings: outputFormat.settings,
+                    commonFormat: outputFormat.commonFormat,
+                    interleaved: outputFormat.isInterleaved
+                )
+                outputFileLock.lock()
+                outputFile = file
+                outputFileLock.unlock()
             }
 
             let sink: @Sendable (AVAudioPCMBuffer) -> Void = { [weak self] buffer in
-                self?.handle(buffer)
+                self?.enqueueRenderBuffer(buffer)
             }
             audioUnitPrepared = true
             let native: AVAudioFormat
@@ -203,6 +233,7 @@ final class AudioCapture: AudioCapturing, @unchecked Sendable {
                 }
                 self.converter = converter
             }
+            startProcessingWorker()
             if let audioUnitHooks {
                 try audioUnitHooks.initialize()
             } else {
@@ -220,6 +251,7 @@ final class AudioCapture: AudioCapturing, @unchecked Sendable {
             DebugLog.log("STASI-AUDIO: Input-only AUHAL laeuft – Client \(native.sampleRate) Hz -> Engine \(outputFormat.sampleRate) Hz")
         } catch {
             teardownAudioUnit()
+            stopProcessingWorker()
             closeOutputFile()
             converter = nil
             self.outputFormat = nil
@@ -239,9 +271,13 @@ final class AudioCapture: AudioCapturing, @unchecked Sendable {
         guard isRunningStorage else { return nil }
         teardownAudioUnit()
         isRunningStorage = false
+        // AUHAL ist aus; jetzt die feste Queue vollständig abarbeiten. Erst danach
+        // dürfen Converter, Callback und WAV-Datei verschwinden.
+        stopProcessingWorker()
         converter = nil
         outputFormat = nil
         onBuffer = nil
+        runtimeErrorReporter.clearCallback()
         lock.lock()
         rawLevel = 0
         lock.unlock()
@@ -533,25 +569,14 @@ final class AudioCapture: AudioCapturing, @unchecked Sendable {
     ) -> OSStatus {
         guard let audioUnit, let inputBuffer else {
             let status = kAudio_ParamError
-            renderDiagnostics.logFirstCallback(frameCount: frameCount, status: status)
-            renderDiagnostics.logFailureOnce(
-                .missingResources,
-                status: status,
-                details: "AudioUnit oder Render-Puffer fehlt"
-            )
+            runtimeErrorReporter.report(.renderFailed(status))
             return status
         }
 
         let preparationStatus = Self.prepareRenderBuffer(inputBuffer,
                                                          frameCount: frameCount)
         guard preparationStatus == noErr else {
-            renderDiagnostics.logFirstCallback(frameCount: frameCount,
-                                               status: preparationStatus)
-            renderDiagnostics.logFailureOnce(
-                .invalidBuffer,
-                status: preparationStatus,
-                details: "frames=\(frameCount), capacity=\(inputBuffer.frameCapacity)"
-            )
+            runtimeErrorReporter.report(.bufferCopyFailed)
             return preparationStatus
         }
 
@@ -561,16 +586,11 @@ final class AudioCapture: AudioCapturing, @unchecked Sendable {
                                      Self.inputElement,
                                      frameCount,
                                      inputBuffer.mutableAudioBufferList)
-        renderDiagnostics.logFirstCallback(frameCount: frameCount, status: status)
         guard status == noErr else {
-            renderDiagnostics.logFailureOnce(
-                .audioUnitRender,
-                status: status,
-                details: "frames=\(frameCount)"
-            )
+            runtimeErrorReporter.report(.renderFailed(status))
             return status
         }
-        handle(inputBuffer)
+        enqueueRenderBuffer(inputBuffer)
         return noErr
     }
 
@@ -611,21 +631,71 @@ final class AudioCapture: AudioCapturing, @unchecked Sendable {
         return noErr
     }
 
-    nonisolated private func handle(_ buffer: AVAudioPCMBuffer) {
+    /// Der AUHAL-Puffer wird noch im synchronen Callback-Aufruf tief kopiert.
+    /// Diese verbleibende AVAudioPCMBuffer-Allokation ist bewusst dokumentiert:
+    /// Ein sicherer vorallozierter Pool ist mit variablen Slice-Laengen und den
+    /// AVFoundation-Objektlebenszeiten hier nicht klein genug nachweisbar. Hinter
+    /// der Besitzkopie ist der Backlog strikt auf `backlogCapacity` begrenzt.
+    nonisolated private func enqueueRenderBuffer(_ buffer: AVAudioPCMBuffer) {
+        guard !runtimeErrorReporter.hasReported else { return }
+        guard let owned = Self.copy(buffer) else {
+            runtimeErrorReporter.report(.bufferCopyFailed)
+            return
+        }
+        guard let processingBacklog,
+              processingBacklog.tryEnqueue(owned) else {
+            runtimeErrorReporter.report(.processingBacklog)
+            return
+        }
+    }
+
+    private func startProcessingWorker() {
+        let backlog = ProcessingBacklog(capacity: backlogCapacity)
+        let group = DispatchGroup()
+        processingBacklog = backlog
+        processingGroup = group
+        group.enter()
+        processingQueue.async { [weak self] in
+            defer { group.leave() }
+            while let buffer = backlog.next() {
+                guard let self else { return }
+                self.process(buffer)
+            }
+        }
+    }
+
+    private func stopProcessingWorker() {
+        guard let backlog = processingBacklog,
+              let group = processingGroup else { return }
+        backlog.finish()
+        group.wait()
+        processingBacklog = nil
+        processingGroup = nil
+    }
+
+    nonisolated private func process(_ buffer: AVAudioPCMBuffer) {
+        beforeProcessing()
+        guard !runtimeErrorReporter.hasReported else { return }
+        if let failure = processingFailure(buffer) {
+            runtimeErrorReporter.report(failure)
+            return
+        }
+
         let level = Self.computeLevel(of: buffer)
         lock.lock()
         rawLevel = level
         lock.unlock()
 
         guard let outputFormat else { return }
-
-        let owned: AVAudioPCMBuffer?
+        let processed: AVAudioPCMBuffer
         if let converter {
-            // Ziel-Framezahl skaliert mit dem Sample-Raten-Verhaeltnis; aufrunden.
             let ratio = outputFormat.sampleRate / buffer.format.sampleRate
             let capacity = AVAudioFrameCount((Double(buffer.frameLength) * ratio).rounded(.up)) + 64
             guard let converted = AVAudioPCMBuffer(pcmFormat: outputFormat,
-                                                   frameCapacity: capacity) else { return }
+                                                   frameCapacity: capacity) else {
+                runtimeErrorReporter.report(.conversionFailed("Zielpuffer konnte nicht angelegt werden."))
+                return
+            }
             nonisolated(unsafe) let input = buffer
             let consumed = Latch()
             var error: NSError?
@@ -637,24 +707,34 @@ final class AudioCapture: AudioCapturing, @unchecked Sendable {
                 outStatus.pointee = .haveData
                 return input
             }
-            guard error == nil, status != .error, converted.frameLength > 0 else { return }
-            owned = converted
+            guard error == nil, status != .error, converted.frameLength > 0 else {
+                let details = error?.localizedDescription ?? "AVAudioConverter lieferte keine Audiodaten."
+                runtimeErrorReporter.report(.conversionFailed(details))
+                return
+            }
+            processed = converted
         } else {
-            owned = Self.copy(buffer)
+            processed = buffer
         }
-        guard let owned else { return }
 
-        let chunk = AudioChunk(buffer: owned)
-        writeQueue.async {
-            if let file = self.outputFile {
-                try? file.write(from: chunk.buffer)
+        outputFileLock.lock()
+        let file = outputFile
+        outputFileLock.unlock()
+        if let file {
+            do {
+                try file.write(from: processed)
+            } catch {
+                runtimeErrorReporter.report(.wavWriteFailed(error.localizedDescription))
+                return
             }
         }
-        onBuffer?(chunk)
+        onBuffer?(AudioChunk(buffer: processed))
     }
 
     private func closeOutputFile() {
-        writeQueue.sync { outputFile = nil }
+        outputFileLock.lock()
+        outputFile = nil
+        outputFileLock.unlock()
     }
 
     /// Deep-Copy eines Render-Puffers in eigenen Speicher.
@@ -695,40 +775,88 @@ final class AudioCapture: AudioCapturing, @unchecked Sendable {
         }
     }
 
-    private final class RenderDiagnostics: @unchecked Sendable {
-        enum Failure: Hashable {
-            case missingResources
-            case invalidBuffer
-            case audioUnitRender
-        }
-
+    /// Ringpuffer mit exakt fester Kapazitaet. Der Producer verwendet `try()`
+    /// und wartet daher nie auf den Consumer; Lock-Kollision und voller Ring sind
+    /// beide ein harter Backlogfehler statt einer versteckten Closure-Akkumulation.
+    private final class ProcessingBacklog: @unchecked Sendable {
         private let lock = NSLock()
-        private var loggedFirstCallback = false
-        private var loggedFailures = Set<Failure>()
+        private let available = DispatchSemaphore(value: 0)
+        private var slots: [AVAudioPCMBuffer?]
+        private var readIndex = 0
+        private var writeIndex = 0
+        private var count = 0
+        private var finishing = false
 
-        func reset() {
-            lock.lock()
-            loggedFirstCallback = false
-            loggedFailures.removeAll(keepingCapacity: true)
-            lock.unlock()
+        init(capacity: Int) {
+            slots = Array(repeating: nil, count: capacity)
         }
 
-        func logFirstCallback(frameCount: UInt32, status: OSStatus) {
-            lock.lock()
-            let shouldLog = !loggedFirstCallback
-            loggedFirstCallback = true
+        func tryEnqueue(_ buffer: AVAudioPCMBuffer) -> Bool {
+            guard lock.try() else { return false }
+            guard !finishing, count < slots.count else {
+                lock.unlock()
+                return false
+            }
+            slots[writeIndex] = buffer
+            writeIndex = (writeIndex + 1) % slots.count
+            count += 1
             lock.unlock()
-            guard shouldLog else { return }
-            DebugLog.log("STASI-AUDIO: Erster Input-Callback – frameCount \(frameCount), "
-                         + "AudioUnitRender OSStatus \(status)")
+            available.signal()
+            return true
         }
 
-        func logFailureOnce(_ failure: Failure, status: OSStatus, details: String) {
+        func next() -> AVAudioPCMBuffer? {
+            while true {
+                available.wait()
+                lock.lock()
+                if count > 0 {
+                    let buffer = slots[readIndex]
+                    slots[readIndex] = nil
+                    readIndex = (readIndex + 1) % slots.count
+                    count -= 1
+                    lock.unlock()
+                    return buffer
+                }
+                let shouldFinish = finishing
+                lock.unlock()
+                if shouldFinish { return nil }
+            }
+        }
+
+        func finish() {
             lock.lock()
-            let shouldLog = loggedFailures.insert(failure).inserted
+            finishing = true
             lock.unlock()
-            guard shouldLog else { return }
-            DebugLog.log("STASI-AUDIO: Render-Fehler \(failure) – OSStatus \(status), \(details)")
+            available.signal()
+        }
+    }
+
+    /// Genau ein Runtimefehler pro Start. Selbst aus dem Render-Callback entsteht
+    /// hoechstens eine Dispatch-Closure; der Fehler-Backlog kann daher nicht wachsen.
+    private final class RuntimeErrorReporter: @unchecked Sendable {
+        private let reported = Atomic<Bool>(false)
+        private let deliveryQueue = DispatchQueue(label: "app.stasi.audio.runtime-error")
+        private nonisolated(unsafe) var callback: (@Sendable (AudioCaptureRuntimeError) -> Void)?
+
+        var hasReported: Bool { reported.load(ordering: .acquiring) }
+
+        func reset(callback: @escaping @Sendable (AudioCaptureRuntimeError) -> Void) {
+            self.callback = callback
+            reported.store(false, ordering: .releasing)
+        }
+
+        func report(_ error: AudioCaptureRuntimeError) {
+            guard reported.compareExchange(
+                expected: false,
+                desired: true,
+                ordering: .acquiringAndReleasing
+            ).exchanged else { return }
+            guard let callback else { return }
+            deliveryQueue.async { callback(error) }
+        }
+
+        func clearCallback() {
+            callback = nil
         }
     }
 

@@ -42,6 +42,7 @@ final class DictationSessionTests: XCTestCase {
         var stoppedURL: URL?
         private(set) var startedURL: URL?
         private var onBuffer: (@Sendable (AudioChunk) -> Void)?
+        private var onRuntimeError: (@Sendable (AudioCaptureRuntimeError) -> Void)?
         var onStop: (() -> Void)?
 
         func ingestNativeBuffer(_ buffer: AVAudioPCMBuffer) {
@@ -51,16 +52,22 @@ final class DictationSessionTests: XCTestCase {
         func start(outputFormat: AVAudioFormat,
                    recordTo url: URL?,
                    preferredMicUID: String?,
+                   onRuntimeError: @escaping @Sendable (AudioCaptureRuntimeError) -> Void,
                    onBuffer: @escaping @Sendable (AudioChunk) -> Void) throws {
             startCount += 1
             if let startError { throw startError }
             startedURL = url
+            self.onRuntimeError = onRuntimeError
             self.onBuffer = onBuffer
             isRunning = true
         }
 
         func emit(_ chunk: AudioChunk) {
             onBuffer?(chunk)
+        }
+
+        func fail(_ error: AudioCaptureRuntimeError) {
+            onRuntimeError?(error)
         }
 
         func stop() -> URL? {
@@ -577,6 +584,72 @@ final class DictationSessionTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: finishedWAV.path))
         XCTAssertTrue(toasts.contains { $0.localizedCaseInsensitiveContains("unvollständig") })
         XCTAssertNil(app.currentSession)
+    }
+
+    func testAudioRuntimeErrorFailsSessionWithoutHistoryClipboardOrInjection() async throws {
+        let directory = makeDirectory()
+        let audio = FakeAudioCapture()
+        let speech = FakeSpeechEngine(text: "Darf nicht gespeichert werden")
+        let history = FakeHistoryStore()
+        let textInjector = TextInjectorSpy()
+        let app = makeApp(
+            audio: audio,
+            engines: [speech],
+            history: history,
+            isTextFieldEditable: { true },
+            injectText: { textInjector.inject($0) },
+            directory: directory
+        )
+        var toasts: [String] = []
+        app.onToast = { message, _ in toasts.append(message) }
+        let pasteboard = NSPasteboard.general
+        let previousClipboard = pasteboard.string(forType: .string)
+        defer {
+            pasteboard.clearContents()
+            if let previousClipboard {
+                pasteboard.setString(previousClipboard, forType: .string)
+            }
+        }
+        pasteboard.clearContents()
+        pasteboard.setString("vorheriger Inhalt", forType: .string)
+
+        app.startDictation()
+        await waitUntil { audio.isRunning && app.partialText == "Darf nicht gespeichert werden" }
+        let finishedWAV = try XCTUnwrap(audio.startedURL)
+        try Data("finished audio".utf8).write(to: finishedWAV)
+        audio.stoppedURL = finishedWAV
+
+        audio.fail(.conversionFailed("test"))
+        audio.fail(.processingBacklog)
+        await waitUntil { app.phase == .idle }
+
+        XCTAssertTrue(history.records.isEmpty)
+        XCTAssertEqual(history.insertCount, 0)
+        XCTAssertEqual(textInjector.callCount, 0)
+        XCTAssertEqual(pasteboard.string(forType: .string), "vorheriger Inhalt")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: finishedWAV.path))
+        XCTAssertEqual(audio.stopCount, 1)
+        XCTAssertEqual(toasts.count, 1)
+        XCTAssertTrue(toasts[0].localizedCaseInsensitiveContains("audiodatei"))
+        XCTAssertNil(app.currentSession)
+    }
+
+    func testAudioRuntimeErrorDeletesUnclosedRecording() async throws {
+        let directory = makeDirectory()
+        let audio = FakeAudioCapture()
+        let app = makeApp(audio: audio, engines: [FakeSpeechEngine()], directory: directory)
+
+        app.startDictation()
+        await waitUntil { audio.isRunning }
+        let unfinishedWAV = try XCTUnwrap(audio.startedURL)
+        try Data("unfinished audio".utf8).write(to: unfinishedWAV)
+        audio.stoppedURL = nil
+
+        audio.fail(.wavWriteFailed("test"))
+        await waitUntil { app.phase == .idle }
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: unfinishedWAV.path))
+        XCTAssertTrue(app.history.records.isEmpty)
     }
 
     func testHistoryInsertFailurePreservesFinishedAudioAndSkipsInjection() async throws {

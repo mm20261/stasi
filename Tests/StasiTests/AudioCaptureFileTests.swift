@@ -41,6 +41,40 @@ final class AudioCaptureFileTests: XCTestCase {
         }
     }
 
+    private final class ErrorSpy: @unchecked Sendable {
+        private let lock = NSLock()
+        private var storage: [AudioCaptureRuntimeError] = []
+
+        var values: [AudioCaptureRuntimeError] {
+            lock.lock()
+            defer { lock.unlock() }
+            return storage
+        }
+
+        func record(_ error: AudioCaptureRuntimeError) {
+            lock.lock()
+            storage.append(error)
+            lock.unlock()
+        }
+    }
+
+    private final class FloatSpy: @unchecked Sendable {
+        private let lock = NSLock()
+        private var storage: [Float] = []
+
+        var values: [Float] {
+            lock.lock()
+            defer { lock.unlock() }
+            return storage
+        }
+
+        func record(_ value: Float) {
+            lock.lock()
+            storage.append(value)
+            lock.unlock()
+        }
+    }
+
     private final class ConfigurationBox: @unchecked Sendable {
         private let lock = NSLock()
         private var configuration: AudioCapture.IOConfiguration?
@@ -515,6 +549,154 @@ final class AudioCaptureFileTests: XCTestCase {
         }
 
         await fulfillment(of: [received], timeout: 1)
+        _ = capture.stop()
+    }
+
+    func testProcessingOwnsRenderBufferBeforeAsynchronousWorkBegins() throws {
+        let outputFormat = try XCTUnwrap(AVAudioFormat(
+            commonFormat: .pcmFormatFloat32,
+            sampleRate: 48_000,
+            channels: 1,
+            interleaved: false
+        ))
+        let sinkBox = SinkBox()
+        let processingEntered = DispatchSemaphore(value: 0)
+        let allowProcessing = DispatchSemaphore(value: 0)
+        let received = expectation(description: "Eigene Pufferkopie verarbeitet")
+        let samples = FloatSpy()
+        let capture = AudioCapture(
+            audioUnitHooks: AudioCapture.AudioUnitHooks(
+                configureInput: { _, _, sink in
+                    sinkBox.store(sink)
+                    return outputFormat
+                },
+                initialize: {}, start: {}, stop: {}, uninitialize: {}, dispose: {}
+            ),
+            beforeProcessing: {
+                processingEntered.signal()
+                allowProcessing.wait()
+            }
+        )
+        try capture.start(
+            outputFormat: outputFormat,
+            recordTo: nil,
+            onRuntimeError: { _ in XCTFail("Kein Runtimefehler erwartet") }
+        ) { chunk in
+            samples.record(chunk.buffer.floatChannelData?[0][0] ?? -1)
+            received.fulfill()
+        }
+        let renderBuffer = try XCTUnwrap(AVAudioPCMBuffer(
+            pcmFormat: outputFormat,
+            frameCapacity: 16
+        ))
+        renderBuffer.frameLength = 16
+        renderBuffer.floatChannelData?[0][0] = 0.25
+
+        try XCTUnwrap(sinkBox.load())(renderBuffer)
+        XCTAssertEqual(processingEntered.wait(timeout: .now() + 1), .success)
+        renderBuffer.floatChannelData?[0][0] = 0.75
+        allowProcessing.signal()
+
+        wait(for: [received], timeout: 1)
+        XCTAssertEqual(samples.values, [0.25])
+        _ = capture.stop()
+    }
+
+    func testDefaultProcessingBacklogCapacityIsExactly64Chunks() {
+        XCTAssertEqual(AudioCapture.defaultBacklogCapacity, 64)
+    }
+
+    func testFullProcessingBacklogReportsExactlyOnce() throws {
+        let outputFormat = try XCTUnwrap(AVAudioFormat(
+            commonFormat: .pcmFormatFloat32,
+            sampleRate: 48_000,
+            channels: 1,
+            interleaved: false
+        ))
+        let sinkBox = SinkBox()
+        let processingEntered = DispatchSemaphore(value: 0)
+        let allowProcessing = DispatchSemaphore(value: 0)
+        let didBlockProcessing = LockedFlag()
+        let errorReported = expectation(description: "Backlog gemeldet")
+        let errorSpy = ErrorSpy()
+        let capture = AudioCapture(
+            audioUnitHooks: AudioCapture.AudioUnitHooks(
+                configureInput: { _, _, sink in
+                    sinkBox.store(sink)
+                    return outputFormat
+                },
+                initialize: {}, start: {}, stop: {}, uninitialize: {}, dispose: {}
+            ),
+            backlogCapacity: 1,
+            beforeProcessing: {
+                guard !didBlockProcessing.get() else { return }
+                didBlockProcessing.set(true)
+                processingEntered.signal()
+                allowProcessing.wait()
+            }
+        )
+        try capture.start(
+            outputFormat: outputFormat,
+            recordTo: nil,
+            onRuntimeError: { error in
+                errorSpy.record(error)
+                errorReported.fulfill()
+            }
+        ) { _ in }
+        let renderBuffer = try XCTUnwrap(AVAudioPCMBuffer(
+            pcmFormat: outputFormat,
+            frameCapacity: 16
+        ))
+        renderBuffer.frameLength = 16
+        let sink = try XCTUnwrap(sinkBox.load())
+
+        sink(renderBuffer)
+        XCTAssertEqual(processingEntered.wait(timeout: .now() + 1), .success)
+        sink(renderBuffer)
+        sink(renderBuffer)
+        sink(renderBuffer)
+
+        wait(for: [errorReported], timeout: 1)
+        XCTAssertEqual(errorSpy.values, [.processingBacklog])
+        allowProcessing.signal()
+        _ = capture.stop()
+    }
+
+    func testProcessingFailureReportsExactlyOnce() throws {
+        let outputFormat = format()
+        let sinkBox = SinkBox()
+        let errorReported = expectation(description: "Verarbeitungsfehler gemeldet")
+        let errorSpy = ErrorSpy()
+        let capture = AudioCapture(
+            audioUnitHooks: AudioCapture.AudioUnitHooks(
+                configureInput: { _, _, sink in
+                    sinkBox.store(sink)
+                    return outputFormat
+                },
+                initialize: {}, start: {}, stop: {}, uninitialize: {}, dispose: {}
+            ),
+            processingFailure: { _ in .conversionFailed("test") }
+        )
+        try capture.start(
+            outputFormat: outputFormat,
+            recordTo: nil,
+            onRuntimeError: { error in
+                errorSpy.record(error)
+                errorReported.fulfill()
+            }
+        ) { _ in }
+        let renderBuffer = try XCTUnwrap(AVAudioPCMBuffer(
+            pcmFormat: outputFormat,
+            frameCapacity: 16
+        ))
+        renderBuffer.frameLength = 16
+        let sink = try XCTUnwrap(sinkBox.load())
+
+        sink(renderBuffer)
+        sink(renderBuffer)
+
+        wait(for: [errorReported], timeout: 1)
+        XCTAssertEqual(errorSpy.values, [.conversionFailed("test")])
         _ = capture.stop()
     }
 

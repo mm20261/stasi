@@ -29,11 +29,21 @@ final class DictationSession {
 
     private var teardownTask: Task<Void, Never>?
     private var shouldPreserveAudioFile = false
+    private var shouldRecoverClosedAudioFile = false
+    private var runtimeFailureHandled = false
+    private(set) var recoveredAudioURL: URL?
 
     var teardownStarted: Bool { teardownTask != nil }
 
     func preserveAudioFile() {
         shouldPreserveAudioFile = true
+    }
+
+    func beginRuntimeFailure() -> Bool {
+        guard !runtimeFailureHandled else { return false }
+        runtimeFailureHandled = true
+        shouldRecoverClosedAudioFile = true
+        return true
     }
 
     init(id: UUID = UUID(),
@@ -69,11 +79,14 @@ final class DictationSession {
         let feedTask = self.feedTask
         let speech = self.speech
         let consumeTask = self.consumeTask
-        let audioURL = shouldPreserveAudioFile ? nil : self.audioURL
+        let audioURL = self.audioURL
+        let preserveCompletedAudio = shouldPreserveAudioFile
+        let recoverClosedAudio = shouldRecoverClosedAudioFile
 
         let task = Task { @MainActor in
+            var stoppedURL: URL?
             if !resourcesAlreadyFinished {
-                _ = audio.stop()
+                stoppedURL = audio.stop()
                 continuation?.finish()
                 await feedTask?.value
                 await speech.finish()
@@ -87,7 +100,9 @@ final class DictationSession {
                     }
                 }
             }
-            if let audioURL {
+            if recoverClosedAudio, let stoppedURL {
+                self.recoveredAudioURL = stoppedURL
+            } else if !preserveCompletedAudio, let audioURL {
                 try? FileManager.default.removeItem(at: audioURL)
             }
         }
