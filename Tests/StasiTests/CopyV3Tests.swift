@@ -108,8 +108,12 @@ final class CopyV3Tests: XCTestCase {
             keyCode: 8,
             flags: CGEventFlags.maskControl.rawValue | CGEventFlags.maskCommand.rawValue
         )
-        XCTAssertTrue(Copy.firstStartBody(combo: combo).contains(VirtualKey.display(combo)))
+        XCTAssertEqual(
+            Copy.firstStartBody(combo: combo),
+            "Setz den Cursor in ein Textfeld, halte \(VirtualKey.display(combo)), warte den Startton ab und sprich einen Satz. Beim Loslassen steht er da."
+        )
         XCTAssertFalse(Copy.firstStartBody(combo: combo).contains("⌘ rechts"))
+        XCTAssertEqual(Copy.onboardingTrialEmpty, "Noch nichts erfasst – halte die Taste, warte den Startton ab und sprich einen Satz.")
         XCTAssertEqual(Copy.firstStartTryButton, "Jetzt ausprobieren")
         XCTAssertEqual(Copy.firstStartChangeKeyButton, "Taste ändern")
     }

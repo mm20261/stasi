@@ -22,17 +22,29 @@ enum TargetApplicationMatcher {
 // Benötigt Bedienungshilfen-Berechtigung (Accessibility).
 
 enum TextInjector {
-    static func inject(_ text: String, targetPID: pid_t) {
+    @discardableResult
+    static func inject(_ text: String, targetPID: pid_t) -> Bool {
         guard targetPID > 0,
-              let source = CGEventSource(stateID: .combinedSessionState) else { return }
-        routeChunks(text, targetPID: targetPID) { chunk, pid in
+              let source = CGEventSource(stateID: .combinedSessionState) else { return false }
+        return routeChunks(text, targetPID: targetPID) { chunk, pid in
             let length = chunk.count
-            guard
-                let down = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: true),
-                let up = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: false)
-            else {
-                NSLog("STASI-INJECT: CGEvent-Erzeugung fehlgeschlagen – Chunk verworfen")
-                return
+            guard let down = CGEvent(
+                keyboardEventSource: source,
+                virtualKey: 0,
+                keyDown: true
+            ) else {
+                NSLog("STASI-INJECT: Key-down-Erzeugung fehlgeschlagen – Route abgebrochen")
+                return false
+            }
+            // Beide Events entstehen vor dem ersten Post. Scheitert key-up nach
+            // erfolgreichem key-down-Aufbau, bleibt kein down-ohne-up im System.
+            guard let up = CGEvent(
+                keyboardEventSource: source,
+                virtualKey: 0,
+                keyDown: false
+            ) else {
+                NSLog("STASI-INJECT: Key-up-Erzeugung fehlgeschlagen – Route abgebrochen")
+                return false
             }
             down.keyboardSetUnicodeString(stringLength: length, unicodeString: chunk)
             up.keyboardSetUnicodeString(stringLength: length, unicodeString: chunk)
@@ -40,23 +52,26 @@ enum TextInjector {
             Thread.sleep(forTimeInterval: 0.002)
             up.postToPid(pid)
             Thread.sleep(forTimeInterval: 0.006)
+            return true
         }
     }
 
     /// Zerlegt Text deterministisch und bindet jeden Chunk an denselben Prozess.
     /// Die Testnaht erzeugt weder globale Events noch Pasteboard-/App-Zugriffe.
+    @discardableResult
     static func routeChunks(
         _ text: String,
         targetPID: pid_t,
-        deliver: (_ chunk: [UniChar], _ targetPID: pid_t) -> Void
-    ) {
+        deliver: (_ chunk: [UniChar], _ targetPID: pid_t) -> Bool
+    ) -> Bool {
         let scalars = Array(text.utf16)
         var offset = 0
         while offset < scalars.count {
             let end = min(offset + 24, scalars.count)
-            deliver(Array(scalars[offset..<end]), targetPID)
+            guard deliver(Array(scalars[offset..<end]), targetPID) else { return false }
             offset = end
         }
+        return true
     }
 
     /// Prüft via Accessibility-API, ob das fokussierte UI-Element der

@@ -1,6 +1,7 @@
 import AudioToolbox
 import AVFoundation
 import CoreAudio
+import Darwin
 import Foundation
 import Synchronization
 
@@ -396,6 +397,7 @@ final class AudioCapture: AudioCapturing, @unchecked Sendable {
     private let afterBacklogFinish: @Sendable () -> Void
     private let afterAdmissionSnapshot: @Sendable () -> Void
     private let beforeProcessing: @Sendable () -> Void
+    private let beforeRuntimeErrorDelivery: @Sendable () -> Void
     private let processingFailure: @Sendable (AVAudioPCMBuffer) -> AudioCaptureRuntimeError?
     private let processingQueue = DispatchQueue(label: "app.stasi.audio.processing",
                                                 qos: .userInitiated)
@@ -450,6 +452,7 @@ final class AudioCapture: AudioCapturing, @unchecked Sendable {
          afterBacklogFinish: @escaping @Sendable () -> Void = {},
          afterAdmissionSnapshot: @escaping @Sendable () -> Void = {},
          beforeProcessing: @escaping @Sendable () -> Void = {},
+         beforeRuntimeErrorDelivery: @escaping @Sendable () -> Void = {},
          processingFailure: @escaping @Sendable (AVAudioPCMBuffer) -> AudioCaptureRuntimeError? = { _ in nil },
          onRunDeinit: @escaping @Sendable () -> Void = {}) {
         precondition(backlogCapacity > 0)
@@ -462,6 +465,7 @@ final class AudioCapture: AudioCapturing, @unchecked Sendable {
         self.afterBacklogFinish = afterBacklogFinish
         self.afterAdmissionSnapshot = afterAdmissionSnapshot
         self.beforeProcessing = beforeProcessing
+        self.beforeRuntimeErrorDelivery = beforeRuntimeErrorDelivery
         self.processingFailure = processingFailure
     }
 
@@ -482,7 +486,7 @@ final class AudioCapture: AudioCapturing, @unchecked Sendable {
             capacity: backlogCapacity,
             beforeDequeue: beforeBacklogDequeue
         )
-        let reporter = RuntimeErrorReporter()
+        let reporter = RuntimeErrorReporter(beforeDelivery: beforeRuntimeErrorDelivery)
         reporter.reset(onAccepted: onRuntimeErrorAccepted, callback: onRuntimeError)
         let run = AudioCaptureRun(initialAdmission: initialAdmission,
                                   backlog: backlog,
@@ -610,6 +614,9 @@ final class AudioCapture: AudioCapturing, @unchecked Sendable {
         // Suspension statt DispatchGroup.wait(): Der serielle Worker leert die
         // feste Queue vollstaendig, ohne den aufrufenden MainActor zu blockieren.
         await stopProcessingWorker(stoppingRun)
+        // Jeder vor oder während des Worker-Drains atomar akzeptierte Fehler muss
+        // Session-Health und Speech-Zulauf markieren, bevor Commit weiterlaufen kann.
+        await stoppingRun.reporter.flush()
 
         return stateLock.withLock {
             converter = nil
@@ -1238,54 +1245,113 @@ final class AudioCapture: AudioCapturing, @unchecked Sendable {
         }
     }
 
-    /// Genau ein Runtimefehler pro Start. Selbst aus dem Render-Callback entsteht
-    /// hoechstens eine Dispatch-Closure; der Fehler-Backlog kann daher nicht wachsen.
+    /// Genau ein Runtimefehler pro Start. Der Render-Callback macht nur einen
+    /// atomaren Zustandswechsel, schreibt den einmaligen Slot und signalisiert den
+    /// bereits gestarteten Reporter. Health, Stream-Abschluss und UI laufen off-RT.
     final class RuntimeErrorReporter: @unchecked Sendable {
-        typealias Delivery = @Sendable (@escaping @Sendable () -> Void) -> Void
+        private enum State: UInt8 {
+            case ready
+            case accepted
+            case scheduledError
+            case scheduledWithoutError
+        }
 
-        private let reported = Atomic<Bool>(false)
-        private let callbackLock = NSLock()
-        private let deliver: Delivery
+        private let state = Atomic<UInt8>(State.ready.rawValue)
+        private let deliverySignal = DispatchSemaphore(value: 0)
+        private let deliveryQueue = DispatchQueue(
+            label: "app.stasi.audio.runtime-error",
+            qos: .userInitiated
+        )
+        private let queueKey = DispatchSpecificKey<UInt8>()
+        private let beforeDelivery: @Sendable () -> Void
+        private nonisolated(unsafe) var acceptedError: AudioCaptureRuntimeError?
         private var onAccepted: (@Sendable (AudioCaptureRuntimeError) -> Void)?
         private var callback: (@Sendable (AudioCaptureRuntimeError) -> Void)?
 
-        init(deliver: @escaping Delivery = { delivery in
-            DispatchQueue(label: "app.stasi.audio.runtime-error").async(execute: delivery)
-        }) {
-            self.deliver = deliver
+        init(beforeDelivery: @escaping @Sendable () -> Void = {}) {
+            self.beforeDelivery = beforeDelivery
+            deliveryQueue.setSpecific(key: queueKey, value: 1)
         }
 
-        var hasReported: Bool { reported.load(ordering: .acquiring) }
+        var hasReported: Bool {
+            switch State(rawValue: state.load(ordering: .acquiring)) {
+            case .accepted, .scheduledError: true
+            case .ready, .scheduledWithoutError, nil: false
+            }
+        }
 
         func reset(
             onAccepted: @escaping @Sendable (AudioCaptureRuntimeError) -> Void,
             callback: @escaping @Sendable (AudioCaptureRuntimeError) -> Void
         ) {
-            callbackLock.withLock {
+            deliveryQueue.sync {
+                acceptedError = nil
                 self.onAccepted = onAccepted
                 self.callback = callback
+                state.store(State.ready.rawValue, ordering: .releasing)
             }
-            reported.store(false, ordering: .releasing)
+            // Der einzige wartende Block entsteht vor Hardware-Start. report()
+            // signalisiert später nur noch den bereits vorhandenen Semaphore-Waiter.
+            deliveryQueue.async { [self] in
+                deliverySignal.wait()
+                guard state.load(ordering: .acquiring) == State.scheduledError.rawValue,
+                      let error = acceptedError else { return }
+                beforeDelivery()
+                self.onAccepted?(error)
+                self.callback?(error)
+                acceptedError = nil
+            }
         }
 
         func report(_ error: AudioCaptureRuntimeError) {
-            guard reported.compareExchange(
-                expected: false,
-                desired: true,
+            guard state.compareExchange(
+                expected: State.ready.rawValue,
+                desired: State.accepted.rawValue,
                 ordering: .acquiringAndReleasing
             ).exchanged else { return }
-            let callbacks = callbackLock.withLock { (onAccepted, callback) }
-            callbacks.0?(error)
-            guard let callback = callbacks.1 else { return }
-            // Die Closure wird vor einem möglichen clear kopiert. Ein akzeptierter
-            // Fehler verliert daher seine UI-Lieferung nicht beim Stop-Drain.
-            deliver { callback(error) }
+            acceptedError = error
+            state.store(State.scheduledError.rawValue, ordering: .releasing)
+            deliverySignal.signal()
+        }
+
+        func flush() async {
+            scheduleWithoutErrorIfNeeded()
+            while state.load(ordering: .acquiring) == State.accepted.rawValue {
+                await Task.yield()
+            }
+            await withCheckedContinuation { continuation in
+                deliveryQueue.async { continuation.resume() }
+            }
         }
 
         func clearCallbacks() {
-            callbackLock.withLock {
+            scheduleWithoutErrorIfNeeded()
+            // Falls clear exakt während der Slot-Publikation gewinnt, darf es die
+            // bereits akzeptierte Lieferung nicht überholen. Nur Control-Plane.
+            while state.load(ordering: .acquiring) == State.accepted.rawValue {
+                sched_yield()
+            }
+            syncOnDeliveryQueue {
                 onAccepted = nil
                 callback = nil
+            }
+        }
+
+        private func scheduleWithoutErrorIfNeeded() {
+            if state.compareExchange(
+                expected: State.ready.rawValue,
+                desired: State.scheduledWithoutError.rawValue,
+                ordering: .acquiringAndReleasing
+            ).exchanged {
+                deliverySignal.signal()
+            }
+        }
+
+        private func syncOnDeliveryQueue(_ action: () -> Void) {
+            if DispatchQueue.getSpecific(key: queueKey) != nil {
+                action()
+            } else {
+                deliveryQueue.sync(execute: action)
             }
         }
     }

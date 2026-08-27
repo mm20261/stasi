@@ -70,13 +70,30 @@ final class TargetApplicationMatcherTests: XCTestCase {
         let text = String(repeating: "abcdefghijklmnopqrstuvwx", count: 3)
         var deliveries: [(String, pid_t)] = []
 
-        TextInjector.routeChunks(text, targetPID: slack.processIdentifier) { chunk, pid in
+        let succeeded = TextInjector.routeChunks(text, targetPID: slack.processIdentifier) { chunk, pid in
             deliveries.append((String(decoding: chunk, as: UTF16.self), pid))
+            return true
         }
 
+        XCTAssertTrue(succeeded)
         XCTAssertEqual(deliveries.map(\.0).joined(), text)
         XCTAssertGreaterThan(deliveries.count, 1)
         XCTAssertTrue(deliveries.allSatisfy { $0.1 == slack.processIdentifier })
+    }
+
+    func testChunkRoutingAbortsAfterMiddleEventCreationFailure() {
+        let text = String(repeating: "abcdefghijklmnopqrstuvwx", count: 3)
+        var attemptedChunks: [String] = []
+
+        let succeeded = TextInjector.routeChunks(text, targetPID: slack.processIdentifier) { chunk, _ in
+            attemptedChunks.append(String(decoding: chunk, as: UTF16.self))
+            return attemptedChunks.count != 2
+        }
+
+        XCTAssertFalse(succeeded)
+        XCTAssertEqual(attemptedChunks.count, 2)
+        XCTAssertEqual(attemptedChunks[0], "abcdefghijklmnopqrstuvwx")
+        XCTAssertEqual(attemptedChunks[1], "abcdefghijklmnopqrstuvwx")
     }
 
     func testSameNameAloneDoesNotMatch() {

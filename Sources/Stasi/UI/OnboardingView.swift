@@ -291,7 +291,7 @@ struct OnboardingView: View {
                         .textCase(.uppercase)
                         .foregroundColor(Theme.Palette.text3)
                 } else {
-                    Text("Noch nichts erfasst – sprich einfach einen Satz.")
+                    Text(Copy.onboardingTrialEmpty)
                         .font(Theme.Typo.secondary(size: 11.5))
                         .foregroundColor(Theme.Palette.text3)
                 }

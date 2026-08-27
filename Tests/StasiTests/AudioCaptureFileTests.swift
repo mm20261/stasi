@@ -178,23 +178,6 @@ final class AudioCaptureFileTests: XCTestCase {
         }
     }
 
-    private final class DeliveryBox: @unchecked Sendable {
-        private let lock = NSLock()
-        private var pending: (@Sendable () -> Void)?
-
-        func store(_ delivery: @escaping @Sendable () -> Void) {
-            lock.withLock { pending = delivery }
-        }
-
-        func deliver() {
-            let delivery = lock.withLock { () -> (@Sendable () -> Void)? in
-                defer { pending = nil }
-                return pending
-            }
-            delivery?()
-        }
-    }
-
     private final class ConfigurationBox: @unchecked Sendable {
         private let lock = NSLock()
         private var configuration: AudioCapture.IOConfiguration?
@@ -292,12 +275,14 @@ final class AudioCaptureFileTests: XCTestCase {
         _ = await capture.stop()
     }
 
-    func testRuntimeErrorAcceptanceIsSynchronousAndDeliverySurvivesClear() {
+    func testRuntimeErrorAcceptanceDoesNotInvokeHealthOrStreamCallbacksInline() async {
         let accepted = LockedFlag()
         let delivered = LockedFlag()
-        let deliveryBox = DeliveryBox()
-        let reporter = AudioCapture.RuntimeErrorReporter(deliver: { delivery in
-            deliveryBox.store(delivery)
+        let deliveryStarted = expectation(description: "off-RT delivery started")
+        let deliveryGate = DispatchSemaphore(value: 0)
+        let reporter = AudioCapture.RuntimeErrorReporter(beforeDelivery: {
+            deliveryStarted.fulfill()
+            deliveryGate.wait()
         })
         reporter.reset(
             onAccepted: { _ in accepted.set(true) },
@@ -305,11 +290,98 @@ final class AudioCaptureFileTests: XCTestCase {
         )
 
         reporter.report(.processingBacklog)
-        reporter.clearCallbacks()
 
-        XCTAssertTrue(accepted.get())
+        XCTAssertTrue(reporter.hasReported)
+        XCTAssertFalse(accepted.get())
         XCTAssertFalse(delivered.get())
-        deliveryBox.deliver()
+        await fulfillment(of: [deliveryStarted], timeout: 1)
+        XCTAssertFalse(accepted.get())
+        XCTAssertFalse(delivered.get())
+
+        deliveryGate.signal()
+        await reporter.flush()
+        XCTAssertTrue(accepted.get())
+        XCTAssertTrue(delivered.get())
+    }
+
+    func testAcceptedRuntimeErrorDeliversExactlyOnceBeforeCallbacksClear() async {
+        let acceptedCount = LockedInt()
+        let deliveredCount = LockedInt()
+        let deliveryStarted = expectation(description: "off-RT delivery started")
+        let deliveryGate = DispatchSemaphore(value: 0)
+        let reporter = AudioCapture.RuntimeErrorReporter(beforeDelivery: {
+            deliveryStarted.fulfill()
+            deliveryGate.wait()
+        })
+        reporter.reset(
+            onAccepted: { _ in acceptedCount.increment() },
+            callback: { _ in deliveredCount.increment() }
+        )
+
+        reporter.report(.processingBacklog)
+        reporter.report(.bufferCopyFailed)
+        let clearTask = Task.detached { reporter.clearCallbacks() }
+        await fulfillment(of: [deliveryStarted], timeout: 1)
+        XCTAssertEqual(acceptedCount.value, 0)
+        XCTAssertEqual(deliveredCount.value, 0)
+
+        deliveryGate.signal()
+        await clearTask.value
+        await reporter.flush()
+        XCTAssertEqual(acceptedCount.value, 1)
+        XCTAssertEqual(deliveredCount.value, 1)
+    }
+
+    func testStopWaitsForAcceptedWorkerErrorDeliveryBeforeReturning() async throws {
+        let outputFormat = format()
+        let sinkBox = SinkBox()
+        let deliveryStarted = expectation(description: "runtime delivery started")
+        let deliveryGate = DispatchSemaphore(value: 0)
+        let accepted = LockedFlag()
+        let delivered = LockedFlag()
+        let stopReturned = LockedFlag()
+        let capture = AudioCapture(
+            audioUnitHooks: AudioCapture.AudioUnitHooks(
+                configureInput: { _, _, sink in
+                    sinkBox.store(sink)
+                    return outputFormat
+                },
+                initialize: {}, start: {}, stop: {}, uninitialize: {}, dispose: {}
+            ),
+            beforeRuntimeErrorDelivery: {
+                deliveryStarted.fulfill()
+                deliveryGate.wait()
+            },
+            processingFailure: { _ in .wavWriteFailed("worker failed") }
+        )
+        try capture.start(
+            outputFormat: outputFormat,
+            recordTo: nil,
+            preferredMicUID: nil,
+            captureInitiallyActive: true,
+            onRuntimeErrorAccepted: { _ in accepted.set(true) },
+            onRuntimeError: { _ in delivered.set(true) }
+        ) { _ in XCTFail("Failed buffer must not reach speech") }
+        let buffer = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: outputFormat, frameCapacity: 16))
+        buffer.frameLength = 16
+        try XCTUnwrap(sinkBox.load())(buffer)
+        await fulfillment(of: [deliveryStarted], timeout: 1)
+
+        let stopTask = Task {
+            let result = await capture.stop()
+            stopReturned.set(true)
+            return result
+        }
+        try await Task.sleep(nanoseconds: 50_000_000)
+
+        XCTAssertFalse(stopReturned.get())
+        XCTAssertFalse(accepted.get())
+        XCTAssertFalse(delivered.get())
+
+        deliveryGate.signal()
+        _ = await stopTask.value
+        XCTAssertTrue(stopReturned.get())
+        XCTAssertTrue(accepted.get())
         XCTAssertTrue(delivered.get())
     }
 

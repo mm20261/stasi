@@ -295,8 +295,10 @@ enum Copy {
     // Leerzustand erster Start
     static let firstStartTitle = "Noch nichts protokolliert."
     static func firstStartBody(combo: HotkeyEngine.Combo) -> String {
-        "Setz den Cursor in ein Textfeld, halte \(VirtualKey.display(combo)) und sprich einen Satz. Beim Loslassen steht er da."
+        "Setz den Cursor in ein Textfeld, halte \(VirtualKey.display(combo)), warte den Startton ab und sprich einen Satz. Beim Loslassen steht er da."
     }
+    static let onboardingTrialEmpty =
+        "Noch nichts erfasst – halte die Taste, warte den Startton ab und sprich einen Satz."
     static let firstStartTryButton = "Jetzt ausprobieren"
     static let firstStartChangeKeyButton = "Taste ändern"
 

@@ -331,15 +331,31 @@ final class DictationSessionTests: XCTestCase {
         func installedLocaleIDs() -> [String] { localeIDs }
     }
 
+    private final class AudioSinkBox: @unchecked Sendable {
+        private let lock = NSLock()
+        private var sink: (@Sendable (AVAudioPCMBuffer) -> Void)?
+
+        func store(_ sink: @escaping @Sendable (AVAudioPCMBuffer) -> Void) {
+            lock.withLock { self.sink = sink }
+        }
+
+        func load() -> (@Sendable (AVAudioPCMBuffer) -> Void)? {
+            lock.withLock { sink }
+        }
+    }
+
     private final class TextInjectorSpy: @unchecked Sendable {
         private(set) var callCount = 0
         private(set) var texts: [String] = []
         private(set) var targetPIDs: [pid_t] = []
+        var succeeds = true
 
-        func inject(_ text: String, targetPID: pid_t) {
+        @discardableResult
+        func inject(_ text: String, targetPID: pid_t) -> Bool {
             callCount += 1
             texts.append(text)
             targetPIDs.append(targetPID)
+            return succeeds
         }
     }
 
@@ -521,7 +537,7 @@ final class DictationSessionTests: XCTestCase {
                              )
                          },
                          isTextFieldEditable: @escaping @Sendable () -> Bool = { false },
-                         injectText: @escaping @Sendable (String, pid_t) -> Void = { _, _ in },
+                         injectText: @escaping @Sendable (String, pid_t) -> Bool = { _, _ in true },
                          copyToClipboard: @escaping @MainActor (String) -> Void = { _ in },
                          recoveryStore: AudioRecoveryStore? = nil,
                          revealRecoveryFile: @escaping @MainActor (URL) -> Void = { _ in },
@@ -846,6 +862,40 @@ final class DictationSessionTests: XCTestCase {
         XCTAssertEqual(injector.texts, ["Finaler Text"])
         XCTAssertEqual(injector.targetPIDs, [slack.processIdentifier])
         XCTAssertEqual(clipboard.strings, ["Finaler Text"])
+    }
+
+    func testInjectionFailureKeepsHistoryAndClipboardAndReportsRetainedText() async {
+        let slack = TargetApplication(
+            localizedName: "Slack",
+            bundleIdentifier: "com.tinyspeck.slackmacgap",
+            processIdentifier: 42
+        )
+        let audio = FakeAudioCapture()
+        let history = FakeHistoryStore()
+        let injector = TextInjectorSpy()
+        injector.succeeds = false
+        let clipboard = ClipboardSpy()
+        let app = makeApp(
+            audio: audio,
+            engines: [FakeSpeechEngine(text: "Vollständiger Text")],
+            history: history,
+            frontmostApplication: { slack },
+            isTextFieldEditable: { true },
+            injectText: { text, pid in injector.inject(text, targetPID: pid) },
+            copyToClipboard: { clipboard.copy($0) }
+        )
+        var toasts: [String] = []
+        app.onToast = { message, _ in toasts.append(message) }
+
+        app.startDictation()
+        await waitUntil { audio.isRunning }
+        app.stopDictation()
+        await waitUntil { app.phase == .idle }
+
+        XCTAssertEqual(injector.callCount, 1)
+        XCTAssertEqual(history.records.first?.correctedText, "Vollständiger Text")
+        XCTAssertEqual(clipboard.strings, ["Vollständiger Text"])
+        XCTAssertTrue(toasts.contains { $0.contains("Zwischenablage") })
     }
 
     func testSameTargetWithoutEditableElementSkipsInjection() async {
@@ -1301,6 +1351,66 @@ final class DictationSessionTests: XCTestCase {
         let recoveredURL = try XCTUnwrap(reveal.urls.first)
         XCTAssertEqual(recoveredURL.deletingLastPathComponent(), recoveryDirectory)
         XCTAssertTrue(FileManager.default.fileExists(atPath: recoveredURL.path))
+    }
+
+    func testRealAudioStopFlushBlocksCommitUntilAcceptedWorkerErrorMarksHealth() async throws {
+        let directory = makeDirectory()
+        let format = try XCTUnwrap(AVAudioFormat(
+            commonFormat: .pcmFormatInt16,
+            sampleRate: 16_000,
+            channels: 1,
+            interleaved: false
+        ))
+        let sinkBox = AudioSinkBox()
+        let deliveryStarted = expectation(description: "off-RT health delivery started")
+        let deliveryGate = DispatchSemaphore(value: 0)
+        let capture = AudioCapture(
+            audioUnitHooks: AudioCapture.AudioUnitHooks(
+                configureInput: { _, _, sink in
+                    sinkBox.store(sink)
+                    return format
+                },
+                initialize: {}, start: {}, stop: {}, uninitialize: {}, dispose: {}
+            ),
+            beforeRuntimeErrorDelivery: {
+                deliveryStarted.fulfill()
+                deliveryGate.wait()
+            },
+            processingFailure: { _ in .wavWriteFailed("blocked worker delivery") }
+        )
+        let history = FakeHistoryStore()
+        let injector = TextInjectorSpy()
+        let clipboard = ClipboardSpy()
+        let app = makeApp(
+            audioFactory: { capture },
+            engines: [FakeSpeechEngine(text: "Darf nie committed werden")],
+            history: history,
+            isTextFieldEditable: { true },
+            injectText: { text, pid in injector.inject(text, targetPID: pid) },
+            copyToClipboard: { clipboard.copy($0) },
+            directory: directory
+        )
+
+        app.startDictation()
+        await waitUntil { app.phase == .recording }
+        let buffer = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 16))
+        buffer.frameLength = 16
+        try XCTUnwrap(sinkBox.load())(buffer)
+        await fulfillment(of: [deliveryStarted], timeout: 1)
+
+        app.stopDictation()
+        try await Task.sleep(nanoseconds: 50_000_000)
+
+        XCTAssertEqual(app.phase, .transcribing)
+        XCTAssertEqual(history.insertCount, 0)
+        XCTAssertEqual(injector.callCount, 0)
+        XCTAssertTrue(clipboard.strings.isEmpty)
+
+        deliveryGate.signal()
+        await waitUntil { app.phase == .idle }
+        XCTAssertEqual(history.insertCount, 0)
+        XCTAssertEqual(injector.callCount, 0)
+        XCTAssertTrue(clipboard.strings.isEmpty)
     }
 
     func testAcceptedRuntimeErrorBlocksCommitBeforeDelayedDelivery() async throws {

@@ -52,7 +52,7 @@ final class AppState {
     private let revealRecoveryFile: @MainActor (URL) -> Void
     private let frontmostApplication: @MainActor () -> TargetApplication?
     private let isTextFieldEditable: @Sendable () -> Bool
-    private let injectText: @Sendable (String, pid_t) -> Void
+    private let injectText: @Sendable (String, pid_t) -> Bool
     private let copyToClipboard: @MainActor (String) -> Void
     private let soundFeedback: any SoundFeedback
     private(set) var modelReadyByLocale: [String: Bool] = [:]
@@ -200,7 +200,7 @@ final class AppState {
          isTextFieldEditable: @escaping @Sendable () -> Bool = {
              TextInjector.isFocusedElementEditable()
          },
-         injectText: @escaping @Sendable (String, pid_t) -> Void = { text, targetPID in
+         injectText: @escaping @Sendable (String, pid_t) -> Bool = { text, targetPID in
              TextInjector.inject(text, targetPID: targetPID)
          },
          copyToClipboard: @escaping @MainActor (String) -> Void = { text in
@@ -611,9 +611,9 @@ final class AppState {
                     preferredMicUID: self.settings.preferredMicUID,
                     captureInitiallyActive: false,
                     onRuntimeErrorAccepted: { error in
-                        // Diese lock-geschützte Handoff-Grenze läuft synchron im
-                        // Reporter. Der Worker-Drain kann einen akzeptierten Fehler
-                        // deshalb nie als gesunde Session überholen.
+                        // Der Reporter liefert diese Health-Grenze seriell off-RT.
+                        // AudioCapture.stop() flusht sie nach dem Worker-Drain, bevor
+                        // ein Commit die Session als gesund weiterverarbeiten darf.
                         health.recordAudioRuntimeFailure(error)
                         health.closeSpeechIngress(audioContinuation)
                     },
@@ -1009,6 +1009,7 @@ final class AppState {
         let injectText = injectText
         Task.detached(priority: .userInitiated) { [weak self] in
             var shouldInject = false
+            var injectionAttempted = false
             let sameTargetBeforeEditabilityCheck = await MainActor.run { [weak self] in
                 guard let self else { return false }
                 return TargetApplicationMatcher.matches(
@@ -1025,8 +1026,11 @@ final class AppState {
                     )
                 }
                 if sameTargetImmediatelyBeforeInjection {
-                    injectText(trimmed, targetApplicationSnapshot.processIdentifier)
-                    shouldInject = true
+                    injectionAttempted = true
+                    shouldInject = injectText(
+                        trimmed,
+                        targetApplicationSnapshot.processIdentifier
+                    )
                 }
             }
             // Zwei Poll-Zyklen Sichtbarkeit, auch wenn das Einfügen nur einen
@@ -1036,10 +1040,10 @@ final class AppState {
             await MainActor.run { [weak self] in
                 guard let self else { return }
                 if !shouldInject {
-                    self.onToast?(
-                        "Nicht in \(targetApplicationSnapshot.localizedName) eingefügt: Ziel-App oder Textfokus hat sich geändert. Der Text liegt in der Zwischenablage.",
-                        false
-                    )
+                    let message = injectionAttempted
+                        ? "Einfügen in \(targetApplicationSnapshot.localizedName) ist fehlgeschlagen. Der vollständige Text bleibt in Verlauf und Zwischenablage."
+                        : "Nicht in \(targetApplicationSnapshot.localizedName) eingefügt: Ziel-App oder Textfokus hat sich geändert. Der Text liegt in der Zwischenablage."
+                    self.onToast?(message, false)
                 }
                 self.resetSessionPresentationToIdle()
             }
@@ -1112,7 +1116,7 @@ final class AppState {
         let injectText = injectText
         Task.detached(priority: .userInitiated) {
             if isTextFieldEditable() {
-                injectText(text, targetPID)
+                _ = injectText(text, targetPID)
             }
         }
     }

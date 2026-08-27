@@ -45,21 +45,27 @@ enum HotkeyCaptureEffect: Equatable {
 struct HotkeyCaptureState: Equatable {
     private(set) var isRecording = false
     private(set) var draft = HotkeyCaptureDraft()
+    private var savedCombo: HotkeyEngine.Combo?
 
     mutating func begin(with combo: HotkeyEngine.Combo) {
+        savedCombo = combo
         isRecording = true
         draft = HotkeyCaptureDraft(combo: combo)
     }
 
     mutating func process(_ event: HotkeyCaptureEvent) -> HotkeyCaptureEffect {
-        draft.process(event)
-        guard case .cancel = event else { return .none }
+        guard case .cancel = event else {
+            draft.process(event)
+            return .none
+        }
         isRecording = false
+        draft = HotkeyCaptureDraft(combo: savedCombo)
         return .removeMonitor
     }
 
     mutating func stop() {
         isRecording = false
+        savedCombo = nil
         draft = HotkeyCaptureDraft()
     }
 }

@@ -147,30 +147,38 @@ final class HotkeyCaptureDraftTests: XCTestCase {
         XCTAssertTrue(draft.isValidSelection)
     }
 
-    func testOnboardingEscapeRequestsMonitorRemoval() {
+    func testOnboardingEscapeRestoresSavedComboAndRequestsMonitorRemoval() {
+        let savedCombo = HotkeyEngine.Combo(
+            keyCode: 40,
+            flags: CGEventFlags.maskCommand.rawValue
+        )
         var state = HotkeyCaptureState()
-        state.begin(with: .defaultPTT)
+        state.begin(with: savedCombo)
+        _ = state.process(.modifier(.init(keyCode: 58, flags: 0)))
 
         let effect = state.process(.cancel)
 
         XCTAssertEqual(effect, .removeMonitor)
         XCTAssertFalse(state.isRecording)
-        XCTAssertNil(state.draft.combo)
+        XCTAssertEqual(state.draft.combo, savedCombo)
+        XCTAssertTrue(state.draft.isValidSelection)
     }
 
-    func testSettingsEscapeStopsCaptureUIAndRequestsMonitorRemoval() {
+    func testSettingsEscapeRestoresSavedComboAndRequestsMonitorRemoval() {
         let currentCombo = HotkeyEngine.Combo(
             keyCode: 40,
             flags: CGEventFlags.maskCommand.rawValue
         )
         var state = SettingsHotkeyCaptureState()
         state.begin(with: currentCombo)
+        _ = state.process(.modifier(.init(keyCode: 58, flags: 0)))
 
         let effect = state.process(.cancel)
 
         XCTAssertEqual(effect, .removeMonitor)
         XCTAssertFalse(state.isRecording)
-        XCTAssertNil(state.draft.combo)
+        XCTAssertEqual(state.draft.combo, currentCombo)
+        XCTAssertTrue(state.draft.isValidSelection)
     }
 
     func testNewOptionPressReplacesCapturedCommandKeyCombo() {
