@@ -58,7 +58,24 @@ Voraussetzung ist die im Repository beschriebene macOS-/Swift-Toolchain.
 
    Der normale Smoke-Test wird nicht mit `STASI_SIGNING_MODE=none` ausgeführt: Seine unveränderte `codesign --verify`-Stufe muss für reguläre Builds erfolgreich bleiben und würde ein unsigned Diagnose-Bundle absichtlich zurückweisen. `none` ist kein Release- oder Verteilungsmodus.
 
-Ein späterer CI-Signiermodus ist hier nicht implementiert. Insbesondere darf CI nicht still die lokale Schlüsselbundsuche oder den ad-hoc-Fallback übernehmen.
+## Manueller GitHub-Actions-Build
+
+`.github/workflows/release.yml` ist ausschließlich über `workflow_dispatch` startbar und läuft auf dem von GitHub dokumentierten Standard-Arm64-Runner `macos-26`. Quelle für Bezeichnung und Architektur: [GitHub-hosted runners reference](https://docs.github.com/en/actions/reference/runners/github-hosted-runners), geprüft am 28. August 2026.
+
+Der Workflow verwendet keine Marketplace-Actions. Er initialisiert Git selbst, lädt mit dem von GitHub bereitgestellten, auf `contents: read` beschränkten `GITHUB_TOKEN` ausschließlich den Commit aus `GITHUB_SHA`, checkt ihn detached aus und verifiziert den resultierenden `HEAD`. Das Token wird über ein temporäres `GIT_ASKPASS`-Skript bereitgestellt, nicht in eine URL oder Git-Konfiguration geschrieben; das Skript wird anschließend gelöscht.
+
+Jeder manuelle Lauf führt Tests, einen lokalen beziehungsweise ad-hoc signierten Build und den vollständigen Smoke-Test aus. Developer-ID-Signierung und Notarisierung folgen danach nur, wenn **alle** folgenden GitHub-Actions-Repository-Secrets nicht leer gesetzt sind:
+
+- `STASI_DEVELOPER_ID_CERTIFICATE_BASE64`: Base64-kodierte PKCS#12-Datei mit Zertifikat und privatem Schlüssel für „Developer ID Application“.
+- `STASI_DEVELOPER_ID_CERTIFICATE_PASSWORD`: Passwort der PKCS#12-Datei.
+- `STASI_DEVELOPER_ID_APPLICATION`: vollständiger Name der zu verwendenden Developer-ID-Application-Identität.
+- `STASI_NOTARY_PRIVATE_KEY_BASE64`: Base64-kodierter privater App-Store-Connect-API-Schlüssel im `.p8`-Format.
+- `STASI_NOTARY_KEY_ID`: Key-ID dieses API-Schlüssels.
+- `STASI_NOTARY_ISSUER_ID`: Issuer-ID dieses API-Schlüssels.
+
+Die Secret-Werte werden ausschließlich über die GitHub-Actions-Umgebung übergeben und dürfen weder in Workflow-Datei, Dokumentation noch Logs kopiert werden. Bei fehlendem oder unvollständigem Secret-Satz meldet der Lauf den Skip ausdrücklich; Tests, lokaler/ad-hoc Build und Smoke-Test bleiben davon unberührt. Sind alle Secrets vorhanden, importiert der Workflow Zertifikat und Notarisierungsprofil in einen temporären Schlüsselbund, baut zunächst unsigned, signiert mit Developer ID und Hardened Runtime, notarisiert, stapelt und prüft das Bundle. Temporäre Schlüssel-, Zertifikats- und Schlüsselbunddateien werden auch bei einem Fehler entfernt.
+
+Der erzeugte Build bleibt ausschließlich im flüchtigen Runner-Dateisystem. Der Workflow enthält keinen Push, keine Tag-Erzeugung, kein GitHub Release, keinen Artifact-Upload und kein Deployment. Ein Download oder eine Veröffentlichung benötigt eine getrennte Änderung und ausdrückliche Freigabe.
 
 ## Developer ID, Hardened Runtime und Notarisierung
 
