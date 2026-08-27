@@ -259,9 +259,27 @@ final class DictationSessionTests: XCTestCase {
 
     private final class TextInjectorSpy: @unchecked Sendable {
         private(set) var callCount = 0
+        private(set) var texts: [String] = []
 
         func inject(_ text: String) {
             callCount += 1
+            texts.append(text)
+        }
+    }
+
+    private final class ClipboardSpy {
+        private(set) var strings: [String] = []
+
+        func copy(_ string: String) {
+            strings.append(string)
+        }
+    }
+
+    private final class FrontmostApplicationStub {
+        var current: TargetApplication?
+
+        init(_ current: TargetApplication?) {
+            self.current = current
         }
     }
 
@@ -294,6 +312,18 @@ final class DictationSessionTests: XCTestCase {
         return AudioChunk(buffer: buffer)
     }
 
+    private func makeTargetApplication(
+        named name: String = "Test App",
+        bundleIdentifier: String? = "com.example.test-app",
+        processIdentifier: pid_t = 42
+    ) -> TargetApplication {
+        TargetApplication(
+            localizedName: name,
+            bundleIdentifier: bundleIdentifier,
+            processIdentifier: processIdentifier
+        )
+    }
+
     private func makeDirectory(_ name: String = #function) -> URL {
         let directory = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
             .appendingPathComponent(".build/test-artifacts", isDirectory: true)
@@ -320,12 +350,20 @@ final class DictationSessionTests: XCTestCase {
                          consumeTimeoutNanoseconds: UInt64 = 2_000_000_000,
                          minimumPushToTalkDuration: TimeInterval = 0,
                          history: (any HistoryStoring)? = nil,
+                         frontmostApplication: @escaping @MainActor () -> TargetApplication? = {
+                             TargetApplication(
+                                 localizedName: "Test App",
+                                 bundleIdentifier: "com.example.test-app",
+                                 processIdentifier: 42
+                             )
+                         },
                          isTextFieldEditable: @escaping @Sendable () -> Bool = { false },
                          injectText: @escaping @Sendable (String) -> Void = { _ in },
+                         copyToClipboard: @escaping @MainActor (String) -> Void = { _ in },
                          recoveryStore: AudioRecoveryStore? = nil,
                          revealRecoveryFile: @escaping @MainActor (URL) -> Void = { _ in },
                          directory: URL? = nil) -> AppState {
-        let root = directory ?? makeDirectory()
+        let root = directory ?? makeDirectory("makeApp")
         let dictionary = DictionaryStore(directory: root.appendingPathComponent("dictionary"))
         let history = history ?? HistoryStore(directory: root.appendingPathComponent("history"))
         var remaining = engines
@@ -344,8 +382,10 @@ final class DictationSessionTests: XCTestCase {
             audioDirectory: root.appendingPathComponent("audio"),
             audioRecoveryStore: recoveryStore,
             revealRecoveryFile: revealRecoveryFile,
+            frontmostApplication: frontmostApplication,
             isTextFieldEditable: isTextFieldEditable,
-            injectText: injectText
+            injectText: injectText,
+            copyToClipboard: copyToClipboard
         )
     }
 
@@ -474,36 +514,203 @@ final class DictationSessionTests: XCTestCase {
         XCTFail("Bedingung nicht innerhalb von \(timeout) s erfüllt")
     }
 
+    func testFocusChangeDuringFinalizeKeepsTextAndSkipsInjection() async {
+        let slack = TargetApplication(
+            localizedName: "Slack",
+            bundleIdentifier: "com.tinyspeck.slackmacgap",
+            processIdentifier: 42
+        )
+        let notes = TargetApplication(
+            localizedName: "Notes",
+            bundleIdentifier: "com.apple.Notes",
+            processIdentifier: 84
+        )
+        let frontmost = FrontmostApplicationStub(slack)
+        let audio = FakeAudioCapture()
+        let history = FakeHistoryStore()
+        let injector = TextInjectorSpy()
+        let clipboard = ClipboardSpy()
+        let app = makeApp(
+            audio: audio,
+            engines: [FakeSpeechEngine(text: "Finaler Text")],
+            history: history,
+            frontmostApplication: { frontmost.current },
+            isTextFieldEditable: { true },
+            injectText: { injector.inject($0) },
+            copyToClipboard: { clipboard.copy($0) }
+        )
+        var toasts: [String] = []
+        app.onToast = { message, _ in toasts.append(message) }
+
+        app.startDictation()
+        await waitUntil { audio.isRunning }
+        app.stopDictation(commit: true)
+        frontmost.current = notes
+        await waitUntil { app.phase == .idle }
+
+        XCTAssertEqual(injector.callCount, 0)
+        XCTAssertEqual(clipboard.strings, ["Finaler Text"])
+        XCTAssertEqual(history.records.first?.targetApp, "Slack")
+        XCTAssertTrue(toasts.contains { $0.contains("Slack") })
+    }
+
+    func testRelaunchedTargetWithSameBundleSkipsInjection() async {
+        let capturedSlack = TargetApplication(
+            localizedName: "Slack",
+            bundleIdentifier: "com.tinyspeck.slackmacgap",
+            processIdentifier: 42
+        )
+        let frontmost = FrontmostApplicationStub(capturedSlack)
+        let audio = FakeAudioCapture()
+        let injector = TextInjectorSpy()
+        let clipboard = ClipboardSpy()
+        let app = makeApp(
+            audio: audio,
+            engines: [FakeSpeechEngine(text: "Finaler Text")],
+            frontmostApplication: { frontmost.current },
+            isTextFieldEditable: { true },
+            injectText: { injector.inject($0) },
+            copyToClipboard: { clipboard.copy($0) }
+        )
+
+        app.startDictation()
+        await waitUntil { audio.isRunning }
+        frontmost.current = TargetApplication(
+            localizedName: "Slack",
+            bundleIdentifier: "com.tinyspeck.slackmacgap",
+            processIdentifier: 43
+        )
+        app.stopDictation(commit: true)
+        await waitUntil { app.phase == .idle }
+
+        XCTAssertEqual(injector.callCount, 0)
+        XCTAssertEqual(clipboard.strings, ["Finaler Text"])
+    }
+
+    func testMissingCurrentApplicationSkipsInjection() async {
+        let slack = TargetApplication(
+            localizedName: "Slack",
+            bundleIdentifier: "com.tinyspeck.slackmacgap",
+            processIdentifier: 42
+        )
+        let frontmost = FrontmostApplicationStub(slack)
+        let audio = FakeAudioCapture()
+        let injector = TextInjectorSpy()
+        let clipboard = ClipboardSpy()
+        let app = makeApp(
+            audio: audio,
+            engines: [FakeSpeechEngine(text: "Finaler Text")],
+            frontmostApplication: { frontmost.current },
+            isTextFieldEditable: { true },
+            injectText: { injector.inject($0) },
+            copyToClipboard: { clipboard.copy($0) }
+        )
+
+        app.startDictation()
+        await waitUntil { audio.isRunning }
+        frontmost.current = nil
+        app.stopDictation(commit: true)
+        await waitUntil { app.phase == .idle }
+
+        XCTAssertEqual(injector.callCount, 0)
+        XCTAssertEqual(clipboard.strings, ["Finaler Text"])
+    }
+
+    func testSameEditableTargetInjectsFinalText() async {
+        let slack = TargetApplication(
+            localizedName: "Slack",
+            bundleIdentifier: "com.tinyspeck.slackmacgap",
+            processIdentifier: 42
+        )
+        let audio = FakeAudioCapture()
+        let injector = TextInjectorSpy()
+        let clipboard = ClipboardSpy()
+        let app = makeApp(
+            audio: audio,
+            engines: [FakeSpeechEngine(text: "Finaler Text")],
+            frontmostApplication: { slack },
+            isTextFieldEditable: { true },
+            injectText: { injector.inject($0) },
+            copyToClipboard: { clipboard.copy($0) }
+        )
+
+        app.startDictation()
+        await waitUntil { audio.isRunning }
+        app.stopDictation(commit: true)
+        await waitUntil { app.phase == .idle }
+
+        XCTAssertEqual(injector.texts, ["Finaler Text"])
+        XCTAssertEqual(clipboard.strings, ["Finaler Text"])
+    }
+
+    func testSameTargetWithoutEditableElementSkipsInjection() async {
+        let slack = TargetApplication(
+            localizedName: "Slack",
+            bundleIdentifier: "com.tinyspeck.slackmacgap",
+            processIdentifier: 42
+        )
+        let audio = FakeAudioCapture()
+        let injector = TextInjectorSpy()
+        let clipboard = ClipboardSpy()
+        let app = makeApp(
+            audio: audio,
+            engines: [FakeSpeechEngine(text: "Finaler Text")],
+            frontmostApplication: { slack },
+            isTextFieldEditable: { false },
+            injectText: { injector.inject($0) },
+            copyToClipboard: { clipboard.copy($0) }
+        )
+        var toasts: [String] = []
+        app.onToast = { message, _ in toasts.append(message) }
+
+        app.startDictation()
+        await waitUntil { audio.isRunning }
+        app.stopDictation(commit: true)
+        await waitUntil { app.phase == .idle }
+
+        XCTAssertEqual(injector.callCount, 0)
+        XCTAssertEqual(clipboard.strings, ["Finaler Text"])
+        XCTAssertTrue(toasts.contains { $0.contains("Slack") })
+    }
+
     func testSessionSnapshotsAreImmutable() async {
         let audio = FakeAudioCapture()
         let speech = FakeSpeechEngine()
         let locale = Locale(identifier: "de_DE")
         let entry = DictionaryEntry(type: .word, value: "Stasi")
         let url = makeDirectory().appendingPathComponent("snapshot.wav")
+        let targetApplication = TargetApplication(
+            localizedName: "TextEdit",
+            bundleIdentifier: "com.apple.TextEdit",
+            processIdentifier: 42
+        )
         let session = DictationSession(locale: locale,
                                        dictionaryEntries: [entry],
-                                       targetApp: "TextEdit",
+                                       targetApplication: targetApplication,
                                        audioURL: url,
                                        speech: speech,
                                        audio: audio)
 
         XCTAssertEqual(session.locale.identifier, "de_DE")
         XCTAssertEqual(session.dictionaryEntries, [entry])
-        XCTAssertEqual(session.targetApp, "TextEdit")
+        XCTAssertEqual(session.targetApplication, targetApplication)
         XCTAssertEqual(session.audioURL, url)
     }
 
     func testNewSessionStartsInSettingUpState() {
         let session = DictationSession(locale: Locale(identifier: "de_DE"),
-                                       dictionaryEntries: [], targetApp: "", audioURL: nil,
+                                       dictionaryEntries: [],
+                                       targetApplication: makeTargetApplication(), audioURL: nil,
                                        speech: FakeSpeechEngine(), audio: FakeAudioCapture())
         XCTAssertEqual(session.state, .settingUp)
     }
 
     func testSessionsHaveDistinctIDs() {
-        let first = DictationSession(locale: .current, dictionaryEntries: [], targetApp: "",
+        let first = DictationSession(locale: .current, dictionaryEntries: [],
+                                      targetApplication: makeTargetApplication(),
                                      audioURL: nil, speech: FakeSpeechEngine(), audio: FakeAudioCapture())
-        let second = DictationSession(locale: .current, dictionaryEntries: [], targetApp: "",
+        let second = DictationSession(locale: .current, dictionaryEntries: [],
+                                      targetApplication: makeTargetApplication(),
                                       audioURL: nil, speech: FakeSpeechEngine(), audio: FakeAudioCapture())
         XCTAssertNotEqual(first.id, second.id)
     }
@@ -511,7 +718,8 @@ final class DictationSessionTests: XCTestCase {
     func testTeardownIsIdempotent() async {
         let audio = FakeAudioCapture()
         let speech = FakeSpeechEngine()
-        let session = DictationSession(locale: .current, dictionaryEntries: [], targetApp: "",
+        let session = DictationSession(locale: .current, dictionaryEntries: [],
+                                      targetApplication: makeTargetApplication(),
                                        audioURL: nil, speech: speech, audio: audio)
 
         await session.teardown()
@@ -526,7 +734,8 @@ final class DictationSessionTests: XCTestCase {
     func testTeardownDeletesAudioFile() async throws {
         let url = makeDirectory().appendingPathComponent("delete-me.wav")
         try Data("audio".utf8).write(to: url)
-        let session = DictationSession(locale: .current, dictionaryEntries: [], targetApp: "",
+        let session = DictationSession(locale: .current, dictionaryEntries: [],
+                                      targetApplication: makeTargetApplication(),
                                        audioURL: url, speech: FakeSpeechEngine(), audio: FakeAudioCapture())
 
         await session.teardown()
@@ -947,7 +1156,8 @@ final class DictationSessionTests: XCTestCase {
                 FakeSpeechEngine(text: "Erfolgreiches Diktat"),
                 FakeSpeechEngine(text: "Wird verworfen"),
                 FakeSpeechEngine(),
-            ]
+            ],
+            isTextFieldEditable: { true }
         )
         var toasts: [(String, Bool)] = []
         app.onToast = { toasts.append(($0, $1)) }

@@ -2,6 +2,21 @@ import AppKit
 import CoreGraphics
 import ApplicationServices
 
+struct TargetApplication: Equatable, Sendable {
+    let localizedName: String
+    let bundleIdentifier: String?
+    let processIdentifier: pid_t
+}
+
+enum TargetApplicationMatcher {
+    static func matches(captured: TargetApplication, current: TargetApplication?) -> Bool {
+        guard let current,
+              captured.processIdentifier == current.processIdentifier else { return false }
+        guard let bundleIdentifier = captured.bundleIdentifier else { return true }
+        return current.bundleIdentifier == bundleIdentifier
+    }
+}
+
 // MARK: - TextInjector
 // Tippt fertigen Text per synthetisierter Keyboard-Events in die fokussierte App.
 // Benötigt Bedienungshilfen-Berechtigung (Accessibility).

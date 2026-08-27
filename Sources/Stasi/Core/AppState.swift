@@ -48,8 +48,10 @@ final class AppState {
     private let audioDirectory: URL
     private let audioRecoveryStore: AudioRecoveryStore
     private let revealRecoveryFile: @MainActor (URL) -> Void
+    private let frontmostApplication: @MainActor () -> TargetApplication?
     private let isTextFieldEditable: @Sendable () -> Bool
     private let injectText: @Sendable (String) -> Void
+    private let copyToClipboard: @MainActor (String) -> Void
     private(set) var modelReadyByLocale: [String: Bool] = [:]
     @ObservationIgnored private var modelPreparationTasks: [String: Task<Bool, Never>] = [:]
     @ObservationIgnored private var knownWordCache: [String: Bool] = [:]
@@ -183,11 +185,23 @@ final class AppState {
          revealRecoveryFile: @escaping @MainActor (URL) -> Void = { url in
              NSWorkspace.shared.activateFileViewerSelecting([url])
          },
+         frontmostApplication: @escaping @MainActor () -> TargetApplication? = {
+             guard let application = NSWorkspace.shared.frontmostApplication else { return nil }
+             return TargetApplication(
+                 localizedName: application.localizedName ?? "Unbekannte App",
+                 bundleIdentifier: application.bundleIdentifier,
+                 processIdentifier: application.processIdentifier
+             )
+         },
          isTextFieldEditable: @escaping @Sendable () -> Bool = {
              TextInjector.isFocusedElementEditable()
          },
          injectText: @escaping @Sendable (String) -> Void = {
              TextInjector.inject($0)
+         },
+         copyToClipboard: @escaping @MainActor (String) -> Void = { text in
+             NSPasteboard.general.clearContents()
+             NSPasteboard.general.setString(text, forType: .string)
          }) {
         self.settings = settings
         self.dictionary = dictionary ?? DictionaryStore()
@@ -214,8 +228,10 @@ final class AppState {
             DebugLog.log("STASI-AUDIO: Recovery-Cleanup beim Start fehlgeschlagen: \(error.localizedDescription)")
         }
         self.revealRecoveryFile = revealRecoveryFile
+        self.frontmostApplication = frontmostApplication
         self.isTextFieldEditable = isTextFieldEditable
         self.injectText = injectText
+        self.copyToClipboard = copyToClipboard
         levelTraceEnabled = ProcessInfo.processInfo.environment["STASI_LEVEL_TRACE"] == "1"
         (commandStream, commandContinuation) = AsyncStream.makeStream(of: HotkeyCommand.self)
         accessibilityGranted = Permissions.accessibilityGranted
@@ -459,14 +475,18 @@ final class AppState {
         let locale = settings.transcriptionLocale
         let dictionaryEntries = dictionary.entries
         let biasWords = DictionaryBiaser(entries: dictionaryEntries).vocabularyContext()
-        let targetApp = NSWorkspace.shared.frontmostApplication?.localizedName ?? ""
+        let targetApplication = frontmostApplication() ?? TargetApplication(
+            localizedName: "Unbekannte App",
+            bundleIdentifier: nil,
+            processIdentifier: 0
+        )
         try? FileManager.default.createDirectory(at: audioDirectory, withIntermediateDirectories: true)
         let audioURL = audioDirectory.appendingPathComponent("\(UUID().uuidString).wav")
         let audio = audioFactory()
         let session = DictationSession(
             locale: locale,
             dictionaryEntries: dictionaryEntries,
-            targetApp: targetApp,
+            targetApplication: targetApplication,
             audioURL: audioURL,
             speech: speechFactory(locale, biasWords),
             audio: audio
@@ -776,7 +796,7 @@ final class AppState {
         let dictionarySnapshot = session.dictionaryEntries
         let configuredLevel = settings.postProcessing
         let levelSnapshot = TranscriptPolisher.effectiveLevel(configured: configuredLevel)
-        let targetAppSnapshot = session.targetApp
+        let targetApplicationSnapshot = session.targetApplication
         let audioURLSnapshot = audioURL
         let durationSnapshot = duration
 
@@ -805,7 +825,7 @@ final class AppState {
             correctedText: trimmed,
             corrections: outcome.corrections,
             durationSecs: durationSnapshot,
-            targetApp: targetAppSnapshot,
+            targetApp: targetApplicationSnapshot.localizedName,
             audioPath: audioURLSnapshot?.path,
             polish: outcome.summary
         )
@@ -839,17 +859,21 @@ final class AppState {
         phase = .injecting
         partialText = trimmed
         // Auto-Kopieren: Das letzte Protokoll liegt immer in der Zwischenablage,
-        // sodass einfaches ⌘V zum (erneuten) Einfügen genügt – wie bei Wispr.
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(trimmed, forType: .string)
+        // auch wenn Ziel-App oder Textfokus vor dem Einfügen gewechselt haben.
+        copyToClipboard(trimmed)
 
         let isTextFieldEditable = isTextFieldEditable
         let injectText = injectText
-        Task.detached(priority: .userInitiated) {
-            // Nur tippen, wenn ein editierbares Textfeld fokussiert ist –
-            // sonst spielt macOS den Fehler-Beep (kein Textfeld im Fokus).
+        Task.detached(priority: .userInitiated) { [weak self] in
             let editable = isTextFieldEditable()
-            if editable {
+            let sameTarget = await MainActor.run { [weak self] in
+                guard let self else { return false }
+                return TargetApplicationMatcher.matches(
+                    captured: targetApplicationSnapshot,
+                    current: self.frontmostApplication()
+                )
+            }
+            if sameTarget && editable {
                 injectText(trimmed)
             }
             // Zwei Poll-Zyklen Sichtbarkeit, auch wenn das Einfügen nur einen
@@ -857,7 +881,14 @@ final class AppState {
             // insgesamt schneller Verarbeitung trotzdem unsichtbar.
             try? await Task.sleep(nanoseconds: 100_000_000)
             await MainActor.run { [weak self] in
-                self?.resetSessionPresentationToIdle()
+                guard let self else { return }
+                if !sameTarget || !editable {
+                    self.onToast?(
+                        "Nicht in \(targetApplicationSnapshot.localizedName) eingefügt: Ziel-App oder Textfokus hat sich geändert. Der Text liegt in der Zwischenablage.",
+                        false
+                    )
+                }
+                self.resetSessionPresentationToIdle()
             }
         }
     }
@@ -907,8 +938,7 @@ final class AppState {
     }
 
     func copy(_ record: TranscriptionRecord) {
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(record.correctedText, forType: .string)
+        copyToClipboard(record.correctedText)
     }
 
     // MARK: Zusatz-Shortcuts

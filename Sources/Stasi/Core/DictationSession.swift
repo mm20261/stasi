@@ -26,7 +26,7 @@ final class DictationSession {
     let id: UUID
     private(set) var locale: Locale
     let dictionaryEntries: [DictionaryEntry]
-    let targetApp: String
+    let targetApplication: TargetApplication
     let audioURL: URL?
     let speech: any SpeechEngining
     let audio: any AudioCapturing
@@ -73,14 +73,14 @@ final class DictationSession {
     init(id: UUID = UUID(),
          locale: Locale,
          dictionaryEntries: [DictionaryEntry],
-         targetApp: String,
+         targetApplication: TargetApplication,
          audioURL: URL?,
          speech: any SpeechEngining,
          audio: any AudioCapturing) {
         self.id = id
         self.locale = locale
         self.dictionaryEntries = dictionaryEntries
-        self.targetApp = targetApp
+        self.targetApplication = targetApplication
         self.audioURL = audioURL
         self.speech = speech
         self.audio = audio
