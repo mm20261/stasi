@@ -29,6 +29,21 @@ enum SpeechLocaleResolution {
     }
 }
 
+struct SpeechRetirementTasks: Sendable {
+    let finalizeTask: Task<Bool, Never>
+    let resultsTask: Task<Void, Never>?
+
+    static func afterStartFailure(
+        resultsTask: Task<Void, Never>?,
+        finalize: @escaping @Sendable () async -> Bool
+    ) -> SpeechRetirementTasks {
+        SpeechRetirementTasks(
+            finalizeTask: Task { await finalize() },
+            resultsTask: resultsTask
+        )
+    }
+}
+
 actor SpeechRetirementLimiter {
     private let limit: Int
     private var reservedSlots = 0
@@ -73,8 +88,7 @@ actor TranscriptionEngine: SpeechEngining {
         let id: UUID
         let analyzer: SpeechAnalyzer
         let transcriber: SpeechTranscriber
-        let finalizeTask: Task<Bool, Never>
-        let resultsTask: Task<Void, Never>?
+        let tasks: SpeechRetirementTasks
     }
 
     private let locale: Locale
@@ -201,11 +215,23 @@ actor TranscriptionEngine: SpeechEngining {
                 self.analyzer = nil
                 self.transcriber = nil
                 self.resultsTask = nil
+                let retirementTasks = SpeechRetirementTasks.afterStartFailure(
+                    resultsTask: resultsTask
+                ) {
+                    do {
+                        try await analyzer.finalizeAndFinishThroughEndOfInput()
+                        return true
+                    } catch {
+                        DebugLog.log(
+                            "STASI-SPEECH: finalize nach Startfehler fehlgeschlagen: \(error.localizedDescription)"
+                        )
+                        return false
+                    }
+                }
                 retire(
                     analyzer: analyzer,
                     transcriber: transcriber,
-                    finalizeTask: Task { true },
-                    resultsTask: resultsTask
+                    tasks: retirementTasks
                 )
                 throw error
             }
@@ -282,10 +308,14 @@ actor TranscriptionEngine: SpeechEngining {
                 DebugLog.log("STASI-SPEECH: finalize Timeout nach 3 s – nutze Text-Stand")
             }
             finishOutput()
-            retire(analyzer: analyzer,
-                   transcriber: transcriber,
-                   finalizeTask: finalizeTask,
-                   resultsTask: resultsTask)
+            retire(
+                analyzer: analyzer,
+                transcriber: transcriber,
+                tasks: SpeechRetirementTasks(
+                    finalizeTask: finalizeTask,
+                    resultsTask: resultsTask
+                )
+            )
             return
         }
 
@@ -305,10 +335,14 @@ actor TranscriptionEngine: SpeechEngining {
         finishOutput()
         if !resultsCompleted {
             DebugLog.log("STASI-SPEECH: Ergebnis-Strom nach 1 s noch offen – Ausgabe beendet")
-            retire(analyzer: analyzer,
-                   transcriber: transcriber,
-                   finalizeTask: finalizeTask,
-                   resultsTask: resultsTask)
+            retire(
+                analyzer: analyzer,
+                transcriber: transcriber,
+                tasks: SpeechRetirementTasks(
+                    finalizeTask: finalizeTask,
+                    resultsTask: resultsTask
+                )
+            )
         } else {
             await releaseRetirementSlot()
         }
@@ -363,8 +397,7 @@ actor TranscriptionEngine: SpeechEngining {
 
     private func retire(analyzer: SpeechAnalyzer,
                         transcriber: SpeechTranscriber,
-                        finalizeTask: Task<Bool, Never>,
-                        resultsTask: Task<Void, Never>?) {
+                        tasks: SpeechRetirementTasks) {
         guard ownsRetirementSlot else { return }
         ownsRetirementSlot = false
         let id = UUID()
@@ -372,15 +405,14 @@ actor TranscriptionEngine: SpeechEngining {
             RetiredAnalyzer(id: id,
                             analyzer: analyzer,
                             transcriber: transcriber,
-                            finalizeTask: finalizeTask,
-                            resultsTask: resultsTask)
+                            tasks: tasks)
         )
         // Der Task hält diesen Engine-actor absichtlich stark: Nach dem
         // Session-Ende gäbe es sonst keinen Besitzer mehr für die Retirees.
         Task { [self] in
             await Self.retirementLimiter.releaseAfterNaturalCompletion(
-                finalizeTask: finalizeTask,
-                resultsTask: resultsTask
+                finalizeTask: tasks.finalizeTask,
+                resultsTask: tasks.resultsTask
             )
             self.removeRetiredAnalyzer(id: id)
         }
