@@ -96,6 +96,23 @@ final class AudioCaptureFileTests: XCTestCase {
         }
     }
 
+    private final class UInt64Samples: @unchecked Sendable {
+        private let lock = NSLock()
+        private var storage: [UInt64] = []
+
+        var values: [UInt64] {
+            lock.lock()
+            defer { lock.unlock() }
+            return storage
+        }
+
+        func record(_ value: UInt64) {
+            lock.lock()
+            storage.append(value)
+            lock.unlock()
+        }
+    }
+
     private final class ConfigurationBox: @unchecked Sendable {
         private let lock = NSLock()
         private var configuration: AudioCapture.IOConfiguration?
@@ -710,6 +727,61 @@ final class AudioCaptureFileTests: XCTestCase {
 
         await fulfillment(of: [received], timeout: 1)
         XCTAssertEqual(samples.values, [0.25])
+        _ = await capture.stop()
+    }
+
+    func testRenderCopyStressAcrossVariableFrameLengthsMeetsCallbackBudget() async throws {
+        let outputFormat = try XCTUnwrap(AVAudioFormat(
+            commonFormat: .pcmFormatFloat32,
+            sampleRate: 48_000,
+            channels: 1,
+            interleaved: false
+        ))
+        let sinkBox = SinkBox()
+        let delivered = DispatchSemaphore(value: 0)
+        let errorSpy = ErrorSpy()
+        let durations = UInt64Samples()
+        let capture = AudioCapture(
+            audioUnitHooks: AudioCapture.AudioUnitHooks(
+                configureInput: { _, _, sink in
+                    sinkBox.store(sink)
+                    return outputFormat
+                },
+                initialize: {}, start: {}, stop: {}, uninitialize: {}, dispose: {}
+            )
+        )
+        try capture.start(
+            outputFormat: outputFormat,
+            recordTo: nil,
+            onRuntimeError: { error in errorSpy.record(error) }
+        ) { _ in delivered.signal() }
+        let frameLengths: [AVAudioFrameCount] = [64, 128, 256, 512, 1_024, 2_048, 4_096]
+        let buffers = try frameLengths.map { length in
+            let buffer = try XCTUnwrap(AVAudioPCMBuffer(
+                pcmFormat: outputFormat,
+                frameCapacity: length
+            ))
+            buffer.frameLength = length
+            return buffer
+        }
+        let sink = try XCTUnwrap(sinkBox.load())
+
+        for index in 0..<1_000 {
+            let started = DispatchTime.now().uptimeNanoseconds
+            sink(buffers[index % buffers.count])
+            durations.record(DispatchTime.now().uptimeNanoseconds - started)
+            XCTAssertEqual(delivered.wait(timeout: .now() + 0.25), .success)
+        }
+
+        let sorted = durations.values.sorted()
+        let percentile99 = sorted[min(sorted.count - 1, Int(Double(sorted.count) * 0.99))]
+        print("STASI-AUDIO-STRESS: 1000 variable slices, p99 callback \(Double(percentile99) / 1_000_000) ms")
+        XCTAssertLessThan(
+            percentile99,
+            10_000_000,
+            "p99 Render-Besitzkopie \(Double(percentile99) / 1_000_000) ms; 10-ms-Budget überschritten"
+        )
+        XCTAssertTrue(errorSpy.values.isEmpty)
         _ = await capture.stop()
     }
 

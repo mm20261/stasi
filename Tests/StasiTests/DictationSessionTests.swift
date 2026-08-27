@@ -256,6 +256,14 @@ final class DictationSessionTests: XCTestCase {
         }
     }
 
+    private final class RevealSpy {
+        private(set) var urls: [URL] = []
+
+        func reveal(_ url: URL) {
+            urls.append(url)
+        }
+    }
+
     private final class SpellCheckerSpy {
         private(set) var calls: [(word: String, language: String)] = []
 
@@ -305,6 +313,8 @@ final class DictationSessionTests: XCTestCase {
                          history: (any HistoryStoring)? = nil,
                          isTextFieldEditable: @escaping @Sendable () -> Bool = { false },
                          injectText: @escaping @Sendable (String) -> Void = { _ in },
+                         recoveryStore: AudioRecoveryStore? = nil,
+                         revealRecoveryFile: @escaping @MainActor (URL) -> Void = { _ in },
                          directory: URL? = nil) -> AppState {
         let root = directory ?? makeDirectory()
         let dictionary = DictionaryStore(directory: root.appendingPathComponent("dictionary"))
@@ -323,6 +333,8 @@ final class DictationSessionTests: XCTestCase {
             minimumPushToTalkDuration: minimumPushToTalkDuration,
             installHotkey: false,
             audioDirectory: root.appendingPathComponent("audio"),
+            audioRecoveryStore: recoveryStore,
+            revealRecoveryFile: revealRecoveryFile,
             isTextFieldEditable: isTextFieldEditable,
             injectText: injectText
         )
@@ -541,6 +553,44 @@ final class DictationSessionTests: XCTestCase {
         XCTAssertTrue(app.history.records.isEmpty)
     }
 
+    func testShortTapStaysVisiblyBusyAndDoesNotLoseSecondPressBehindIdle() async {
+        let factory = AudioFactorySpy()
+        let stopEntered = DispatchSemaphore(value: 0)
+        let allowStopToFinish = DispatchSemaphore(value: 0)
+        factory.configureCapture = { capture, index in
+            guard index == 0 else { return }
+            capture.onStop = {
+                stopEntered.signal()
+                allowStopToFinish.wait()
+            }
+        }
+        let app = makeApp(
+            audioFactory: { factory.make() },
+            engines: [FakeSpeechEngine(), FakeSpeechEngine()],
+            minimumPushToTalkDuration: 60
+        )
+        var toasts: [String] = []
+        app.onToast = { message, _ in toasts.append(message) }
+
+        app.startDictation()
+        await waitUntil { factory.captures.first?.isRunning == true }
+        DispatchQueue.global(qos: .userInitiated).async {
+            stopEntered.wait()
+            Thread.sleep(forTimeInterval: 0.1)
+            allowStopToFinish.signal()
+        }
+
+        app.stopDictation(commit: true)
+        XCTAssertEqual(app.phase, .transcribing)
+        app.startDictation()
+        XCTAssertEqual(factory.captures.count, 1)
+        XCTAssertEqual(app.phase, .transcribing)
+        XCTAssertEqual(toasts, ["Vorherige Aufnahme wird noch beendet."])
+
+        await waitUntil { app.phase == .idle }
+        XCTAssertEqual(factory.captures.count, 1)
+    }
+
     func testSpeechBufferOverflowFailsSessionWithoutHistoryClipboardOrInjection() async throws {
         let directory = makeDirectory()
         let audio = FakeAudioCapture()
@@ -548,12 +598,17 @@ final class DictationSessionTests: XCTestCase {
         await speech.blockNextFeed()
         let history = FakeHistoryStore()
         let textInjector = TextInjectorSpy()
+        let reveal = RevealSpy()
+        let recoveryDirectory = directory.appendingPathComponent("recovery", isDirectory: true)
+        let recoveryStore = AudioRecoveryStore(directory: recoveryDirectory)
         let app = makeApp(
             audio: audio,
             engines: [speech],
             history: history,
             isTextFieldEditable: { true },
             injectText: { textInjector.inject($0) },
+            recoveryStore: recoveryStore,
+            revealRecoveryFile: { reveal.reveal($0) },
             directory: directory
         )
         var toasts: [String] = []
@@ -581,16 +636,24 @@ final class DictationSessionTests: XCTestCase {
             audio.emit(chunk)
         }
 
+        await waitUntil { await speech.metrics().feedCount == 1 }
+        let feedCountAfterOverflow = await speech.metrics().feedCount
         app.stopDictation(commit: true)
         await speech.unblockFeed()
         await waitUntil { app.phase == .idle }
 
+        let finalFeedCount = await speech.metrics().feedCount
+        XCTAssertEqual(feedCountAfterOverflow, 1)
+        XCTAssertEqual(finalFeedCount, 1)
         XCTAssertTrue(history.records.isEmpty)
         XCTAssertEqual(history.insertCount, 0)
         XCTAssertEqual(textInjector.callCount, 0)
         XCTAssertEqual(pasteboard.string(forType: .string), "vorheriger Inhalt")
-        XCTAssertTrue(FileManager.default.fileExists(atPath: finishedWAV.path))
-        XCTAssertTrue(toasts.contains { $0.localizedCaseInsensitiveContains("unvollständig") })
+        XCTAssertFalse(FileManager.default.fileExists(atPath: finishedWAV.path))
+        let recoveredURL = try XCTUnwrap(reveal.urls.first)
+        XCTAssertEqual(recoveredURL.deletingLastPathComponent(), recoveryDirectory)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: recoveredURL.path))
+        XCTAssertTrue(toasts.contains { $0.localizedCaseInsensitiveContains("finder") })
         XCTAssertNil(app.currentSession)
     }
 
@@ -600,12 +663,16 @@ final class DictationSessionTests: XCTestCase {
         let speech = FakeSpeechEngine(text: "Darf nicht gespeichert werden")
         let history = FakeHistoryStore()
         let textInjector = TextInjectorSpy()
+        let reveal = RevealSpy()
+        let recoveryDirectory = directory.appendingPathComponent("recovery", isDirectory: true)
         let app = makeApp(
             audio: audio,
             engines: [speech],
             history: history,
             isTextFieldEditable: { true },
             injectText: { textInjector.inject($0) },
+            recoveryStore: AudioRecoveryStore(directory: recoveryDirectory),
+            revealRecoveryFile: { reveal.reveal($0) },
             directory: directory
         )
         var toasts: [String] = []
@@ -635,11 +702,110 @@ final class DictationSessionTests: XCTestCase {
         XCTAssertEqual(history.insertCount, 0)
         XCTAssertEqual(textInjector.callCount, 0)
         XCTAssertEqual(pasteboard.string(forType: .string), "vorheriger Inhalt")
-        XCTAssertTrue(FileManager.default.fileExists(atPath: finishedWAV.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: finishedWAV.path))
+        let recoveredURL = try XCTUnwrap(reveal.urls.first)
+        XCTAssertEqual(recoveredURL.deletingLastPathComponent(), recoveryDirectory)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: recoveredURL.path))
         XCTAssertEqual(audio.stopCount, 1)
         XCTAssertEqual(toasts.count, 1)
-        XCTAssertTrue(toasts[0].localizedCaseInsensitiveContains("audiodatei"))
+        XCTAssertTrue(toasts[0].localizedCaseInsensitiveContains("finder"))
         XCTAssertNil(app.currentSession)
+    }
+
+    func testRuntimeErrorDuringDiscardDoesNotRecoverOrToast() async throws {
+        let directory = makeDirectory()
+        let audio = FakeAudioCapture()
+        let reveal = RevealSpy()
+        let app = makeApp(
+            audio: audio,
+            engines: [FakeSpeechEngine(text: "Verwerfen")],
+            recoveryStore: AudioRecoveryStore(
+                directory: directory.appendingPathComponent("recovery", isDirectory: true)
+            ),
+            revealRecoveryFile: { reveal.reveal($0) },
+            directory: directory
+        )
+        var toasts: [String] = []
+        app.onToast = { message, _ in toasts.append(message) }
+
+        app.startDictation()
+        await waitUntil { audio.isRunning }
+        let wav = try XCTUnwrap(audio.startedURL)
+        try Data("discard audio".utf8).write(to: wav)
+        audio.stoppedURL = wav
+        audio.onStop = { audio.fail(.conversionFailed("late discard failure")) }
+
+        app.requestDiscard()
+        await waitUntil { app.phase == .idle }
+
+        XCTAssertTrue(toasts.isEmpty)
+        XCTAssertTrue(reveal.urls.isEmpty)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: wav.path))
+        XCTAssertTrue(app.history.records.isEmpty)
+    }
+
+    func testRuntimeErrorDuringShortTapDoesNotRecoverOrToast() async throws {
+        let directory = makeDirectory()
+        let audio = FakeAudioCapture()
+        let reveal = RevealSpy()
+        let app = makeApp(
+            audio: audio,
+            engines: [FakeSpeechEngine()],
+            minimumPushToTalkDuration: 60,
+            recoveryStore: AudioRecoveryStore(
+                directory: directory.appendingPathComponent("recovery", isDirectory: true)
+            ),
+            revealRecoveryFile: { reveal.reveal($0) },
+            directory: directory
+        )
+        var toasts: [String] = []
+        app.onToast = { message, _ in toasts.append(message) }
+
+        app.startDictation()
+        await waitUntil { audio.isRunning }
+        let wav = try XCTUnwrap(audio.startedURL)
+        try Data("short tap audio".utf8).write(to: wav)
+        audio.stoppedURL = wav
+        audio.onStop = { audio.fail(.processingBacklog) }
+
+        app.stopDictation(commit: true)
+        await waitUntil { app.phase == .idle }
+
+        XCTAssertTrue(toasts.isEmpty)
+        XCTAssertTrue(reveal.urls.isEmpty)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: wav.path))
+        XCTAssertTrue(app.history.records.isEmpty)
+    }
+
+    func testRuntimeErrorDuringCommitDrainRemainsFatalAndRecoverable() async throws {
+        let directory = makeDirectory()
+        let audio = FakeAudioCapture()
+        let reveal = RevealSpy()
+        let recoveryDirectory = directory.appendingPathComponent("recovery", isDirectory: true)
+        let app = makeApp(
+            audio: audio,
+            engines: [FakeSpeechEngine(text: "Nicht als Erfolg speichern")],
+            recoveryStore: AudioRecoveryStore(directory: recoveryDirectory),
+            revealRecoveryFile: { reveal.reveal($0) },
+            directory: directory
+        )
+        var toasts: [String] = []
+        app.onToast = { message, _ in toasts.append(message) }
+
+        app.startDictation()
+        await waitUntil { audio.isRunning }
+        let wav = try XCTUnwrap(audio.startedURL)
+        try Data("commit drain audio".utf8).write(to: wav)
+        audio.stoppedURL = wav
+        audio.onStop = { audio.fail(.wavWriteFailed("late commit failure")) }
+
+        app.stopDictation(commit: true)
+        await waitUntil { app.phase == .idle }
+
+        XCTAssertTrue(app.history.records.isEmpty)
+        XCTAssertEqual(reveal.urls.count, 1)
+        XCTAssertEqual(reveal.urls.first?.deletingLastPathComponent(), recoveryDirectory)
+        XCTAssertTrue(toasts.contains { $0.localizedCaseInsensitiveContains("finder") })
     }
 
     func testAudioRuntimeErrorDeletesUnclosedRecording() async throws {
@@ -658,6 +824,24 @@ final class DictationSessionTests: XCTestCase {
 
         XCTAssertFalse(FileManager.default.fileExists(atPath: unfinishedWAV.path))
         XCTAssertTrue(app.history.records.isEmpty)
+    }
+
+    func testEmptyTranscriptPerformsCompleteIdleReset() async {
+        let audio = FakeAudioCapture()
+        let app = makeApp(audio: audio, engines: [FakeSpeechEngine()])
+
+        app.startDictation()
+        await waitUntil { audio.isRunning }
+        app.updateElapsedFromPoll(now: Date().addingTimeInterval(5))
+        XCTAssertGreaterThan(app.elapsed, 4)
+
+        app.stopDictation(commit: true)
+        await waitUntil { app.phase == .idle }
+
+        XCTAssertEqual(app.elapsed, 0)
+        XCTAssertEqual(app.displayLevel, 0)
+        app.updateElapsedFromPoll(now: Date().addingTimeInterval(30))
+        XCTAssertEqual(app.elapsed, 0)
     }
 
     func testHistoryInsertFailurePreservesFinishedAudioAndSkipsInjection() async throws {
@@ -680,10 +864,14 @@ final class DictationSessionTests: XCTestCase {
 
         app.startDictation()
         await waitUntil { audio.isRunning }
+        app.updateElapsedFromPoll(now: Date().addingTimeInterval(5))
         app.stopDictation(commit: true)
         await waitUntil { app.phase == .idle }
 
         XCTAssertEqual(history.insertCount, 1)
+        XCTAssertEqual(app.elapsed, 0)
+        app.updateElapsedFromPoll(now: Date().addingTimeInterval(30))
+        XCTAssertEqual(app.elapsed, 0)
         XCTAssertTrue(FileManager.default.fileExists(atPath: finishedWAV.path))
         XCTAssertEqual(textInjector.callCount, 0)
         XCTAssertEqual(app.phase, .idle)
@@ -846,45 +1034,6 @@ final class DictationSessionTests: XCTestCase {
 
         XCTAssertEqual(factory.captures.count, 2)
         XCTAssertFalse(factory.captures[0] === factory.captures[1])
-        app.requestDiscard()
-        await waitUntil { app.phase == .idle }
-    }
-
-    func testShortTapBlocksNewSessionUntilTeardownCompletes() async {
-        let factory = AudioFactorySpy()
-        let stopEntered = DispatchSemaphore(value: 0)
-        let allowStopToFinish = DispatchSemaphore(value: 0)
-        factory.configureCapture = { capture, index in
-            guard index == 0 else { return }
-            capture.onStop = {
-                stopEntered.signal()
-                allowStopToFinish.wait()
-            }
-        }
-        let app = makeApp(
-            audioFactory: { factory.make() },
-            engines: [FakeSpeechEngine(), FakeSpeechEngine()],
-            minimumPushToTalkDuration: 60
-        )
-
-        app.startDictation()
-        await waitUntil { factory.captures.first?.isRunning == true }
-        DispatchQueue.global(qos: .userInitiated).async {
-            stopEntered.wait()
-            Thread.sleep(forTimeInterval: 0.1)
-            allowStopToFinish.signal()
-        }
-
-        app.stopDictation(commit: true)
-        XCTAssertEqual(app.phase, .idle)
-        app.startDictation()
-        XCTAssertEqual(factory.captures.count, 1)
-
-        await waitUntil {
-            app.startDictation()
-            return factory.captures.count == 2 && factory.captures[1].isRunning
-        }
-
         app.requestDiscard()
         await waitUntil { app.phase == .idle }
     }

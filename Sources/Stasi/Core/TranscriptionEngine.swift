@@ -21,11 +21,15 @@ protocol SpeechEngining: Sendable {
 }
 
 enum SpeechLocaleResolution {
-    static func resolve(requested: Locale, supportedEquivalent: Locale?) throws -> Locale {
-        guard let supportedEquivalent else {
+    /// Benennt die tatsächliche Semantik präzise: Apple entscheidet über die
+    /// unterstützte äquivalente Locale; dieser Helfer validiert nur nil als
+    /// „nicht unterstützt“ und behauptet keine eigene Sprachäquivalenz.
+    static func appleResolvedLocale(requested: Locale,
+                                    appleEquivalent: Locale?) throws -> Locale {
+        guard let appleEquivalent else {
             throw TranscriptionError.unsupportedLocale(requested.identifier)
         }
-        return supportedEquivalent
+        return appleEquivalent
     }
 }
 
@@ -125,9 +129,9 @@ actor TranscriptionEngine: SpeechEngining {
             throw TranscriptionError.engineUnavailable
         }
         let equivalent = await SpeechTranscriber.supportedLocale(equivalentTo: locale)
-        let resolved = try SpeechLocaleResolution.resolve(
+        let resolved = try SpeechLocaleResolution.appleResolvedLocale(
             requested: locale,
-            supportedEquivalent: equivalent
+            appleEquivalent: equivalent
         )
         try await ensureModelInstalled(for: makeTranscriber(locale: resolved))
     }
@@ -140,9 +144,9 @@ actor TranscriptionEngine: SpeechEngining {
             return actualLocale
         }
         let equivalent = await SpeechTranscriber.supportedLocale(equivalentTo: requested)
-        let resolved = try SpeechLocaleResolution.resolve(
+        let resolved = try SpeechLocaleResolution.appleResolvedLocale(
             requested: requested,
-            supportedEquivalent: equivalent
+            appleEquivalent: equivalent
         )
         if requested.identifier == locale.identifier {
             actualLocale = resolved

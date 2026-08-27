@@ -12,6 +12,17 @@ final class DictationSession {
         case finished
     }
 
+    enum CompletionIntent: Equatable {
+        case active
+        case commit
+        case discard
+        case shortTap
+
+        var treatsRuntimeFailureAsFatal: Bool {
+            self == .active || self == .commit
+        }
+    }
+
     let id: UUID
     private(set) var locale: Locale
     let dictionaryEntries: [DictionaryEntry]
@@ -26,6 +37,7 @@ final class DictationSession {
     var consumeTask: Task<Void, Never>?
     var setupTask: Task<Void, Never>?
     var state: State = .settingUp
+    private(set) var completionIntent: CompletionIntent = .active
 
     private var teardownTask: Task<Void, Never>?
     private var shouldPreserveAudioFile = false
@@ -44,8 +56,14 @@ final class DictationSession {
         shouldPreserveAudioFile = true
     }
 
+    func beginCompletion(_ intent: CompletionIntent) {
+        guard completionIntent == .active else { return }
+        completionIntent = intent
+    }
+
     func beginRuntimeFailure() -> Bool {
-        guard !runtimeFailureHandled else { return false }
+        guard completionIntent.treatsRuntimeFailureAsFatal,
+              !runtimeFailureHandled else { return false }
         runtimeFailureHandled = true
         shouldRecoverClosedAudioFile = true
         return true
@@ -92,7 +110,7 @@ final class DictationSession {
             var stoppedURL: URL?
             if !resourcesAlreadyFinished {
                 stoppedURL = await audio.stop()
-                continuation?.finish()
+                self.health.closeSpeechIngress(continuation)
                 await feedTask?.value
                 await speech.finish()
                 if let consumeTask {

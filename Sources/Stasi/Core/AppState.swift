@@ -44,6 +44,8 @@ final class AppState {
     private let modelInstaller: @Sendable (Locale) async throws -> Void
     private let spellChecker: @MainActor (String, String) -> Bool
     private let audioDirectory: URL
+    private let audioRecoveryStore: AudioRecoveryStore
+    private let revealRecoveryFile: @MainActor (URL) -> Void
     private let isTextFieldEditable: @Sendable () -> Bool
     private let injectText: @Sendable (String) -> Void
     private(set) var modelReadyByLocale: [String: Bool] = [:]
@@ -172,6 +174,10 @@ final class AppState {
          minimumPushToTalkDuration: TimeInterval = PillChrome.presentationDelay,
          installHotkey: Bool = true,
          audioDirectory: URL? = nil,
+         audioRecoveryStore: AudioRecoveryStore? = nil,
+         revealRecoveryFile: @escaping @MainActor (URL) -> Void = { url in
+             NSWorkspace.shared.activateFileViewerSelecting([url])
+         },
          isTextFieldEditable: @escaping @Sendable () -> Bool = {
              TextInjector.isFocusedElementEditable()
          },
@@ -188,8 +194,19 @@ final class AppState {
         self.spellChecker = spellChecker
         self.consumeTimeoutNanoseconds = consumeTimeoutNanoseconds
         self.minimumPushToTalkDuration = minimumPushToTalkDuration
-        self.audioDirectory = audioDirectory ?? DictionaryStore.appSupportDirectory
+        let resolvedAudioDirectory = audioDirectory ?? DictionaryStore.appSupportDirectory
             .appendingPathComponent("audio", isDirectory: true)
+        self.audioDirectory = resolvedAudioDirectory
+        self.audioRecoveryStore = audioRecoveryStore ?? AudioRecoveryStore(
+            directory: resolvedAudioDirectory.deletingLastPathComponent()
+                .appendingPathComponent("Audio Recovery", isDirectory: true)
+        )
+        do {
+            try self.audioRecoveryStore.cleanup()
+        } catch {
+            DebugLog.log("STASI-AUDIO: Recovery-Cleanup beim Start fehlgeschlagen: \(error.localizedDescription)")
+        }
+        self.revealRecoveryFile = revealRecoveryFile
         self.isTextFieldEditable = isTextFieldEditable
         self.injectText = injectText
         levelTraceEnabled = ProcessInfo.processInfo.environment["STASI_LEVEL_TRACE"] == "1"
@@ -426,7 +443,12 @@ final class AppState {
     // MARK: Aufnahme-Steuerung
 
     func startDictation(source: RecordingSource = .pushToTalk) {
-        guard phase == .idle, !teardownInProgress else { return }
+        guard phase == .idle, !teardownInProgress else {
+            if currentSession?.completionIntent == .shortTap || teardownInProgress {
+                onToast?("Vorherige Aufnahme wird noch beendet.", false)
+            }
+            return
+        }
         partialText = ""
         discardRequested = false
         commitRequested = false
@@ -507,8 +529,10 @@ final class AppState {
                 )
                 session.audioContinuation = audioContinuation
                 let speech = session.speech
+                let health = session.health
                 session.feedTask = Task.detached(priority: .userInitiated) {
                     for await chunk in audioStream {
+                        guard health.failure == nil else { break }
                         await speech.feed(chunk)
                     }
                 }
@@ -525,19 +549,20 @@ final class AppState {
                     }
                 }
 
-                let health = session.health
                 try session.audio.start(
                     outputFormat: format,
                     recordTo: session.audioURL,
                     preferredMicUID: self.settings.preferredMicUID,
                     onRuntimeError: { [weak self, weak session] error in
+                        health.recordAudioRuntimeFailure()
+                        health.closeSpeechIngress(audioContinuation)
                         Task { @MainActor in
                             guard let self, let session else { return }
                             await self.handleAudioRuntimeError(error, session: session)
                         }
                     }
                 ) { chunk in
-                    health.record(audioContinuation.yield(chunk))
+                    health.ingest(chunk, into: audioContinuation)
                 }
                 session.state = .recording
                 DebugLog.log("STASI-APP: audio.start fertig – Aufnahme läuft")
@@ -568,9 +593,11 @@ final class AppState {
         )
         if recordingSource == .pushToTalk,
            duration < minimumPushToTalkDuration {
+            session.beginCompletion(.shortTap)
             silentlyAbortShortPushToTalk(session)
             return
         }
+        session.beginCompletion(.commit)
         session.state = .stopping
         phase = .transcribing
         playStopSound()
@@ -588,9 +615,13 @@ final class AppState {
             }
 
             let recordedURL = await session.audio.stop()
+            if session.health.failure == .audioRuntimeFailure {
+                DebugLog.log("STASI-APP: Commit-Drain wegen Audio-Runtimefehler abgebrochen")
+                return
+            }
             // Erst alle gepufferten Chunks in die Engine drainen, DANN
             // finalisieren – sonst fehlt das Satzende.
-            session.audioContinuation?.finish()
+            session.health.closeSpeechIngress(session.audioContinuation)
             session.audioContinuation = nil
             await session.feedTask?.value
             guard session === self.currentSession else { return }
@@ -615,10 +646,18 @@ final class AppState {
 
             if session.health.failure != nil {
                 DebugLog.log("STASI-APP: Speech-Puffer unvollständig – Session wird verworfen")
-                session.preserveAudioFile()
+                let recoverySource = recordedURL ?? session.audioURL
+                let recovered = recoverySource.flatMap { self.registerRecoveryAudio(at: $0) }
+                if recovered == nil {
+                    session.preserveAudioFile()
+                }
                 await self.teardown(session)
                 self.finishAbortedSession(session)
-                self.onToast?("Die Aufnahme ist unvollständig. Die Audiodatei bleibt erhalten.", false)
+                if recovered != nil {
+                    self.onToast?("Die Aufnahme ist unvollständig. Die Wiederherstellungsdatei wurde im Finder geöffnet.", false)
+                } else {
+                    self.onToast?("Die Aufnahme ist unvollständig. Die Audiodatei bleibt erhalten.", false)
+                }
                 return
             }
 
@@ -638,12 +677,23 @@ final class AppState {
         session.state = .stopping
         phase = .transcribing
         await teardown(session)
-        let recovered = session.recoveredAudioURL != nil
+        let recoveredURL = session.recoveredAudioURL.flatMap { registerRecoveryAudio(at: $0) }
         finishAbortedSession(session)
-        if recovered {
-            onToast?("Die Aufnahme ist unvollständig. Die Audiodatei bleibt erhalten.", false)
+        if recoveredURL != nil {
+            onToast?("Die Aufnahme ist unvollständig. Die Wiederherstellungsdatei wurde im Finder geöffnet.", false)
         } else {
             onToast?("Die Audioaufnahme ist fehlgeschlagen und wurde verworfen.", false)
+        }
+    }
+
+    private func registerRecoveryAudio(at sourceURL: URL) -> URL? {
+        do {
+            let recoveredURL = try audioRecoveryStore.register(sourceURL)
+            revealRecoveryFile(recoveredURL)
+            return recoveredURL
+        } catch {
+            DebugLog.log("STASI-AUDIO: Recovery-Datei konnte nicht registriert werden: \(error.localizedDescription)")
+            return nil
         }
     }
 
@@ -653,6 +703,7 @@ final class AppState {
         guard let session = currentSession else { return }
         DebugLog.log("STASI-APP: requestDiscard")
         discardRequested = true
+        session.beginCompletion(.discard)
         session.state = .stopping
         phase = .transcribing
         playStopSound()
@@ -665,20 +716,21 @@ final class AppState {
         }
     }
 
-    /// Ein versehentlicher PTT-Tipp wird sofort aus der sichtbaren
-    /// Zustandsmaschine entfernt. Das Setup/Capture räumt im Hintergrund auf,
-    /// ohne Status-Pill, Toast oder Historieneintrag zu erzeugen.
+    /// Ein versehentlicher PTT-Tipp bleibt bis zum vollständigen Teardown als
+    /// Verarbeitung sichtbar. So signalisiert die UI, warum eine zweite Press-
+    /// Kante noch keine Aufnahme startet, ohne einen unsicheren Pending-Start zu
+    /// erzeugen, der nach dem Loslassen zur Geisteraufnahme werden könnte.
     private func silentlyAbortShortPushToTalk(_ session: DictationSession) {
-        DebugLog.log("STASI-APP: PTT-Kurztipp <250 ms – still verworfen")
-        teardownInProgress = true
+        DebugLog.log("STASI-APP: PTT-Kurztipp <250 ms – Teardown sichtbar")
         session.state = .stopping
-        currentSession = nil
         resetLevel()
         partialText = ""
-        elapsed = 0
-        recordStart = nil
-        phase = .idle
-        Task { await self.teardown(session) }
+        phase = .transcribing
+        Task { @MainActor [weak self, weak session] in
+            guard let self, let session else { return }
+            await self.teardown(session)
+            self.finishAbortedSession(session)
+        }
     }
 
     func requestCommit() {
@@ -704,9 +756,7 @@ final class AppState {
         }
         let session = currentSession
         currentSession = nil
-        resetLevel()
-        partialText = ""
-        phase = .idle
+        resetSessionPresentationToIdle()
         onToast?(Copy.toastTranscriptionAborted, false)
         if let session {
             await self.teardown(session)
@@ -745,8 +795,7 @@ final class AppState {
 
         guard !trimmed.isEmpty else {
             await teardown(session)
-            partialText = ""
-            phase = .idle
+            resetSessionPresentationToIdle()
             onToast?(Copy.toastNothingHeard, false)
             return
         }
@@ -768,8 +817,7 @@ final class AppState {
             DebugLog.log("STASI-APP: Verlauf speichern fehlgeschlagen: \(error.localizedDescription)")
             session.preserveAudioFile()
             await teardown(session)
-            partialText = ""
-            phase = .idle
+            resetSessionPresentationToIdle()
             onToast?("Verlauf konnte nicht gespeichert werden. Die Audiodatei bleibt erhalten.", false)
             return
         }
@@ -811,8 +859,7 @@ final class AppState {
             // insgesamt schneller Verarbeitung trotzdem unsichtbar.
             try? await Task.sleep(nanoseconds: 100_000_000)
             await MainActor.run { [weak self] in
-                self?.phase = .idle
-                self?.partialText = ""
+                self?.resetSessionPresentationToIdle()
             }
         }
     }
@@ -833,10 +880,17 @@ final class AppState {
     private func finishAbortedSession(_ session: DictationSession) {
         guard currentSession == nil || session === currentSession else { return }
         currentSession = nil
+        resetSessionPresentationToIdle()
+    }
+
+    private func resetSessionPresentationToIdle() {
         resetLevel()
         partialText = ""
-        phase = .idle
+        elapsed = 0
         recordStart = nil
+        discardRequested = false
+        commitRequested = false
+        phase = .idle
     }
 
     private func isKnownWord(_ word: String, locale: Locale) -> Bool {

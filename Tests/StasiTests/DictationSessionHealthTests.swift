@@ -20,6 +20,45 @@ final class DictationSessionHealthTests: XCTestCase {
         XCTAssertEqual(health.failure, .speechBufferOverflow)
     }
 
+    func testFirstOverflowClosesSpeechIngressAndRejectsLaterChunks() async throws {
+        let health = DictationSessionHealth()
+        let (stream, continuation) = AsyncStream<AudioChunk>.makeStream(
+            bufferingPolicy: .bufferingOldest(1)
+        )
+        var iterator = stream.makeAsyncIterator()
+        let first = try makeChunk()
+        let overflow = try makeChunk()
+        let late = try makeChunk()
+
+        health.ingest(first, into: continuation)
+        health.ingest(overflow, into: continuation)
+        health.ingest(late, into: continuation)
+
+        let receivedFirst = await iterator.next()
+        let receivedAfterOverflow = await iterator.next()
+        XCTAssertNotNil(receivedFirst)
+        XCTAssertNil(receivedAfterOverflow)
+        XCTAssertEqual(health.failure, .speechBufferOverflow)
+    }
+
+    func testDeliberateShutdownIgnoresLateYieldAfterLastBufferedChunk() async throws {
+        let health = DictationSessionHealth()
+        let (stream, continuation) = AsyncStream<AudioChunk>.makeStream(
+            bufferingPolicy: .bufferingOldest(1)
+        )
+        var iterator = stream.makeAsyncIterator()
+
+        health.ingest(try makeChunk(), into: continuation)
+        health.closeSpeechIngress(continuation)
+        health.ingest(try makeChunk(), into: continuation)
+
+        let receivedBuffered = await iterator.next()
+        let receivedLate = await iterator.next()
+        XCTAssertNotNil(receivedBuffered)
+        XCTAssertNil(receivedLate)
+        XCTAssertNil(health.failure)
+    }
+
     private func makeChunk() throws -> AudioChunk {
         let format = try XCTUnwrap(AVAudioFormat(
             commonFormat: .pcmFormatInt16,

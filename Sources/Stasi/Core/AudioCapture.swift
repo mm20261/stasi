@@ -240,7 +240,6 @@ final class AudioCapture: AudioCapturing, @unchecked Sendable {
                 converter = nil
             } else {
                 guard let converter = converterFactory(native, outputFormat) else {
-                    teardownAudioUnit()
                     throw AudioCaptureError.converterUnavailable(input: native,
                                                                  output: outputFormat)
                 }

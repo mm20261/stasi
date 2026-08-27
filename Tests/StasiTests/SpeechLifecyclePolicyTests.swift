@@ -22,9 +22,9 @@ final class SpeechLifecyclePolicyTests: XCTestCase {
 
     func testUnsupportedLocaleDoesNotFallBackToEnglish() {
         XCTAssertThrowsError(
-            try SpeechLocaleResolution.resolve(
+            try SpeechLocaleResolution.appleResolvedLocale(
                 requested: Locale(identifier: "fr-FR"),
-                supportedEquivalent: nil
+                appleEquivalent: nil
             )
         ) { error in
             guard case TranscriptionError.unsupportedLocale(let identifier) = error else {
@@ -35,9 +35,9 @@ final class SpeechLifecyclePolicyTests: XCTestCase {
     }
 
     func testSupportedEquivalentBecomesResolvedLocale() throws {
-        let resolved = try SpeechLocaleResolution.resolve(
+        let resolved = try SpeechLocaleResolution.appleResolvedLocale(
             requested: Locale(identifier: "de-CH"),
-            supportedEquivalent: Locale(identifier: "de-DE")
+            appleEquivalent: Locale(identifier: "de-DE")
         )
 
         XCTAssertEqual(resolved.identifier, "de-DE")
