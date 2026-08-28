@@ -41,10 +41,36 @@ enum SelfCorrectionResolver {
         let edit: Edit
     }
 
+    private struct RestartCandidate {
+        let removal: Removal
+        let sharedPrefixWords: Int
+        let tokenDistance: Int
+    }
+
     private static let minimumRepeatedPrefixWords = 3
     private static let maximumRepeatedPrefixWords = 12
     private static let maximumRestartWindowWords = 16
     private static let maximumRestartCandidatesPerSentence = 32
+    private static let repeatAnnouncementsDE: Set<String> = [
+        "wiederhole", "wiederholen", "wiederholt", "erneut", "nochmal", "zitat",
+    ]
+    private static let repeatAnnouncementsEN: Set<String> = [
+        "repeat", "repeating", "again", "quote",
+    ]
+    private static let restartConnectors: Set<String> = [
+        "und", "oder", "and", "or",
+    ]
+    private static let incompletePrefixWordsDE: Set<String> = [
+        "ist", "sind", "war", "wird", "bin", "bist", "am", "um", "an", "mit",
+        "für", "zu", "ein", "eine", "der", "die", "das",
+    ]
+    private static let incompletePrefixWordsEN: Set<String> = [
+        "is", "are", "was", "will", "am", "to", "at", "on", "with", "for",
+        "a", "an", "the", "my",
+    ]
+    private static let quoteCharacters: Set<Character> = [
+        "\"", "„", "“", "«", "»", "‘", "’",
+    ]
 
     private struct PassResult {
         let text: String
@@ -63,10 +89,12 @@ enum SelfCorrectionResolver {
         }
 
         let explicit = resolveExplicitCorrections(in: input, locale: locale)
+        let markerless = resolveMarkerlessRestarts(in: explicit.text, locale: locale)
+        let edits = explicit.edits + markerless.edits
         return Result(
-            text: explicit.text,
-            resolvedCount: explicit.edits.count,
-            edits: explicit.edits
+            text: markerless.text,
+            resolvedCount: edits.count,
+            edits: edits
         )
     }
 
@@ -153,6 +181,191 @@ enum SelfCorrectionResolver {
         }
 
         return applying(nonOverlapping(removals), to: input)
+    }
+
+    private static func resolveMarkerlessRestarts(
+        in input: String,
+        locale: PolishLocale
+    ) -> PassResult {
+        var candidates: [RestartCandidate] = []
+
+        for sentence in sentences(in: input) where !sentence.endsWithQuestion {
+            let tokens = tokenize(input, in: sentence.range)
+            guard tokens.count >= minimumRepeatedPrefixWords * 2 else { continue }
+            candidates.append(contentsOf: markerlessCandidates(
+                tokens: tokens,
+                sentence: sentence,
+                in: input,
+                locale: locale
+            ))
+        }
+
+        return applying(selectNonOverlapping(candidates), to: input)
+    }
+
+    private static func markerlessCandidates(
+        tokens: [Token],
+        sentence: Sentence,
+        in input: String,
+        locale: PolishLocale
+    ) -> [RestartCandidate] {
+        var result: [RestartCandidate] = []
+
+        for leftStart in tokens.indices {
+            guard startsAtClauseBoundary(tokens[leftStart], sentence: sentence, in: input) else {
+                continue
+            }
+
+            let firstRight = leftStart + minimumRepeatedPrefixWords
+            guard firstRight < tokens.count else { continue }
+            let lastRight = min(tokens.count - 1, leftStart + maximumRestartWindowWords)
+
+            for rightStart in firstRight...lastRight {
+                if result.count >= maximumRestartCandidatesPerSentence { return result }
+                if restartConnectors.contains(tokens[rightStart - 1].normalized) { continue }
+
+                let prefix = commonPrefixLength(
+                    tokens: tokens,
+                    leftStart: leftStart,
+                    leftLimit: rightStart,
+                    rightStart: rightStart,
+                    rightLimit: tokens.count
+                )
+                guard prefix >= minimumRepeatedPrefixWords else { continue }
+                guard rightStart + prefix < tokens.count else { continue }
+
+                let leftWords = rightStart - leftStart
+                if prefix == leftWords {
+                    guard looksIncompleteExactPrefix(
+                        lastToken: tokens[rightStart - 1].normalized,
+                        locale: locale
+                    ) else { continue }
+                }
+
+                let rawLower = tokens[leftStart].range.lowerBound
+                let rawUpper = tokens[rightStart + prefix].range.upperBound
+                guard !containsQuoteBoundary(from: rawLower, to: rawUpper, in: input) else {
+                    continue
+                }
+                guard !containsRepeatAnnouncement(
+                    tokens: tokens,
+                    range: leftStart..<rightStart,
+                    locale: locale
+                ) else { continue }
+
+                let keptLength = min(
+                    tokens.count - rightStart,
+                    max(leftWords, prefix + 1)
+                )
+                let removal = Removal(
+                    range: tokens[leftStart].range.lowerBound..<tokens[rightStart].range.lowerBound,
+                    edit: Edit(
+                        removed: phrase(tokens: tokens, range: leftStart..<rightStart, in: input),
+                        kept: phrase(
+                            tokens: tokens,
+                            range: rightStart..<(rightStart + keptLength),
+                            in: input
+                        )
+                    )
+                )
+                result.append(RestartCandidate(
+                    removal: removal,
+                    sharedPrefixWords: prefix,
+                    tokenDistance: rightStart - leftStart
+                ))
+            }
+        }
+
+        return result
+    }
+
+    private static func commonPrefixLength(
+        tokens: [Token],
+        leftStart: Int,
+        leftLimit: Int,
+        rightStart: Int,
+        rightLimit: Int
+    ) -> Int {
+        let maximum = min(
+            maximumRepeatedPrefixWords,
+            leftLimit - leftStart,
+            rightLimit - rightStart
+        )
+        var length = 0
+        while length < maximum,
+              tokens[leftStart + length].normalized
+                == tokens[rightStart + length].normalized {
+            length += 1
+        }
+        return length
+    }
+
+    private static func startsAtClauseBoundary(
+        _ token: Token,
+        sentence: Sentence,
+        in input: String
+    ) -> Bool {
+        var cursor = token.range.lowerBound
+        while cursor > sentence.range.lowerBound {
+            let previous = input.index(before: cursor)
+            let character = input[previous]
+            if character.isWhitespace || quoteCharacters.contains(character) {
+                cursor = previous
+                continue
+            }
+            return character == "," || character == ";" || character == ":"
+                || character == "—" || character == "–"
+        }
+        return true
+    }
+
+    private static func containsQuoteBoundary(
+        from lower: String.Index,
+        to upper: String.Index,
+        in input: String
+    ) -> Bool {
+        input[lower..<upper].contains { quoteCharacters.contains($0) }
+    }
+
+    private static func containsRepeatAnnouncement(
+        tokens: [Token],
+        range: Range<Int>,
+        locale: PolishLocale
+    ) -> Bool {
+        let announcements = locale == .de ? repeatAnnouncementsDE : repeatAnnouncementsEN
+        return tokens[range].contains { announcements.contains($0.normalized) }
+    }
+
+    private static func looksIncompleteExactPrefix(
+        lastToken: String,
+        locale: PolishLocale
+    ) -> Bool {
+        let words = locale == .de ? incompletePrefixWordsDE : incompletePrefixWordsEN
+        return words.contains(lastToken)
+    }
+
+    private static func selectNonOverlapping(
+        _ candidates: [RestartCandidate]
+    ) -> [Removal] {
+        let ranked = candidates.sorted {
+            if $0.sharedPrefixWords != $1.sharedPrefixWords {
+                return $0.sharedPrefixWords > $1.sharedPrefixWords
+            }
+            if $0.tokenDistance != $1.tokenDistance {
+                return $0.tokenDistance < $1.tokenDistance
+            }
+            return $0.removal.range.lowerBound < $1.removal.range.lowerBound
+        }
+
+        var selected: [Removal] = []
+        for candidate in ranked {
+            let overlaps = selected.contains {
+                $0.range.lowerBound < candidate.removal.range.upperBound
+                    && candidate.removal.range.lowerBound < $0.range.upperBound
+            }
+            if !overlaps { selected.append(candidate.removal) }
+        }
+        return selected.sorted { $0.range.lowerBound < $1.range.lowerBound }
     }
 
     private static func applying(_ removals: [Removal], to input: String) -> PassResult {

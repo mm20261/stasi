@@ -211,4 +211,122 @@ final class SelfCorrectionResolverTests: XCTestCase {
         XCTAssertEqual(result.resolvedCount, 0)
         XCTAssertEqual(result.edits, [])
     }
+
+    func testMarkerlessGermanRestartKeepsLaterAttempt() {
+        let result = SelfCorrectionResolver.resolve(
+            "Hallo, mein Name ist Peter, Hallo, mein Name ist Philipp",
+            locale: .de
+        )
+
+        XCTAssertEqual(result.text, "Hallo, mein Name ist Philipp")
+        XCTAssertEqual(result.resolvedCount, 1)
+        XCTAssertEqual(result.edits.first?.removed, "Hallo mein Name ist Peter")
+        XCTAssertEqual(result.edits.first?.kept, "Hallo mein Name ist Philipp")
+    }
+
+    func testMarkerlessExactPrefixRequiresIncompleteFirstAttempt() {
+        XCTAssertEqual(
+            resolve("Hallo, mein Name ist, Hallo, mein Name ist Philipp"),
+            "Hallo, mein Name ist Philipp"
+        )
+    }
+
+    func testMarkerlessEnglishRestartKeepsLaterAttempt() {
+        XCTAssertEqual(
+            resolve("We will meet on Friday, We will meet on Thursday", .en),
+            "We will meet on Thursday"
+        )
+    }
+
+    func testMarkerlessRestartAcceptsEmDashSeparator() {
+        XCTAssertEqual(
+            resolve("Wir treffen uns Montag — Wir treffen uns Dienstag"),
+            "Wir treffen uns Dienstag"
+        )
+    }
+
+    func testTwoMarkerlessRestartsEndAtLastAttempt() {
+        let result = SelfCorrectionResolver.resolve(
+            "Hallo mein Name ist Peter, Hallo mein Name ist Paul, Hallo mein Name ist Philipp",
+            locale: .de
+        )
+
+        XCTAssertEqual(result.text, "Hallo mein Name ist Philipp")
+        XCTAssertEqual(result.resolvedCount, 2)
+        XCTAssertEqual(result.edits.map(\.removed), [
+            "Hallo mein Name ist Peter",
+            "Hallo mein Name ist Paul",
+        ])
+        XCTAssertEqual(result.edits.map(\.kept), [
+            "Hallo mein Name ist Paul",
+            "Hallo mein Name ist Philipp",
+        ])
+    }
+
+    func testCompleteMarkerlessRepetitionRemains() {
+        let text = "Hallo mein Name ist Philipp, Hallo mein Name ist Philipp"
+        XCTAssertEqual(resolve(text), text)
+    }
+
+    func testCompleteRepetitionWithLaterContinuationRemains() {
+        let text = "Hallo mein Name ist Philipp, Hallo mein Name ist Philipp und ich wohne in Berlin"
+        XCTAssertEqual(resolve(text), text)
+    }
+
+    func testMarkerlessRestartDoesNotCrossSentenceBoundary() {
+        let text = "Hallo mein Name ist Peter. Hallo mein Name ist Philipp."
+        XCTAssertEqual(resolve(text), text)
+    }
+
+    func testMarkerlessRestartDoesNotModifyQuestion() {
+        let text = "Hallo mein Name ist Peter, Hallo mein Name ist Philipp?"
+        XCTAssertEqual(resolve(text), text)
+    }
+
+    func testQuotedAndAnnouncedRepetitionRemains() {
+        let text = "Ich sage „Hallo, mein Name ist Peter“ und wiederhole „Hallo, mein Name ist Philipp“."
+        XCTAssertEqual(resolve(text), text)
+    }
+
+    func testAnnouncementInsideCandidateBlocksRemoval() {
+        let text = "Hallo mein Name ist Peter und ich wiederhole Hallo mein Name ist Philipp"
+        XCTAssertEqual(resolve(text), text)
+    }
+
+    func testTwoCommonWordsAreNotEnoughForMarkerlessRestart() {
+        let text = "Mein Name ist Peter, Mein Name lautet Philipp"
+        XCTAssertEqual(resolve(text), text)
+    }
+
+    func testMarkerlessSearchStopsOutsideFixedWindow() {
+        let gap = (0..<20).map { "zwischen\($0)" }.joined(separator: " ")
+        let text = "Hallo mein Name ist Peter \(gap) Hallo mein Name ist Philipp"
+        XCTAssertEqual(resolve(text), text)
+    }
+
+    func testRestartResolutionIsIdempotent() {
+        let first = SelfCorrectionResolver.resolve(
+            "Hallo mein Name ist Peter, Hallo mein Name ist Philipp",
+            locale: .de
+        )
+        let second = SelfCorrectionResolver.resolve(first.text, locale: .de)
+
+        XCTAssertEqual(second.text, first.text)
+        XCTAssertEqual(second.resolvedCount, 0)
+        XCTAssertTrue(second.edits.isEmpty)
+    }
+
+    func testNonEmptyRestartNeverBecomesEmpty() {
+        let explicit = SelfCorrectionResolver.resolve(
+            "Hallo, mein Name ist, nein, Hallo, mein Name ist Philipp",
+            locale: .de
+        )
+        let markerless = SelfCorrectionResolver.resolve(
+            "Hallo, mein Name ist Peter, Hallo, mein Name ist Philipp",
+            locale: .de
+        )
+
+        XCTAssertFalse(explicit.text.isEmpty)
+        XCTAssertFalse(markerless.text.isEmpty)
+    }
 }
