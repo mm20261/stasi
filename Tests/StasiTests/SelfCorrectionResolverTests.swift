@@ -273,6 +273,48 @@ final class SelfCorrectionResolverTests: XCTestCase {
         XCTAssertEqual(resolve(text), text)
     }
 
+    func testCompleteRepetitionBeyondPrefixCapRemains() {
+        for wordCount in 13...16 {
+            let attempt = (1...wordCount).map { "wort\($0)" }.joined(separator: " ")
+            let text = "\(attempt), \(attempt) und besprechen Details"
+
+            XCTAssertEqual(resolve(text), text, "wordCount=\(wordCount)")
+        }
+    }
+
+    func testIncompleteGermanSecondAttemptDoesNotReplaceCompleteFirstAttempt() {
+        let text = "Hallo mein Name ist Peter und ich wohne in Berlin, Hallo mein Name ist der"
+        XCTAssertEqual(resolve(text), text)
+    }
+
+    func testIncompleteEnglishSecondAttemptDoesNotReplaceCompleteFirstAttempt() {
+        let text = "Hello my name is Peter and I live in Berlin, Hello my name is the"
+        XCTAssertEqual(resolve(text, .en), text)
+    }
+
+    func testLongMarkerlessRestartChainKeepsLastAttemptAndIsIdempotent() {
+        let input = (0...10).map { "Ich bin am Ort\($0)" }.joined(separator: ", ")
+
+        let first = SelfCorrectionResolver.resolve(input, locale: .de)
+        let second = SelfCorrectionResolver.resolve(first.text, locale: .de)
+
+        XCTAssertEqual(first.text, "Ich bin am Ort10")
+        XCTAssertEqual(first.resolvedCount, 10)
+        XCTAssertEqual(second.text, first.text)
+        XCTAssertEqual(second.resolvedCount, 0)
+        XCTAssertTrue(second.edits.isEmpty)
+    }
+
+    func testEmbeddedGermanRepeatedPhraseWithoutClauseBoundaryRemains() {
+        let text = "Das Team trifft sich am Montag bevor das Team trifft sich am Dienstag zur Abstimmung."
+        XCTAssertEqual(resolve(text), text)
+    }
+
+    func testEmbeddedEnglishRepeatedPhraseWithoutClauseBoundaryRemains() {
+        let text = "The team will meet on Monday before the team will meet on Tuesday to vote."
+        XCTAssertEqual(resolve(text, .en), text)
+    }
+
     func testMarkerlessRestartDoesNotCrossSentenceBoundary() {
         let text = "Hallo mein Name ist Peter. Hallo mein Name ist Philipp."
         XCTAssertEqual(resolve(text), text)
