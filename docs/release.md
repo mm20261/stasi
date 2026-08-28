@@ -1,110 +1,158 @@
 # Release-Ablauf
 
-Diese Anleitung trennt den lokalen Entwicklungsbuild von einer späteren öffentlichen Developer-ID-Veröffentlichung. Die lokale Signatur ist weder notarisiert noch außerhalb des eigenen Macs automatisch vertrauenswürdig. Das Skript führt keine Notarisierung, Veröffentlichung, Netzwerkoperation oder Git-Aktion aus.
+Diese Anleitung beschreibt den aktuellen Vertrag für veröffentlichte, mit Developer
+ID signierte und von Apple notarisierte Builds. Lokale Entwicklungssignaturen sind
+nicht für die öffentliche Verteilung bestimmt.
 
-## Tatsächliche Fähigkeiten und minimale Entitlements
+## Release-Vertrag
 
-Stasi verwendet nachweislich:
+- Tag: `vMAJOR.MINOR.PATCH`
+- Bundle: `MAJOR.MINOR.PATCH`
+- Release-Endpunkt: `https://api.github.com/repos/mm20261/stasi/releases/latest`
+- Runner: `macos-26`, erste Veröffentlichung nur `arm64`
+- Verify-Job: ohne Release-Secrets
+- Publish-Job: Environment `release`, `contents: write`
+- Fehlende Secrets: Fehler, kein Skip
+- Assets: `Stasi.zip`, `Stasi.zip.sha256`
 
-- Audioeingabe über Core Audio/AVFoundation für die Diktataufnahme,
-- lokale Spracherkennung,
-- Accessibility- und Core-Graphics-APIs für den globalen Hotkey und das Einfügen von Text,
-- optional `URLSession` für eine konfigurierte Update-Prüfung,
-- lokale Dateien und `UserDefaults` für Einstellungen, Wörterbuch, Protokolle und Aufnahmen.
+Beispiel: Der Tag `v0.10.0` erzeugt ein Bundle mit
+`CFBundleShortVersionString=0.10.0` und `CFBundleVersion=0.10.0`. Die Release-App
+enthält den oben genannten Update-Endpunkt; die Architektur des App-Binärprogramms
+muss exakt `arm64` sein.
 
-`Release/Stasi.entitlements` enthält ausschließlich `com.apple.security.device.audio-input`. Dieses Resource-Access-Entitlement wird für Audioeingabe unter der späteren Hardened Runtime benötigt. `NSMicrophoneUsageDescription` und `NSSpeechRecognitionUsageDescription` im `Info.plist` sind davon getrennte TCC-Nutzungstexte. Auch die Zustimmung zu Bedienungshilfen wird von TCC verwaltet; sie ist kein Entitlement.
+## Automatischer Tag-, Verify- und Publish-Ablauf
 
-Die App ist nicht im App Sandbox. Deshalb sind weder `com.apple.security.app-sandbox` noch Sandbox-Datei- oder Sandbox-Netzwerk-Entitlements gesetzt. Die optionale Update-Prüfung belegt Netzwerkverwendung, erfordert bei einer nicht sandboxed App aber kein Network-Client-Entitlement. Für Bedienungshilfen wird ebenfalls kein privates oder zusätzliches Entitlement ergänzt.
+Der Workflow `.github/workflows/release.yml` startet entweder beim Push eines
+Release-Tags `v*` oder kontrolliert manuell vom geschützten Branch `main`. Beim
+manuellen Start wird ein bereits vorhandener Tag im Format `vMAJOR.MINOR.PATCH`
+als `release_tag` angegeben. Beide Pfade lösen den Tag auf einen exakten Commit auf;
+bei einem Tag-Event muss dieser Commit mit dem Event-Commit übereinstimmen.
 
-## Lokaler Build und Test
+Der Job `verify` läuft mit `contents: read` und ohne Environment oder Release-Secrets.
+Er checkt den aufgelösten Commit detached aus, führt die vollständige Testsuite aus,
+baut die App mit der aus dem Tag abgeleiteten Version und dem Release-Endpunkt und
+führt den Smoke-Test mit der erwarteten Architektur `arm64` aus.
 
-Voraussetzung ist die im Repository beschriebene macOS-/Swift-Toolchain.
+Nur nach erfolgreichem `verify` erreicht der Lauf den Job `publish`. Dieser Job:
 
-1. Vollständige Tests ausführen:
+1. verwendet das geschützte Environment `release` und nur dort `contents: write`,
+2. checkt erneut exakt den zuvor verifizierten Commit aus,
+3. baut mit derselben Version und demselben Update-Endpunkt ein unsigned Bundle,
+4. validiert Bundle-Version, Update-Endpunkt und `arm64`,
+5. signiert mit Developer ID und Hardened Runtime, notarisiert und stapelt das Ticket,
+6. prüft Signatur, Gatekeeper, Inhalte und Architektur des finalen Archivs,
+7. erzeugt und verifiziert die SHA-256-Prüfsumme und
+8. veröffentlicht exakt `Stasi.zip` und `Stasi.zip.sha256` am bestehenden, nochmals
+   verifizierten Release-Tag.
+
+Der Workflow verwendet keine Marketplace-Actions. Git-Zugriffe laufen mit einem
+temporären `GIT_ASKPASS`-Skript; temporäre Schlüssel-, Zertifikats- und
+Schlüsselbunddateien werden auch im Fehlerfall entfernt.
+
+## GitHub-Environment und Tag-Schutz
+
+Das Environment `release` besitzt den Required Reviewer `mm20261`. Für die
+ausdrücklich gewählte Solo-Freigabe ist `prevent_self_review: false` gesetzt:
+`mm20261` darf den eigenen Deployment-Lauf freigeben. Die Solo-Freigabe benötigt
+keine zweite Person; Selbstfreigabe bleibt zulässig.
+
+Zulässige Deploymentquellen sind ausschließlich der geschützte Branch `main` für
+kontrollierte manuelle Läufe und eng begrenzte Release-Tags `v*`. Eine
+Branch-Protection-Regel schützt `main`. Ein Tag-Ruleset schützt Erstellung und
+Änderung der Tags `v*`.
+
+Die folgenden sechs Werte liegen ausschließlich als Environment-Secrets in
+`release`:
+
+- `STASI_DEVELOPER_ID_CERTIFICATE_BASE64`: Base64-kodierte PKCS#12-Datei mit
+  Developer-ID-Zertifikat und privatem Schlüssel.
+- `STASI_DEVELOPER_ID_CERTIFICATE_PASSWORD`: Passwort der PKCS#12-Datei.
+- `STASI_DEVELOPER_ID_APPLICATION`: vollständiger Name der Developer-ID-Application-
+  Identität.
+- `STASI_NOTARY_PRIVATE_KEY_BASE64`: Base64-kodierter App-Store-Connect-API-Schlüssel
+  im `.p8`-Format.
+- `STASI_NOTARY_KEY_ID`: Key-ID dieses API-Schlüssels.
+- `STASI_NOTARY_ISSUER_ID`: Issuer-ID dieses API-Schlüssels.
+
+Gleichnamige Repository- oder Organisationssecrets sind verboten; vorhandene
+breiter sichtbare Kopien müssen entfernt werden. Secrets dürfen weder in Workflow,
+Dokumentation noch Logs kopiert werden. Der Publish-Schritt prüft alle sechs Werte
+vor der Verwendung und beendet den Lauf bei einem fehlenden oder leeren Wert mit
+Fehler. Die Veröffentlichung ist damit fail-closed.
+
+## Reguläre Veröffentlichung
+
+1. Auf `main` die vollständige Suite und den App-Smoke-Test ausführen:
 
    ```bash
    swift build --build-tests
    xcrun xctest "$(swift build --show-bin-path)/StasiPackageTests.xctest"
-   ```
-
-2. App mit dem Standardmodus `local` bauen. Das Skript verwendet die vorhandene Code-Signing-Identität `Stasi Dev Signing`; fehlt sie, verwendet es ad hoc (`-`). Beide Varianten sind nur lokale Entwicklungssignaturen.
-
-   ```bash
-   STASI_SIGNING_MODE=local ./scripts/make-app.sh
-   codesign --verify --deep --strict --verbose=2 build/Stasi.app
-   codesign -d --verbose=4 --entitlements - build/Stasi.app
-   ```
-
-   `STASI_SIGNING_MODE` darf nur `local` oder `none` sein. Ein unbekannter Wert beendet den Build mit einem Fehler. Der lokale Modus aktiviert die Hardened Runtime bewusst nicht: Das verhindert keine spätere Developer-ID-Prüfung, behauptet aber auch keine öffentliche Vertrauensstellung oder Notarisierung.
-
-3. Den normalen Paket- und Start-Smoke-Test ausführen. Er baut standardmäßig erneut im Modus `local` und behält seine strikte Signaturprüfung bei:
-
-   ```bash
    ./scripts/smoke-test-app.sh
    ```
 
-4. `none` ist ausschließlich eine Diagnose für die Bundle-Erzeugung. Sie überspringt nur den abschließenden Bundle-Signierschritt; Ressourcen, Icon, Update-Konfiguration und Lizenzdateien werden unverändert gepackt:
+2. Den geschützten Tag, beispielsweise `v0.10.0`, auf dem freigegebenen Commit
+   erstellen. Das Tag-Ruleset muss wirksam sein. Der Tag-Push startet den Workflow;
+   alternativ wird der kontrollierte manuelle Lauf von `main` mit `release_tag`
+   `v0.10.0` gestartet.
+3. Das Deployment in `release` als Required Reviewer `mm20261` prüfen und freigeben.
+4. Nach erfolgreichem Publish sicherstellen, dass der GitHub Release ausschließlich
+   `Stasi.zip` und `Stasi.zip.sha256` als Binärassets enthält.
+5. Beide Assets separat herunterladen und die ausgelieferte Datei prüfen:
 
    ```bash
-   rm -rf build-unsigned
-   STASI_SIGNING_MODE=none STASI_APP_OUTPUT_DIR=build-unsigned ./scripts/make-app.sh
-   if codesign --verify --deep --strict build-unsigned/Stasi.app; then
-       echo "Fehler: Diagnose-Bundle ist unerwartet signiert" >&2
-       exit 1
-   else
-       echo "Erwartet: Diagnose-Bundle besitzt keine gültige Bundle-Signatur"
-   fi
+   mkdir release-check
+   gh release download v0.10.0 \
+     --pattern 'Stasi.zip' \
+     --pattern 'Stasi.zip.sha256' \
+     --dir release-check
+   (
+     cd release-check
+     shasum -a 256 -c Stasi.zip.sha256
+   )
    ```
 
-   Der normale Smoke-Test wird nicht mit `STASI_SIGNING_MODE=none` ausgeführt: Seine unveränderte `codesign --verify`-Stufe muss für reguläre Builds erfolgreich bleiben und würde ein unsigned Diagnose-Bundle absichtlich zurückweisen. `none` ist kein Release- oder Verteilungsmodus.
+Die Release-Notizen dürfen keine Secrets enthalten. Erst ein vollständig grüner
+Verify- und Publish-Lauf gilt als erfolgreiche Veröffentlichung.
 
-## Manueller GitHub-Actions-Build
+## Manueller Notfallpfad
 
-`.github/workflows/release.yml` ist ausschließlich über `workflow_dispatch` startbar und läuft auf dem von GitHub dokumentierten Standard-Arm64-Runner `macos-26`. Quelle für Bezeichnung und Architektur: [GitHub-hosted runners reference](https://docs.github.com/en/actions/reference/runners/github-hosted-runners), geprüft am 28. August 2026.
+Dieser Pfad ist für einen bewusst beaufsichtigten lokalen Neuaufbau vorgesehen. Er
+verwendet dieselbe Version, denselben Update-Endpunkt und dieselben Prüfungen wie der
+Workflow. Developer-ID-Identität und `notarytool`-Profil müssen bereits sicher im
+lokalen Schlüsselbund eingerichtet sein; ihre Werte gehören nicht ins Repository.
 
-Der Workflow verwendet keine Marketplace-Actions. Beide Jobs initialisieren Git selbst, laden mit dem von GitHub bereitgestellten, auf `contents: read` beschränkten `GITHUB_TOKEN` ausschließlich den Commit aus `GITHUB_SHA`, checken ihn detached aus und verifizieren den resultierenden `HEAD`. Das Token wird über ein temporäres `GIT_ASKPASS`-Skript bereitgestellt, nicht in eine URL oder Git-Konfiguration geschrieben; das Skript wird anschließend gelöscht.
+1. Tests ausführen und das Release-Bundle unsigned bauen:
 
-Der secretlose Job `verify` läuft für jeden manuell ausgewählten Ref. Er führt Tests, einen lokalen beziehungsweise ad-hoc signierten Build und den vollständigen Smoke-Test aus. Er besitzt weder ein Release-Environment noch Zugriff auf Developer-ID- oder Notarisierungs-Secrets.
+   ```bash
+   swift build --build-tests
+   xcrun xctest "$(swift build --show-bin-path)/StasiPackageTests.xctest"
 
-Der getrennte Job `sign-and-notarize` wartet mit `needs: verify` auf diese Prüfungen. Er läuft ausschließlich, wenn der ausgewählte Ref exakt `refs/heads/main` ist, und ist dem GitHub-Environment `release` zugeordnet. Ein Branch- oder anderer Nicht-`main`-Dispatch beendet sich daher nach `verify`; er kann keine Freigabe für Signier-Credentials anfordern. Nach Environment-Freigabe checkt der Signierjob denselben exakten Commit frisch aus und baut ihn ohne Credential-Umgebung erneut unsigned. Nur der anschließende Import-/Signier-/Notarisierungsschritt erhält die folgenden **Environment-Secrets des Environments `release`**:
+   STASI_VERSION='0.10.0' \
+   STASI_RELEASE_API_URL='https://api.github.com/repos/mm20261/stasi/releases/latest' \
+   STASI_SIGNING_MODE=none \
+   ./scripts/make-app.sh
+   ```
 
-- `STASI_DEVELOPER_ID_CERTIFICATE_BASE64`: Base64-kodierte PKCS#12-Datei mit Zertifikat und privatem Schlüssel für „Developer ID Application“.
-- `STASI_DEVELOPER_ID_CERTIFICATE_PASSWORD`: Passwort der PKCS#12-Datei.
-- `STASI_DEVELOPER_ID_APPLICATION`: vollständiger Name der zu verwendenden Developer-ID-Application-Identität.
-- `STASI_NOTARY_PRIVATE_KEY_BASE64`: Base64-kodierter privater App-Store-Connect-API-Schlüssel im `.p8`-Format.
-- `STASI_NOTARY_KEY_ID`: Key-ID dieses API-Schlüssels.
-- `STASI_NOTARY_ISSUER_ID`: Issuer-ID dieses API-Schlüssels.
+2. Vor dem Signieren Version, Endpunkt und Architektur prüfen:
 
-### Verbindliche GitHub-Environment-Einrichtung
+   ```bash
+   test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' \
+     build/Stasi.app/Contents/Info.plist)" = '0.10.0'
+   test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' \
+     build/Stasi.app/Contents/Info.plist)" = '0.10.0'
+   test "$(/usr/libexec/PlistBuddy -c 'Print :STASI_RELEASE_API_URL' \
+     build/Stasi.app/Contents/Info.plist)" = \
+     'https://api.github.com/repos/mm20261/stasi/releases/latest'
+   test "$(lipo -archs build/Stasi.app/Contents/MacOS/Stasi)" = 'arm64'
+   ```
 
-Vor dem ersten signierten Lauf muss eine Repository-Administration in den GitHub-Einstellungen das Environment `release` einrichten:
-
-1. Den Branch `main` mit einer Branch-Protection-Regel gegen ungeprüfte direkte Änderungen schützen.
-2. Unter **Settings → Environments** das Environment `release` erstellen.
-3. Unter **Deployment protection rules** mindestens eine verantwortliche Person als **Required reviewer** festlegen. Selbstfreigabe darf nicht der alleinige Schutz sein.
-4. Unter **Deployment branches and tags** als einzige ausgewählte Deployment-Quelle den geschützten Branch `main` zulassen. Keine Wildcards, Tags oder sonstigen Branches freigeben.
-5. Die sechs oben genannten Werte ausschließlich als **Environment secrets** in `release` hinterlegen.
-6. Gleichnamige Secrets auf Repository- oder Organisationsebene dürfen nicht angelegt werden. Bereits vorhandene repository- oder organisationsweite Kopien sind zu entfernen, damit Workflows von frei wählbaren Refs sie nicht außerhalb der geschützten Environment-Grenze referenzieren können.
-
-Die Secret-Werte werden ausschließlich über die Umgebung des einen Import-/Signier-/Notarisierungsschritts übergeben und dürfen weder in Workflow-Datei, Dokumentation noch Logs kopiert werden. Bei fehlendem oder unvollständigem Environment-Secret-Satz meldet der bereits freigegebene Signierjob den Skip ausdrücklich. `verify` bleibt davon unberührt. Sind alle Secrets vorhanden, importiert der Workflow Zertifikat und Notarisierungsprofil in einen temporären Schlüsselbund, signiert den zuvor unsigned erzeugten Build mit Developer ID und Hardened Runtime, notarisiert, stapelt und prüft das Bundle. Temporäre Schlüssel-, Zertifikats- und Schlüsselbunddateien werden auch bei einem Fehler entfernt.
-
-Der erzeugte Build bleibt ausschließlich im flüchtigen Runner-Dateisystem. Der Workflow enthält keinen Push, keine Tag-Erzeugung, kein GitHub Release, keinen Artifact-Upload und kein Deployment außerhalb des GitHub-Environment-Freigabegates. Ein Download oder eine Veröffentlichung benötigt eine getrennte Änderung und ausdrückliche Freigabe.
-
-## Developer ID, Hardened Runtime und Notarisierung
-
-Die folgenden Schritte sind ein manueller Ablauf für eine spätere öffentliche Freigabe. Sie benötigen eine gültige Developer-ID-Application-Identität und ein zuvor sicher im Schlüsselbund eingerichtetes `notarytool`-Profil. Identitäten, Team-IDs, Apple-ID-Daten, Passwörter, App-spezifische Passwörter, API-Schlüssel und andere Secret-Werte gehören nicht ins Repository.
-
-1. Nach erfolgreichen Tests und dem normalen Smoke-Test die zu verwendenden Namen in der aktuellen Shell setzen. Die konkreten Werte werden von der freigebenden Person gewählt und nicht eingecheckt:
+3. Mit Developer ID und Hardened Runtime signieren, notarisierten ZIP-Transport
+   einreichen und das Ticket anheften:
 
    ```bash
    export STASI_DEVELOPER_ID_APPLICATION='<Developer ID Application identity>'
    export STASI_NOTARY_KEYCHAIN_PROFILE='<notarytool keychain profile name>'
-   ```
 
-2. Frisch bauen und anschließend ausdrücklich mit Developer ID, Zeitstempel, Hardened Runtime und den geprüften Entitlements neu signieren:
-
-   ```bash
-   STASI_SIGNING_MODE=none ./scripts/make-app.sh
    codesign --force \
      --sign "$STASI_DEVELOPER_ID_APPLICATION" \
      --options runtime \
@@ -112,39 +160,45 @@ Die folgenden Schritte sind ein manueller Ablauf für eine spätere öffentliche
      --entitlements Release/Stasi.entitlements \
      build/Stasi.app
    codesign --verify --deep --strict --verbose=2 build/Stasi.app
-   codesign -d --verbose=4 --entitlements - build/Stasi.app
-   ```
 
-   Vor dem nächsten Schritt muss die freigebende Person Identität, Bundle-ID, Version und Entitlements in der Ausgabe prüfen. Eine erfolgreiche Developer-ID-Signatur allein bedeutet noch nicht, dass die App notarisiert oder von Gatekeeper akzeptiert ist.
-
-3. Das signierte App-Bundle ohne Metadatenverlust für den Notardienst archivieren und die Übertragung synchron abwarten:
-
-   ```bash
-   rm -f build/Stasi-notary.zip
    ditto -c -k --keepParent build/Stasi.app build/Stasi-notary.zip
    xcrun notarytool submit build/Stasi-notary.zip \
      --keychain-profile "$STASI_NOTARY_KEYCHAIN_PROFILE" \
      --wait
-   ```
-
-   Nur bei einem ausdrücklich erfolgreichen Notarisierungsergebnis fortfahren. Fehlerprotokolle werden geprüft; die Signatur- oder Entitlements-Anforderungen werden nicht durch Abschalten der Hardened Runtime umgangen.
-
-4. Ticket anheften und danach Signatur sowie Gatekeeper-Bewertung erneut prüfen:
-
-   ```bash
    xcrun stapler staple build/Stasi.app
    xcrun stapler validate build/Stasi.app
    codesign --verify --deep --strict --verbose=2 build/Stasi.app
    spctl --assess --type execute --verbose=4 build/Stasi.app
    ```
 
-5. Erst nach diesen Prüfungen darf ein endgültiges Distributionsarchiv aus der gestapelten App erzeugt werden:
+4. Erst nach allen erfolgreichen Prüfungen das finale Archiv und seine Prüfsumme
+   erzeugen und die Prüfsumme sofort gegen das ZIP prüfen:
 
    ```bash
-   rm -f build/Stasi.zip
    ditto -c -k --keepParent build/Stasi.app build/Stasi.zip
+   (
+     cd build
+     shasum -a 256 Stasi.zip >Stasi.zip.sha256
+     shasum -a 256 -c Stasi.zip.sha256
+   )
    ```
 
-## Verbindliche menschliche Freigabe
+5. Vor einer manuellen Veröffentlichung erneut bestätigen, dass der geschützte Tag
+   `v0.10.0` auf den geprüften Commit zeigt. Danach dürfen ausschließlich
+   `build/Stasi.zip` und `build/Stasi.zip.sha256` an genau diesem Tag veröffentlicht
+   werden.
 
-Kein Tag, Push, GitHub Release, Upload in einen öffentlichen Kanal oder sonstige Veröffentlichung erfolgt automatisch. Vor jeder Außenwirkung muss eine verantwortliche Person die Testausgaben, Smoke-Prüfung, Developer-ID-Identität, Hardened-Runtime-Entitlements, erfolgreiche Notarisierung, Staple-Validierung, `codesign`-Prüfung, `spctl`-Bewertung und das endgültige Artefakt ausdrücklich freigeben. Ohne diese Freigabe endet der Ablauf lokal.
+Der Notfallpfad umgeht weder Tag-Schutz noch Required Review, Signatur,
+Notarisierung, Gatekeeper-, Architektur- oder SHA-Prüfung.
+
+## Entitlements und lokale Entwicklung
+
+`Release/Stasi.entitlements` enthält ausschließlich
+`com.apple.security.device.audio-input`. Die App ist nicht sandboxed;
+Mikrofon-, Spracherkennungs- und Bedienungshilfen-Zustimmungen bleiben getrennte
+TCC-Berechtigungen.
+
+Für lokale Entwicklungsbuilds verwendet `STASI_SIGNING_MODE=local` die Identität
+`Stasi Dev Signing` oder ersatzweise eine ad-hoc-Signatur. `STASI_SIGNING_MODE=none`
+ist nur für den bewusst anschließend signierten Release-/Diagnosepfad vorgesehen und
+stellt allein kein verteilbares Artefakt her.

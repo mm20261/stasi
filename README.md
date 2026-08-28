@@ -5,7 +5,49 @@ Push-to-Talk-Diktat für macOS – Wispr-Flow-Style, komplett on-device.
 Rechte **Command-Taste halten** → Startton abwarten → sprechen → loslassen. Der korrigierte Text
 wird in die fokussierte App getippt.
 
-## Features (v0.9.0)
+## Voraussetzungen
+
+- Apple Silicon
+- macOS 26 oder neuer
+- Für die Installation über Homebrew: Homebrew
+
+## Installation
+
+```bash
+brew install --cask mm20261/tap/stasi
+```
+
+Der Befehl gilt ab dem ersten veröffentlichten GitHub Release und Homebrew-Tap;
+vorher steht noch kein öffentliches Installationsartefakt bereit.
+
+Beim ersten Start fordert macOS die notwendigen Berechtigungen für Mikrofon und
+Bedienungshilfen an. Diese Zustimmungen werden nicht durch Homebrew oder die App
+umgangen.
+
+## Aktualisieren
+
+```bash
+brew upgrade --cask stasi
+```
+
+Die integrierte Update-Prüfung informiert über neue GitHub Releases. Sie installiert
+Updates nicht selbst.
+
+## Deinstallieren
+
+App entfernen und lokale Daten behalten:
+
+```bash
+brew uninstall --cask stasi
+```
+
+App einschließlich Verlauf, Wörterbuch und Einstellungen entfernen:
+
+```bash
+brew uninstall --cask --zap stasi
+```
+
+## Features
 
 - **Echte Mac-App**: Dock-Icon, App-Menü, ⌘,-Settings, resizable Hauptfenster
 - **On-device-Transkription** via macOS-26 `SpeechTranscriber` (EN/DE)
@@ -40,7 +82,11 @@ Alle Views ziehen aus den Tokens in `Sources/Stasi/UI/Theme.swift`
 und 5 wählbare Akzent-Presets. Maßgebliche Vorschau:
 `import/design_handoff_v3/preview.html` im Browser öffnen.
 
-## Bauen & Starten
+## Aus dem Quellcode bauen
+
+Dieser Abschnitt ist der Entwicklerweg. Für die normale Installation ist der oben
+beschriebene Homebrew-Cask vorgesehen. Der Quellcode-Build benötigt eine
+macOS-26-Toolchain mit Unterstützung für Swift Tools 6.2.
 
 ```bash
 ./scripts/make-app.sh          # baut build/Stasi.app
