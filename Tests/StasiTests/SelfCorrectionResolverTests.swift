@@ -197,4 +197,18 @@ final class SelfCorrectionResolverTests: XCTestCase {
             ),
         ])
     }
+
+    func testRepeatedAttemptAfterSentenceCandidateBudgetIsNotEvaluated() {
+        let firstAttempt = (1...16).map { "alpha\($0)" }.joined(separator: " ")
+        let secondAttempt = (1...16).map { "beta\($0)" }.joined(separator: " ")
+        let thirdAttempt = (1...16).map { "gamma\($0)" }.joined(separator: " ")
+        let input = "\(firstAttempt) ich meine \(secondAttempt) ich meinte "
+            + "\(thirdAttempt) korrektur \(thirdAttempt) fortsetzung"
+
+        let result = SelfCorrectionResolver.resolve(input, locale: .de)
+
+        XCTAssertEqual(result.text, input)
+        XCTAssertEqual(result.resolvedCount, 0)
+        XCTAssertEqual(result.edits, [])
+    }
 }

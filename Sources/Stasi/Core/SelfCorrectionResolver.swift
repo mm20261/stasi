@@ -81,6 +81,7 @@ enum SelfCorrectionResolver {
             guard tokens.count >= 3 else { continue }
             let markers = findMarkers(in: tokens, locale: locale)
             guard !markers.isEmpty else { continue }
+            var remainingRestartCandidates = maximumRestartCandidatesPerSentence
 
             for (index, marker) in markers.enumerated() {
                 let previousBoundary = index == 0 ? 0 : markers[index - 1].span.upperBound
@@ -95,7 +96,8 @@ enum SelfCorrectionResolver {
                     tokens: tokens,
                     before: before,
                     after: after,
-                    locale: locale
+                    locale: locale,
+                    remainingCandidateBudget: &remainingRestartCandidates
                 ) {
                     let removalRange = tokens[attempt.leftRange.lowerBound].range.lowerBound..<tokens[
                         attempt.rightRange.lowerBound
@@ -238,12 +240,16 @@ enum SelfCorrectionResolver {
         tokens: [Token],
         before: Range<Int>,
         after: Range<Int>,
-        locale: PolishLocale
+        locale: PolishLocale,
+        remainingCandidateBudget: inout Int
     ) -> AttemptMatch? {
         let firstLeftStart = max(before.lowerBound, before.upperBound - maximumRestartWindowWords)
         var best: AttemptMatch?
 
         for leftStart in firstLeftStart..<before.upperBound {
+            guard remainingCandidateBudget > 0 else { break }
+            remainingCandidateBudget -= 1
+
             let leftCount = before.upperBound - leftStart
             let comparable = min(maximumRepeatedPrefixWords, leftCount, after.count)
             guard comparable >= minimumRepeatedPrefixWords else { continue }
