@@ -325,8 +325,19 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ needs.verify.outputs.release_tag }}
           RELEASE_VERSION: ${{ needs.verify.outputs.release_version }}
+          RELEASE_SHA: ${{ needs.verify.outputs.release_sha }}
         run: |
           set -euo pipefail
+
+          current_release_sha="$(
+            gh api \
+              "repos/$GITHUB_REPOSITORY/commits/$RELEASE_TAG" \
+              --jq '.sha'
+          )"
+          if [[ "$current_release_sha" != "$RELEASE_SHA" ]]; then
+            printf '%s\n' 'Release tag no longer points to the verified commit.' >&2
+            exit 1
+          fi
 
           gh release create "$RELEASE_TAG" \
             --repo "$GITHUB_REPOSITORY" \
