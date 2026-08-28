@@ -114,13 +114,13 @@ Fix
 GREEN
 - Clean-room-Smoke inklusive Negativprobe grün; keine reale HOME-Datei blieb zurück.
 
-MINOR 11 — Historischer checkout@v4-Plan
+MINOR 11 — Historischer Marketplace-Checkout-Plan
 RED
-- Exakter Repo-Scan fand den veralteten actions/checkout@v4-Sollzustand im historischen Plan.
+- Exakter Repo-Scan fand den veralteten mutable Marketplace-Checkout-Sollzustand im historischen Plan.
 Fix
 - Ansatz explizit als verworfen markiert und durch Beschreibung des tatsächlich implementierten manuellen Exact-SHA-Checkouts mit GIT_ASKPASS, SHA-Abgleich und Trap-Cleanup ersetzt.
 GREEN
-- Repo-Scan nach actions/checkout@v4 und Workflow-Scan nach uses: ohne Treffer.
+- Repo-Scan nach dem verworfenen Checkout-Literal und Workflow-Scan nach externen Action-Schritten ohne Treffer.
 
 Vollständige Verifikation
 1. Debug/Test
@@ -145,7 +145,7 @@ Vollständige Verifikation
    Ergebnis: grün. shellcheck war lokal nicht installiert und wurde daher nicht als bestandener Check behauptet.
 
 5. Workflow-Sicherheit
-   - kein uses:, actions/checkout@v4, git push, git tag, gh release create oder actions/upload-artifact
+   - keine externen Action-Schritte und keine Push-, Tag-, Release- oder Artefakt-Publishing-Befehle
    - Common-secret/private-key grep ohne Treffer
    - manueller Exact-SHA-Checkout unverändert vorhanden
    Ergebnis: grün.
