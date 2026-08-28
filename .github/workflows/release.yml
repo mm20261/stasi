@@ -1,23 +1,55 @@
-name: Build, sign, and notarize app
+name: Build, sign, notarize, and release app
 
 on:
+  push:
+    tags:
+      - "v*"
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing release tag in vMAJOR.MINOR.PATCH format
+        required: true
+        type: string
 
 permissions:
   contents: read
+
+concurrency:
+  group: release-${{ github.ref }}-${{ inputs.release_tag }}
+  cancel-in-progress: false
 
 jobs:
   verify:
     runs-on: macos-26
     timeout-minutes: 60
+    outputs:
+      release_tag: ${{ steps.release.outputs.tag }}
+      release_version: ${{ steps.release.outputs.version }}
+      release_sha: ${{ steps.release.outputs.sha }}
 
     steps:
-      - name: Check out exact commit
+      - name: Resolve and check out release tag
+        id: release
         shell: bash
         env:
+          EVENT_NAME: ${{ github.event_name }}
+          PUSH_TAG: ${{ github.ref_name }}
+          MANUAL_TAG: ${{ inputs.release_tag }}
           GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+
+          if [[ "$EVENT_NAME" == "push" ]]; then
+            release_tag="$PUSH_TAG"
+          else
+            release_tag="$MANUAL_TAG"
+          fi
+
+          if [[ ! "$release_tag" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            printf 'Invalid release tag: %s\n' "$release_tag" >&2
+            exit 1
+          fi
+          release_version="${release_tag#v}"
 
           askpass="$(mktemp "${RUNNER_TEMP}/stasi-askpass.XXXXXX")"
           cleanup_checkout() {
@@ -40,14 +72,30 @@ jobs:
           GIT_ASKPASS="$askpass" GIT_TERMINAL_PROMPT=0 \
             git -C "$GITHUB_WORKSPACE" \
               -c credential.helper= \
-              fetch --quiet --no-tags --depth=1 "$repository_url" "$GITHUB_SHA"
-          git -C "$GITHUB_WORKSPACE" checkout --quiet --detach FETCH_HEAD
+              fetch --quiet --no-tags --depth=1 \
+              "$repository_url" \
+              "refs/tags/${release_tag}:refs/tags/${release_tag}"
 
-          checked_out_sha="$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)"
-          if [[ "$checked_out_sha" != "$GITHUB_SHA" ]]; then
-            printf '%s\n' 'Checked-out commit does not match GITHUB_SHA.' >&2
-            exit 1
+          release_sha="$(
+            git -C "$GITHUB_WORKSPACE" \
+              rev-parse "refs/tags/${release_tag}^{commit}"
+          )"
+
+          if [[ "$EVENT_NAME" == "push" ]]; then
+            event_sha="$(
+              git -C "$GITHUB_WORKSPACE" rev-parse "${GITHUB_SHA}^{commit}"
+            )"
+            if [[ "$event_sha" != "$release_sha" ]]; then
+              printf '%s\n' 'Event SHA and release-tag commit differ.' >&2
+              exit 1
+            fi
           fi
+
+          git -C "$GITHUB_WORKSPACE" checkout --quiet --detach "$release_sha"
+
+          printf 'tag=%s\n' "$release_tag" >>"$GITHUB_OUTPUT"
+          printf 'version=%s\n' "$release_version" >>"$GITHUB_OUTPUT"
+          printf 'sha=%s\n' "$release_sha" >>"$GITHUB_OUTPUT"
 
       - name: Run tests
         shell: bash
@@ -58,28 +106,38 @@ jobs:
 
       - name: Build local app
         shell: bash
+        env:
+          STASI_VERSION: ${{ steps.release.outputs.version }}
+          STASI_RELEASE_API_URL: https://api.github.com/repos/mm20261/stasi/releases/latest
         run: |
           set -euo pipefail
           STASI_SIGNING_MODE=local ./scripts/make-app.sh
 
       - name: Run smoke test
         shell: bash
+        env:
+          STASI_VERSION: ${{ steps.release.outputs.version }}
+          STASI_RELEASE_API_URL: https://api.github.com/repos/mm20261/stasi/releases/latest
+          STASI_EXPECTED_ARCH: arm64
         run: |
           set -euo pipefail
           STASI_SIGNING_MODE=local ./scripts/smoke-test-app.sh
 
-  sign-and-notarize:
+  publish:
     needs: verify
-    if: github.ref == 'refs/heads/main'
+    if: github.event_name == 'push' || github.ref == 'refs/heads/main'
     environment: release
     runs-on: macos-26
     timeout-minutes: 60
+    permissions:
+      contents: write
 
     steps:
-      - name: Check out exact commit
+      - name: Check out verified release commit
         shell: bash
         env:
           GITHUB_TOKEN: ${{ github.token }}
+          RELEASE_SHA: ${{ needs.verify.outputs.release_sha }}
         run: |
           set -euo pipefail
 
@@ -104,22 +162,43 @@ jobs:
           GIT_ASKPASS="$askpass" GIT_TERMINAL_PROMPT=0 \
             git -C "$GITHUB_WORKSPACE" \
               -c credential.helper= \
-              fetch --quiet --no-tags --depth=1 "$repository_url" "$GITHUB_SHA"
+              fetch --quiet --no-tags --depth=1 \
+              "$repository_url" \
+              "$RELEASE_SHA"
           git -C "$GITHUB_WORKSPACE" checkout --quiet --detach FETCH_HEAD
 
-          checked_out_sha="$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)"
-          if [[ "$checked_out_sha" != "$GITHUB_SHA" ]]; then
-            printf '%s\n' 'Checked-out commit does not match GITHUB_SHA.' >&2
-            exit 1
-          fi
+          test "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" = "$RELEASE_SHA"
 
-      - name: Build unsigned app
+      - name: Build unsigned release app
         shell: bash
+        env:
+          STASI_VERSION: ${{ needs.verify.outputs.release_version }}
+          STASI_RELEASE_API_URL: https://api.github.com/repos/mm20261/stasi/releases/latest
         run: |
           set -euo pipefail
           STASI_SIGNING_MODE=none ./scripts/make-app.sh
 
-      - name: Sign and notarize with Developer ID when configured
+          test "$(
+            /usr/libexec/PlistBuddy \
+              -c 'Print :CFBundleShortVersionString' \
+              build/Stasi.app/Contents/Info.plist
+          )" = "$STASI_VERSION"
+
+          test "$(
+            /usr/libexec/PlistBuddy \
+              -c 'Print :CFBundleVersion' \
+              build/Stasi.app/Contents/Info.plist
+          )" = "$STASI_VERSION"
+
+          test "$(
+            /usr/libexec/PlistBuddy \
+              -c 'Print :STASI_RELEASE_API_URL' \
+              build/Stasi.app/Contents/Info.plist
+          )" = "$STASI_RELEASE_API_URL"
+
+          test "$(lipo -archs build/Stasi.app/Contents/MacOS/Stasi)" = "arm64"
+
+      - name: Sign and notarize with Developer ID
         shell: bash
         env:
           STASI_DEVELOPER_ID_CERTIFICATE_BASE64: ${{ secrets.STASI_DEVELOPER_ID_CERTIFICATE_BASE64 }}
@@ -137,19 +216,25 @@ jobs:
              || -z "$STASI_NOTARY_PRIVATE_KEY_BASE64" \
              || -z "$STASI_NOTARY_KEY_ID" \
              || -z "$STASI_NOTARY_ISSUER_ID" ]]; then
-            printf '%s\n' 'Developer-ID signing and notarization skipped: the release-environment secret set is absent or incomplete.'
-            exit 0
+            printf '%s\n' \
+              'Required Developer-ID or notarization credentials are absent or incomplete.' \
+              >&2
+            exit 1
           fi
 
           signing_temp="$(mktemp -d "${RUNNER_TEMP}/stasi-signing.XXXXXX")"
           certificate_path="${signing_temp}/certificate.p12"
           notary_key_path="${signing_temp}/notary-key.p8"
           keychain_path="${signing_temp}/signing.keychain-db"
+          archive_check=""
 
           cleanup_signing() {
             status=$?
             trap - EXIT
             security delete-keychain "$keychain_path" >/dev/null 2>&1 || true
+            if [[ -n "${archive_check:-}" ]]; then
+              rm -rf "$archive_check"
+            fi
             rm -rf "$signing_temp"
             exit "$status"
           }
@@ -191,6 +276,15 @@ jobs:
             --entitlements Release/Stasi.entitlements \
             build/Stasi.app
           codesign --verify --deep --strict --verbose=2 build/Stasi.app
+          codesign -d --verbose=4 build/Stasi.app 2>&1 | grep -Eq 'flags=.*runtime'
+
+          test "$(
+            /usr/libexec/PlistBuddy \
+              -c 'Print :CFBundleIdentifier' \
+              build/Stasi.app/Contents/Info.plist
+          )" = "app.stasi.macos"
+
+          test "$(lipo -archs build/Stasi.app/Contents/MacOS/Stasi)" = "arm64"
 
           rm -f build/Stasi-notary.zip
           ditto -c -k --keepParent build/Stasi.app build/Stasi-notary.zip
@@ -203,5 +297,41 @@ jobs:
           codesign --verify --deep --strict --verbose=2 build/Stasi.app
           spctl --assess --type execute --verbose=4 build/Stasi.app
 
-          rm -f build/Stasi.zip
+          rm -f build/Stasi.zip build/Stasi.zip.sha256
           ditto -c -k --keepParent build/Stasi.app build/Stasi.zip
+          (
+            cd build
+            shasum -a 256 Stasi.zip >Stasi.zip.sha256
+            shasum -a 256 -c Stasi.zip.sha256
+          )
+
+          archive_check="$(mktemp -d "${RUNNER_TEMP}/stasi-archive-check.XXXXXX")"
+          ditto -x -k build/Stasi.zip "$archive_check"
+
+          test -d "$archive_check/Stasi.app"
+          test -f \
+            "$archive_check/Stasi.app/Contents/Resources/Stasi_Stasi.bundle/MIT.txt"
+          test -f \
+            "$archive_check/Stasi.app/Contents/Resources/Stasi_Stasi.bundle/Geist-OFL-1.1.txt"
+
+          codesign --verify --deep --strict --verbose=2 "$archive_check/Stasi.app"
+          xcrun stapler validate "$archive_check/Stasi.app"
+          spctl --assess --type execute --verbose=4 "$archive_check/Stasi.app"
+          test "$(lipo -archs "$archive_check/Stasi.app/Contents/MacOS/Stasi")" = "arm64"
+
+      - name: Publish GitHub release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.verify.outputs.release_tag }}
+          RELEASE_VERSION: ${{ needs.verify.outputs.release_version }}
+        run: |
+          set -euo pipefail
+
+          gh release create "$RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --verify-tag \
+            --title "Stasi $RELEASE_VERSION" \
+            --generate-notes \
+            build/Stasi.zip \
+            build/Stasi.zip.sha256
