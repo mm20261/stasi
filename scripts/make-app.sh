@@ -7,7 +7,14 @@ OUT_DIR="${1:-${STASI_APP_OUTPUT_DIR:-build}}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 APP_NAME="Stasi"
 BUNDLE_ID="app.stasi.macos"
-VERSION="0.9.0"
+VERSION="${STASI_VERSION:-0.9.0}"
+
+if [[ ! "$VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+    printf 'Ungültige STASI_VERSION: %s; erwartet MAJOR.MINOR.PATCH ohne v-Präfix.\n' \
+        "$VERSION" >&2
+    exit 2
+fi
+
 SIGNING_MODE="${STASI_SIGNING_MODE:-local}"
 ENTITLEMENTS="$ROOT/Release/Stasi.entitlements"
 ICON_WORK_DIR=""
@@ -155,5 +162,6 @@ fi
 
 echo ""
 echo "✓ Fertig: $APP"
+echo "  Version:  $VERSION"
 echo "  Starten:  open \"$APP\""
-echo "  Install.: cp -r \"$APP\" /Applications/"
+echo "  Install.: ditto \"$APP\" /Applications/Stasi.app"

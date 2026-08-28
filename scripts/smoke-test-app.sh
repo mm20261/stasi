@@ -9,6 +9,8 @@ if [[ "$APP_OUTPUT_DIR" != /* ]]; then
 fi
 
 APP="$APP_OUTPUT_DIR/Stasi.app"
+INFO_PLIST="$APP/Contents/Info.plist"
+EXECUTABLE="$APP/Contents/MacOS/Stasi"
 RESOURCE_BUNDLE="$APP/Contents/Resources/Stasi_Stasi.bundle"
 MIT_FILE="$RESOURCE_BUNDLE/MIT.txt"
 OFL_FILE="$RESOURCE_BUNDLE/Geist-OFL-1.1.txt"
@@ -64,6 +66,42 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 
 STASI_APP_OUTPUT_DIR="$APP_OUTPUT_DIR" "$ROOT/scripts/make-app.sh"
+
+plutil -lint "$INFO_PLIST"
+
+test "$(
+    /usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$INFO_PLIST"
+)" = "app.stasi.macos"
+
+test "$(
+    /usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' "$INFO_PLIST"
+)" = "26.0"
+
+if [[ -n "${STASI_VERSION:-}" ]]; then
+    test "$(
+        /usr/libexec/PlistBuddy \
+            -c 'Print :CFBundleShortVersionString' \
+            "$INFO_PLIST"
+    )" = "$STASI_VERSION"
+
+    test "$(
+        /usr/libexec/PlistBuddy \
+            -c 'Print :CFBundleVersion' \
+            "$INFO_PLIST"
+    )" = "$STASI_VERSION"
+fi
+
+if [[ -n "${STASI_RELEASE_API_URL:-}" ]]; then
+    test "$(
+        /usr/libexec/PlistBuddy \
+            -c 'Print :STASI_RELEASE_API_URL' \
+            "$INFO_PLIST"
+    )" = "$STASI_RELEASE_API_URL"
+fi
+
+if [[ -n "${STASI_EXPECTED_ARCH:-}" ]]; then
+    test "$(lipo -archs "$EXECUTABLE")" = "$STASI_EXPECTED_ARCH"
+fi
 
 test -x "$APP/Contents/MacOS/Stasi"
 test -d "$RESOURCE_BUNDLE"
