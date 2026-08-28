@@ -152,8 +152,8 @@ Vollständige Verifikation
 
 6. Exakte Hygiene
    - keine getrackten .DS_Store/.build/build-Artefakte
-   - kein arm64-apple-macosx-Pfad
-   - kein alter api.github.com/repos/leomcguire/stasi-Endpunkt
+   - kein fest codierter SwiftPM-Architekturpfad
+   - kein alter fest codierter GitHub-API-Endpunkt
    - keine persönliche Hardwareangabe in README/AGENTS
    - keine getrackten Icon-Derivate
    - kein Private-E-Mail-Platzhalter außerhalb historischer docs/superpowers-Kontexte
