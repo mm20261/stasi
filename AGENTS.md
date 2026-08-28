@@ -52,7 +52,16 @@ App getippt. Komplett **on-device** via macOS-26-`SpeechTranscriber` (EN/DE).
 > Bei Reduce Motion steht stattdessen ein ruhiger weißer Punkt. Erfolgs- und
 > Verwerfen-Toasts sind entfernt; Fehler- und Warn-Toasts bleiben erhalten.
 
-## Aktueller Stand (Stand: 26.08.2026 – v3-Look mit V4-Features)
+## Aktueller Stand (Stand: 28.08.2026 – öffentliches Repo, Release vorbereitet)
+
+**Release-Status:** Repository ist ÖFFENTLICH (github.com/mm20261/stasi) mit
+bereinigter Historie (nur Philipp Meder / Noreply-Adresse, objektgenau verifiziert,
+siehe `docs/history-rewrite.md` und `docs/release.md`). `main` ist gegen Force-Push
+und Löschung geschützt; Release-Environment `release` mit Required Reviewer und
+Deploymentquellen `main` + `v*` steht. **Offen bis v0.10.0:** sechs Environment-Secrets
+(interaktiv), Tag-Push → signierter/notarisierter Workflow → Release-Assets prüfen,
+danach Homebrew-Tap `mm20261/homebrew-tap`. Transkript-Neustartbereinigung und
+Tag-/Verify-/Publish-Workflow (fail-closed) sind umgesetzt; 582 Tests grün.
 
 **Umgesetzte Audit-Blöcke:** 1A Session-Lifecycle · 1B Tap/WAV/Watcher ·
 1C kleine Korrektheitsfixes · 2 UX/Feedback/A11y · 3A regelbasierte

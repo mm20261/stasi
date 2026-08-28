@@ -4,45 +4,41 @@ Diese Anleitung beschreibt den aktuellen Vertrag für veröffentlichte, mit Deve
 ID signierte und von Apple notarisierte Builds. Lokale Entwicklungssignaturen sind
 nicht für die öffentliche Verteilung bestimmt.
 
-## Lokaler Übergabestand vom 28. August 2026
+## Veröffentlichungsstand vom 28. August 2026
 
-Dieser Abschnitt ist eine Übergabe für den nächsten Agenten. Er wird vor der finalen
-öffentlichen Veröffentlichung entfernt oder in einen abgeschlossenen Release-Befund
-umgewandelt.
+Der öffentliche Audit und die Historienbereinigung sind abgeschlossen; das Repository
+ist öffentlich. Der erste Release `v0.10.0` und das Homebrew-Tap stehen noch aus.
 
-- Lokaler Branch: `worktree-transcript-cleanup-impl`
-- Geprüfter Stand vor diesem Übergabe-Commit: `b7af044`
-- Remote `main`: `5a5224a`
-- Lokale Commits vor Remote `main`: 16
-- GitHub-Zustand: `PRIVATE`, Default-Branch `main`, keine Tags, keine Releases, nur
-  Remote-Branch `main`
-- Es wurde nichts gepusht, veröffentlicht oder öffentlich geschaltet.
+Abgeschlossen:
 
-Lokal fertig und reviewt:
+- Öffentlicher Audit: gitleaks 8.30.1 über alle erreichbaren Commits ohne Secrets;
+  False Positives und Entscheidungen dokumentiert in `docs/history-rewrite.md`.
+- Historienbereinigung: ausschließlich Claude-/Anthropic-Co-Author-Trailer entfernt,
+  Author- und Committer-E-Mail auf die GitHub-Noreply-Adresse vereinheitlicht;
+  objektgenau verifiziert über die `git-filter-repo`-Commit-Map
+  (`scripts/verify-history-rewrite.py`): 119 Commits, identischer Tip-Tree,
+  identische Topologie und Zeitstempel.
+- Veröffentlichung: `main` per `--force-with-lease` von `5a5224a` auf `0e9285f`
+  gepusht; GitHub-Contributors ausschließlich `mm20261` (119 Commits), kein
+  Claude-Knoten in Root- und Tip-Commit (GraphQL geprüft).
+- Sichtbarkeit: Repository `PUBLIC`; `main` gegen Löschung und Force-Push geschützt.
+- Release-Environment `release`: Required Reviewer `mm20261`, Deploymentquellen
+  Branch `main` und Tags `v*`.
 
-- stärkere regelbasierte Neustart- und Selbstkorrekturbereinigung,
-- originalgetreue Auditwerte sowie erhaltener Rohtext,
-- kontrollierte Bundle-Version über `STASI_VERSION`,
-- Bundle-, Update-Endpunkt- und Architekturprüfungen,
-- Tag-/Verify-/Publish-Workflow mit fail-closed Secrets,
-- Developer-ID-, Notarisierungs-, ZIP-, SHA- und Release-Prüfkette,
-- README und diese Release-Dokumentation.
+Noch offen bis zum ersten Release:
 
-Verifikation auf `b7af044`:
-
-```text
-582 Tests
-4 erwartete TCC-Skips
-0 Fehler
-Release-Metadaten-Smoke vollständig grün
-Finaler Opus-Review: keine Critical- oder Important-Findings
-```
+1. Sechs Environment-Secrets interaktiv setzen
+   (`STASI_DEVELOPER_ID_CERTIFICATE_BASE64`,
+   `STASI_DEVELOPER_ID_CERTIFICATE_PASSWORD`,
+   `STASI_DEVELOPER_ID_APPLICATION`, `STASI_NOTARY_PRIVATE_KEY_BASE64`,
+   `STASI_NOTARY_KEY_ID`, `STASI_NOTARY_ISSUER_ID`).
+2. Tag `v0.10.0` auf dem geprüften `main`-Commit erstellen, pushen, Workflow-Lauf
+   als `mm20261` freigeben und Assets prüfen.
+3. Homebrew-Tap `mm20261/homebrew-tap` mit `Casks/stasi.rb` aus dem echten
+   Release veröffentlichen.
 
 Bewusst offen:
 
-- `actionlint` wurde auf ausdrücklichen Nutzerwunsch nicht installiert. YAML,
-  Expressions, Outputs, `needs`, Permissions, Trigger und Job-Gates wurden stattdessen
-  mit Ruby, `bash -n`, statischen Scans und Opus geprüft.
 - Developer-ID-Signierung, Apple-Notarisierung, Stapling, Gatekeeper des frisch
   heruntergeladenen ZIPs und `gh release create` benötigen den autorisierten
   GitHub-Lauf.
@@ -51,18 +47,6 @@ Bewusst offen:
   laufen.
 - Deferred Minor: Der Diagnosebefehl `mkdir release-check` ist bei Wiederholung nicht
   idempotent.
-
-Nächster Agent:
-
-1. `docs/superpowers/specs/2026-08-28-transkript-release-und-autorenbereinigung-design.md`
-   lesen.
-2. Die drei Pläne unter `docs/superpowers/plans/2026-08-28-*` lesen.
-3. Mit `docs/superpowers/plans/2026-08-28-historie-und-veroeffentlichung.md`
-   fortfahren.
-4. Vor Force-Push, Sichtbarkeitswechsel, Secret-Einrichtung, Tag-Push, Release und
-   Homebrew-Tap jeweils erneut eine ausdrückliche Nutzerfreigabe einholen.
-5. Zuerst den vollständigen öffentlichen Audit ausführen. Bei einem historischen echten
-   Secret stoppen, rotieren und einen separaten Inhaltsrewrite planen.
 
 ## Release-Vertrag
 
