@@ -62,14 +62,15 @@ enum SelfCorrectionResolver {
     ]
     private static let incompletePrefixWordsDE: Set<String> = [
         "ist", "sind", "war", "wird", "bin", "bist", "am", "um", "an", "mit",
-        "für", "zu", "ein", "eine", "der", "die", "das",
+        "für", "zu", "ein", "eine", "der", "die", "das", "und", "oder", "aber",
+        "denn", "weil", "dass",
     ]
     private static let incompletePrefixWordsEN: Set<String> = [
         "is", "are", "was", "will", "am", "to", "at", "on", "with", "for",
-        "a", "an", "the", "my",
+        "a", "an", "the", "my", "and", "or", "but", "because", "that",
     ]
     private static let quoteCharacters: Set<Character> = [
-        "\"", "„", "“", "«", "»", "‘", "’",
+        "\"", "'", "„", "“", "”", "«", "»", "‘", "’",
     ]
 
     private struct PassResult {
@@ -119,11 +120,24 @@ enum SelfCorrectionResolver {
                 let after = marker.span.upperBound..<nextBoundary
 
                 guard !before.isEmpty, !after.isEmpty else { continue }
+                let rightEnd = attemptEnd(
+                    tokens: tokens,
+                    start: after.lowerBound,
+                    limit: after.upperBound,
+                    sentence: sentence,
+                    in: input
+                )
+                let rightAttempt = after.lowerBound..<rightEnd
+                guard isCompleteAttempt(
+                    tokens: tokens,
+                    range: rightAttempt,
+                    locale: locale
+                ) else { continue }
 
                 if let attempt = matchingRepeatedAttempt(
                     tokens: tokens,
                     before: before,
-                    after: after,
+                    after: rightAttempt,
                     locale: locale,
                     remainingCandidateBudget: &remainingRestartCandidates
                 ) {
@@ -140,20 +154,25 @@ enum SelfCorrectionResolver {
                     continue
                 }
 
-                guard !startsCompleteSentence(tokens: tokens, range: after, locale: locale) else {
+                guard !startsCompleteSentence(
+                    tokens: tokens,
+                    range: rightAttempt,
+                    locale: locale
+                ) else {
                     continue
                 }
 
                 if let frame = matchingFrame(
                     tokens: tokens,
                     before: before,
-                    after: after,
+                    after: rightAttempt,
                     locale: locale
                 ) {
                     let leftRange = frame.leftStart..<marker.span.lowerBound
-                    let rightRange = after.startIndex..<(after.startIndex + frame.length)
+                    let rightRange = rightAttempt.startIndex..<(rightAttempt.startIndex
+                        + frame.length)
                     let removalRange = tokens[frame.leftStart].range.lowerBound..<tokens[
-                        after.lowerBound
+                        rightAttempt.lowerBound
                     ].range.lowerBound
                     removals.append(Removal(
                         range: removalRange,
@@ -167,7 +186,7 @@ enum SelfCorrectionResolver {
 
                 guard marker.strength == .strong,
                       let left = tokens[safe: before.index(before.endIndex, offsetBy: -1)],
-                      let right = tokens[safe: after.startIndex],
+                      let right = tokens[safe: rightAttempt.startIndex],
                       left.normalized != right.normalized,
                       let leftClass = tokenClass(left.normalized, locale: locale),
                       leftClass == tokenClass(right.normalized, locale: locale)
@@ -192,12 +211,13 @@ enum SelfCorrectionResolver {
         for sentence in sentences(in: input) where !sentence.endsWithQuestion {
             let tokens = tokenize(input, in: sentence.range)
             guard tokens.count >= minimumRepeatedPrefixWords * 2 else { continue }
-            candidates.append(contentsOf: markerlessCandidates(
+            guard let sentenceCandidates = markerlessCandidates(
                 tokens: tokens,
                 sentence: sentence,
                 in: input,
                 locale: locale
-            ))
+            ) else { continue }
+            candidates.append(contentsOf: sentenceCandidates)
         }
 
         return applying(selectNonOverlapping(candidates), to: input)
@@ -208,20 +228,20 @@ enum SelfCorrectionResolver {
         sentence: Sentence,
         in input: String,
         locale: PolishLocale
-    ) -> [RestartCandidate] {
+    ) -> [RestartCandidate]? {
         var result: [RestartCandidate] = []
         let clauseBoundaries = tokens.map {
             startsAtClauseBoundary($0, sentence: sentence, in: input)
         }
-        var nextClauseBoundary = Array(repeating: tokens.count, count: tokens.count)
-        var nextBoundary = tokens.count
-        for index in tokens.indices.reversed() {
-            nextClauseBoundary[index] = nextBoundary
-            if clauseBoundaries[index] { nextBoundary = index }
-        }
+        let quoteStates = quoteStatesAtTokenStarts(
+            tokens: tokens,
+            sentence: sentence,
+            in: input
+        )
 
         for leftStart in tokens.indices {
             guard clauseBoundaries[leftStart] else { continue }
+            var bestForLeft: RestartCandidate?
 
             let firstRight = leftStart + minimumRepeatedPrefixWords
             guard firstRight < tokens.count else { continue }
@@ -230,13 +250,18 @@ enum SelfCorrectionResolver {
             for rightStart in firstRight...lastRight {
                 guard clauseBoundaries[rightStart] else { continue }
                 if restartConnectors.contains(tokens[rightStart - 1].normalized) { continue }
-                let boundarySearchIndex = min(
-                    tokens.count - 1,
-                    rightStart + minimumRepeatedPrefixWords - 1
+                guard !quoteStates[leftStart], !quoteStates[rightStart] else { continue }
+                let rightEnd = attemptEnd(
+                    tokens: tokens,
+                    start: rightStart,
+                    limit: tokens.count,
+                    sentence: sentence,
+                    in: input
                 )
-                let rightEnd = nextClauseBoundary[boundarySearchIndex]
-                guard !looksIncompleteExactPrefix(
-                    lastToken: tokens[rightEnd - 1].normalized,
+                let rightAttempt = rightStart..<rightEnd
+                guard isCompleteAttempt(
+                    tokens: tokens,
+                    range: rightAttempt,
                     locale: locale
                 ) else { continue }
 
@@ -280,26 +305,36 @@ enum SelfCorrectionResolver {
                     locale: locale
                 ) else { continue }
 
-                let keptLength = min(
-                    rightEnd - rightStart,
-                    max(leftWords, prefix + 1)
-                )
                 let removal = Removal(
                     range: tokens[leftStart].range.lowerBound..<tokens[rightStart].range.lowerBound,
                     edit: Edit(
                         removed: phrase(tokens: tokens, range: leftStart..<rightStart, in: input),
                         kept: phrase(
                             tokens: tokens,
-                            range: rightStart..<(rightStart + keptLength),
+                            range: rightAttempt,
                             in: input
                         )
                     )
                 )
-                retainBestCandidate(RestartCandidate(
+                let candidate = RestartCandidate(
                     removal: removal,
                     sharedPrefixWords: prefix,
                     tokenDistance: rightStart - leftStart
-                ), in: &result)
+                )
+                if let current = bestForLeft {
+                    if restartCandidateIsPreferred(candidate, to: current) {
+                        bestForLeft = candidate
+                    }
+                } else {
+                    bestForLeft = candidate
+                }
+            }
+
+            if let bestForLeft {
+                guard result.count < maximumRestartCandidatesPerSentence else {
+                    return nil
+                }
+                result.append(bestForLeft)
             }
         }
 
@@ -319,25 +354,6 @@ enum SelfCorrectionResolver {
 
         return (0..<leftWords).allSatisfy {
             tokens[leftStart + $0].normalized == tokens[rightStart + $0].normalized
-        }
-    }
-
-    private static func retainBestCandidate(
-        _ candidate: RestartCandidate,
-        in candidates: inout [RestartCandidate]
-    ) {
-        guard candidates.count >= maximumRestartCandidatesPerSentence else {
-            candidates.append(candidate)
-            return
-        }
-
-        var worstIndex = candidates.startIndex
-        for index in candidates.indices.dropFirst()
-        where restartCandidateIsPreferred(candidates[worstIndex], to: candidates[index]) {
-            worstIndex = index
-        }
-        if restartCandidateIsPreferred(candidate, to: candidates[worstIndex]) {
-            candidates[worstIndex] = candidate
         }
     }
 
@@ -375,10 +391,127 @@ enum SelfCorrectionResolver {
                 cursor = previous
                 continue
             }
+            return character == "," || character == "—" || character == "–"
+        }
+        return true
+    }
+
+    private static func attemptEnd(
+        tokens: [Token],
+        start: Int,
+        limit: Int,
+        sentence: Sentence,
+        in input: String
+    ) -> Int {
+        let firstPossibleBoundary = start + minimumRepeatedPrefixWords
+        guard firstPossibleBoundary < limit else { return limit }
+
+        for index in firstPossibleBoundary..<limit
+        where startsAtAttemptBoundary(tokens[index], sentence: sentence, in: input) {
+            return index
+        }
+        return limit
+    }
+
+    private static func startsAtAttemptBoundary(
+        _ token: Token,
+        sentence: Sentence,
+        in input: String
+    ) -> Bool {
+        var cursor = token.range.lowerBound
+        while cursor > sentence.range.lowerBound {
+            let previous = input.index(before: cursor)
+            let character = input[previous]
+            if character.isWhitespace || quoteCharacters.contains(character) {
+                cursor = previous
+                continue
+            }
             return character == "," || character == ";" || character == ":"
                 || character == "—" || character == "–"
         }
         return true
+    }
+
+    private static func isCompleteAttempt(
+        tokens: [Token],
+        range: Range<Int>,
+        locale: PolishLocale
+    ) -> Bool {
+        guard let last = tokens[safe: range.index(before: range.endIndex)] else {
+            return false
+        }
+        return !looksIncompleteExactPrefix(lastToken: last.normalized, locale: locale)
+    }
+
+    private static func quoteStatesAtTokenStarts(
+        tokens: [Token],
+        sentence: Sentence,
+        in input: String
+    ) -> [Bool] {
+        var states = Array(repeating: false, count: tokens.count)
+        var stack: [Character] = []
+        var cursor = sentence.range.lowerBound
+
+        for index in tokens.indices {
+            let tokenStart = tokens[index].range.lowerBound
+            while cursor < tokenStart {
+                updateQuoteStack(&stack, at: cursor, in: input)
+                cursor = input.index(after: cursor)
+            }
+            states[index] = !stack.isEmpty
+        }
+        return states
+    }
+
+    private static func updateQuoteStack(
+        _ stack: inout [Character],
+        at index: String.Index,
+        in input: String
+    ) {
+        let character = input[index]
+        guard quoteCharacters.contains(character),
+              !isWordInternalApostrophe(at: index, in: input)
+        else { return }
+
+        switch character {
+        case "\"", "'":
+            if stack.last == character { stack.removeLast() } else { stack.append(character) }
+        case "„":
+            stack.append(character)
+        case "“":
+            if stack.last == "„" || stack.last == "”" {
+                stack.removeLast()
+            } else {
+                stack.append(character)
+            }
+        case "”":
+            if stack.last == "“" { stack.removeLast() } else { stack.append(character) }
+        case "«":
+            if stack.last == "»" { stack.removeLast() } else { stack.append(character) }
+        case "»":
+            if stack.last == "«" { stack.removeLast() } else { stack.append(character) }
+        case "‘":
+            if stack.last == "’" { stack.removeLast() } else { stack.append(character) }
+        case "’":
+            if stack.last == "‘" { stack.removeLast() } else { stack.append(character) }
+        default:
+            break
+        }
+    }
+
+    private static func isWordInternalApostrophe(
+        at index: String.Index,
+        in input: String
+    ) -> Bool {
+        let character = input[index]
+        guard character == "'" || character == "’",
+              index > input.startIndex
+        else { return false }
+        let next = input.index(after: index)
+        guard next < input.endIndex else { return false }
+        let previous = input[input.index(before: index)]
+        return (previous.isLetter || previous.isNumber)
+            && (input[next].isLetter || input[next].isNumber)
     }
 
     private static func containsQuoteBoundary(
@@ -386,7 +519,15 @@ enum SelfCorrectionResolver {
         to upper: String.Index,
         in input: String
     ) -> Bool {
-        input[lower..<upper].contains { quoteCharacters.contains($0) }
+        var index = lower
+        while index < upper {
+            if quoteCharacters.contains(input[index]),
+               !isWordInternalApostrophe(at: index, in: input) {
+                return true
+            }
+            index = input.index(after: index)
+        }
+        return false
     }
 
     private static func containsRepeatAnnouncement(
@@ -558,13 +699,9 @@ enum SelfCorrectionResolver {
                 guard !hasProtectedDifference else { continue }
             }
 
-            let keptLength = min(
-                after.count,
-                max(leftCount, prefix + 1)
-            )
             let candidate = AttemptMatch(
                 leftRange: leftStart..<before.upperBound,
-                rightRange: after.lowerBound..<(after.lowerBound + keptLength),
+                rightRange: after,
                 sharedPrefixWords: prefix
             )
 
@@ -638,9 +775,11 @@ enum SelfCorrectionResolver {
 
     private static func phrase(tokens: [Token], range: Range<Int>,
                                in input: String) -> String {
-        range.compactMap { index in
-            tokens[safe: index].map { String(input[$0.range]) }
-        }.joined(separator: " ")
+        guard !range.isEmpty,
+              let first = tokens[safe: range.lowerBound],
+              let last = tokens[safe: range.index(before: range.upperBound)]
+        else { return "" }
+        return String(input[first.range.lowerBound..<last.range.upperBound])
     }
 
     private static func compactAfterRemoval(_ input: String) -> String {

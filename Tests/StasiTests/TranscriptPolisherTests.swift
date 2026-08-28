@@ -64,8 +64,8 @@ final class TranscriptPolisherTests: XCTestCase {
             PolishChange(
                 kind: .selfCorrection,
                 count: 1,
-                removed: "Hallo mein Name ist Peter",
-                kept: "Hallo mein Name ist Philipp"
+                removed: "Hallo, mein Name ist Peter",
+                kept: "Hallo, mein Name ist Philipp"
             ),
         ])
         XCTAssertEqual(outcome.summary.badgeText(), "POLIERT · VERSPRECHER")
@@ -101,6 +101,25 @@ final class TranscriptPolisherTests: XCTestCase {
 
         XCTAssertEqual(second.text, first.text)
         XCTAssertEqual(second.summary.selfCorrectionsResolved, 0)
+    }
+
+    func testRestartPolishChangeUsesCompleteOriginalAuditValues() {
+        let outcome = TranscriptPolisher.polishSync(
+            "Hallo, mein Name ist Peter, nein, Hallo, mein Name ist Philipp und ich wohne in Berlin",
+            locale: Locale(identifier: "de_DE"),
+            entries: [],
+            level: .standard
+        )
+
+        XCTAssertEqual(outcome.text, "Hallo, mein Name ist Philipp und ich wohne in Berlin")
+        XCTAssertEqual(outcome.summary.changes.filter { $0.kind == .selfCorrection }, [
+            PolishChange(
+                kind: .selfCorrection,
+                count: 1,
+                removed: "Hallo, mein Name ist Peter",
+                kept: "Hallo, mein Name ist Philipp und ich wohne in Berlin"
+            ),
+        ])
     }
 
     func testNoPeriodIsAppended() {

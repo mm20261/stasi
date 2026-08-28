@@ -176,8 +176,8 @@ final class SelfCorrectionResolverTests: XCTestCase {
         XCTAssertEqual(result.resolvedCount, 1)
         XCTAssertEqual(result.edits, [
             SelfCorrectionResolver.Edit(
-                removed: "Hallo mein Name ist",
-                kept: "Hallo mein Name ist Philipp"
+                removed: "Hallo, mein Name ist",
+                kept: "Hallo, mein Name ist Philipp"
             ),
         ])
     }
@@ -220,8 +220,8 @@ final class SelfCorrectionResolverTests: XCTestCase {
 
         XCTAssertEqual(result.text, "Hallo, mein Name ist Philipp")
         XCTAssertEqual(result.resolvedCount, 1)
-        XCTAssertEqual(result.edits.first?.removed, "Hallo mein Name ist Peter")
-        XCTAssertEqual(result.edits.first?.kept, "Hallo mein Name ist Philipp")
+        XCTAssertEqual(result.edits.first?.removed, "Hallo, mein Name ist Peter")
+        XCTAssertEqual(result.edits.first?.kept, "Hallo, mein Name ist Philipp")
     }
 
     func testMarkerlessExactPrefixRequiresIncompleteFirstAttempt() {
@@ -292,6 +292,26 @@ final class SelfCorrectionResolverTests: XCTestCase {
         XCTAssertEqual(resolve(text, .en), text)
     }
 
+    func testExplicitGermanIncompleteSecondAttemptEndingInArticleRemains() {
+        let text = "Ich wohne heute in Berlin und arbeite dort, nein, Ich wohne heute in der"
+        XCTAssertEqual(resolve(text), text)
+    }
+
+    func testExplicitEnglishIncompleteSecondAttemptEndingInArticleRemains() {
+        let text = "I live today in Berlin and work there, no, I live today in the"
+        XCTAssertEqual(resolve(text, .en), text)
+    }
+
+    func testMarkerlessGermanIncompleteSecondAttemptEndingInConjunctionRemains() {
+        let text = "Hallo mein Name ist Peter und ich wohne in Berlin, Hallo mein Name ist Philipp und"
+        XCTAssertEqual(resolve(text), text)
+    }
+
+    func testMarkerlessEnglishIncompleteSecondAttemptEndingInConjunctionRemains() {
+        let text = "Hello my name is Peter and I live in Berlin, Hello my name is Philipp and"
+        XCTAssertEqual(resolve(text, .en), text)
+    }
+
     func testLongMarkerlessRestartChainKeepsLastAttemptAndIsIdempotent() {
         let input = (0...10).map { "Ich bin am Ort\($0)" }.joined(separator: ", ")
 
@@ -303,6 +323,35 @@ final class SelfCorrectionResolverTests: XCTestCase {
         XCTAssertEqual(second.text, first.text)
         XCTAssertEqual(second.resolvedCount, 0)
         XCTAssertTrue(second.edits.isEmpty)
+    }
+
+    func testMarkerlessCandidateOverflowLeavesThirtyFourAttemptsUnchangedAndIdempotent() {
+        let input = (0...33).map { "Ich bin am Ort\($0)" }.joined(separator: ", ")
+
+        let first = SelfCorrectionResolver.resolve(input, locale: .de)
+        let second = SelfCorrectionResolver.resolve(first.text, locale: .de)
+
+        XCTAssertEqual(first.text, input)
+        XCTAssertEqual(first.resolvedCount, 0)
+        XCTAssertTrue(first.edits.isEmpty)
+        XCTAssertEqual(second.text, input)
+        XCTAssertEqual(second.resolvedCount, 0)
+        XCTAssertTrue(second.edits.isEmpty)
+    }
+
+    func testGermanSemicolonParallelClausesRemain() {
+        let text = "Ich kaufe rote Äpfel; Ich kaufe rote Birnen."
+        XCTAssertEqual(resolve(text), text)
+    }
+
+    func testEnglishSemicolonParallelClausesRemain() {
+        let text = "I buy red apples; I buy red pears."
+        XCTAssertEqual(resolve(text, .en), text)
+    }
+
+    func testColonParallelClausesRemain() {
+        let text = "Ich kaufe rote Äpfel: Ich kaufe rote Birnen."
+        XCTAssertEqual(resolve(text), text)
     }
 
     func testEmbeddedGermanRepeatedPhraseWithoutClauseBoundaryRemains() {
@@ -327,6 +376,21 @@ final class SelfCorrectionResolverTests: XCTestCase {
 
     func testQuotedAndAnnouncedRepetitionRemains() {
         let text = "Ich sage „Hallo, mein Name ist Peter“ und wiederhole „Hallo, mein Name ist Philipp“."
+        XCTAssertEqual(resolve(text), text)
+    }
+
+    func testMarkerlessRestartInsideGermanQuotePairRemains() {
+        let text = "„Hallo mein Name ist Peter, Hallo mein Name ist Philipp“."
+        XCTAssertEqual(resolve(text), text)
+    }
+
+    func testMarkerlessRestartInsideStraightEnglishDoubleQuotesRemains() {
+        let text = "\"Hello my name is Peter, Hello my name is Philipp\"."
+        XCTAssertEqual(resolve(text, .en), text)
+    }
+
+    func testMarkerlessRestartInsideGermanGuillemetsRemains() {
+        let text = "»Hallo mein Name ist Peter, Hallo mein Name ist Philipp«."
         XCTAssertEqual(resolve(text), text)
     }
 
@@ -356,6 +420,54 @@ final class SelfCorrectionResolverTests: XCTestCase {
         XCTAssertEqual(second.text, first.text)
         XCTAssertEqual(second.resolvedCount, 0)
         XCTAssertTrue(second.edits.isEmpty)
+    }
+
+    func testExplicitRestartAuditKeepsCompleteOriginalRightAttempt() {
+        let result = SelfCorrectionResolver.resolve(
+            "Hallo, mein Name ist Peter, nein, Hallo, mein Name ist Philipp und ich wohne in Berlin",
+            locale: .de
+        )
+
+        XCTAssertEqual(result.text, "Hallo, mein Name ist Philipp und ich wohne in Berlin")
+        XCTAssertEqual(result.edits, [
+            SelfCorrectionResolver.Edit(
+                removed: "Hallo, mein Name ist Peter",
+                kept: "Hallo, mein Name ist Philipp und ich wohne in Berlin"
+            ),
+        ])
+    }
+
+    func testMarkerlessAuditPreservesStraightApostrophe() {
+        let result = SelfCorrectionResolver.resolve(
+            "We'll meet on Friday, We'll meet on Thursday",
+            locale: .en
+        )
+
+        XCTAssertEqual(result.text, "We'll meet on Thursday")
+        XCTAssertEqual(result.edits.first?.removed, "We'll meet on Friday")
+        XCTAssertEqual(result.edits.first?.kept, "We'll meet on Thursday")
+    }
+
+    func testMarkerlessAuditPreservesTypographicApostrophe() {
+        let result = SelfCorrectionResolver.resolve(
+            "We’ll meet on Friday, We’ll meet on Thursday",
+            locale: .en
+        )
+
+        XCTAssertEqual(result.text, "We’ll meet on Thursday")
+        XCTAssertEqual(result.edits.first?.removed, "We’ll meet on Friday")
+        XCTAssertEqual(result.edits.first?.kept, "We’ll meet on Thursday")
+    }
+
+    func testMarkerlessAuditPreservesHyphen() {
+        let result = SelfCorrectionResolver.resolve(
+            "E-Mail schicken wir Montag, E-Mail schicken wir Dienstag",
+            locale: .de
+        )
+
+        XCTAssertEqual(result.text, "E-Mail schicken wir Dienstag")
+        XCTAssertEqual(result.edits.first?.removed, "E-Mail schicken wir Montag")
+        XCTAssertEqual(result.edits.first?.kept, "E-Mail schicken wir Dienstag")
     }
 
     func testNonEmptyRestartNeverBecomesEmpty() {
