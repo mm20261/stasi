@@ -869,6 +869,71 @@ final class DictationSessionTests: XCTestCase {
         XCTAssertEqual(clipboard.strings, ["Finaler Text"])
     }
 
+    func testRestartCleanupKeepsRawTextAndInjectsPolishedText() async {
+        let target = makeTargetApplication(named: "Notizen")
+        let raw = "Hallo, mein Name ist Peter, Hallo, mein Name ist Philipp"
+        let polished = "Hallo, mein Name ist Philipp"
+        let audio = FakeAudioCapture()
+        let history = FakeHistoryStore()
+        let injector = TextInjectorSpy()
+        let clipboard = ClipboardSpy()
+        let app = makeApp(
+            audio: audio,
+            engines: [FakeSpeechEngine(text: raw)],
+            history: history,
+            frontmostApplication: { target },
+            isTextFieldEditable: { true },
+            injectText: { text, pid in injector.inject(text, targetPID: pid) },
+            copyToClipboard: { clipboard.copy($0) }
+        )
+        app.settings.language = "de_DE"
+        app.settings.postProcessing = .standard
+
+        app.startDictation()
+        await waitUntil { audio.isRunning && app.partialText == raw }
+        app.stopDictation()
+        await waitUntil { app.phase == .idle }
+
+        XCTAssertEqual(history.records.first?.rawText, raw)
+        XCTAssertEqual(history.records.first?.correctedText, polished)
+        XCTAssertEqual(history.records.first?.polish?.selfCorrectionsResolved, 1)
+        XCTAssertEqual(clipboard.strings, [polished])
+        XCTAssertEqual(injector.texts, [polished])
+        XCTAssertEqual(injector.targetPIDs, [target.processIdentifier])
+    }
+
+    func testRestartCleanupSurvivesInjectionFailure() async {
+        let target = makeTargetApplication(named: "Notizen")
+        let raw = "Hallo, mein Name ist Peter, Hallo, mein Name ist Philipp"
+        let polished = "Hallo, mein Name ist Philipp"
+        let audio = FakeAudioCapture()
+        let history = FakeHistoryStore()
+        let injector = TextInjectorSpy()
+        injector.succeeds = false
+        let clipboard = ClipboardSpy()
+        let app = makeApp(
+            audio: audio,
+            engines: [FakeSpeechEngine(text: raw)],
+            history: history,
+            frontmostApplication: { target },
+            isTextFieldEditable: { true },
+            injectText: { text, pid in injector.inject(text, targetPID: pid) },
+            copyToClipboard: { clipboard.copy($0) }
+        )
+        app.settings.language = "de_DE"
+        app.settings.postProcessing = .standard
+
+        app.startDictation()
+        await waitUntil { audio.isRunning && app.partialText == raw }
+        app.stopDictation()
+        await waitUntil { app.phase == .idle }
+
+        XCTAssertEqual(history.records.first?.rawText, raw)
+        XCTAssertEqual(history.records.first?.correctedText, polished)
+        XCTAssertEqual(clipboard.strings, [polished])
+        XCTAssertEqual(injector.texts, [polished])
+    }
+
     func testInjectionFailureKeepsHistoryAndClipboardAndReportsRetainedText() async {
         let slack = TargetApplication(
             localizedName: "Slack",
