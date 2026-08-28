@@ -50,6 +50,59 @@ final class TranscriptPolisherTests: XCTestCase {
         XCTAssertEqual(outcome.summary.selfCorrectionsResolved, 1)
     }
 
+    func testStandardCleansMarkerlessRestartAndRecordsSelfCorrection() {
+        let outcome = TranscriptPolisher.polishSync(
+            "Hallo, mein Name ist Peter, Hallo, mein Name ist Philipp",
+            locale: Locale(identifier: "de_DE"),
+            entries: [],
+            level: .standard
+        )
+
+        XCTAssertEqual(outcome.text, "Hallo, mein Name ist Philipp")
+        XCTAssertEqual(outcome.summary.selfCorrectionsResolved, 1)
+        XCTAssertEqual(outcome.summary.changes.filter { $0.kind == .selfCorrection }, [
+            PolishChange(
+                kind: .selfCorrection,
+                count: 1,
+                removed: "Hallo mein Name ist Peter",
+                kept: "Hallo mein Name ist Philipp"
+            ),
+        ])
+        XCTAssertEqual(outcome.summary.badgeText(), "POLIERT · VERSPRECHER")
+    }
+
+    func testOffPreservesMarkerlessRestart() {
+        let raw = "Hallo, mein Name ist Peter, Hallo, mein Name ist Philipp"
+        let outcome = TranscriptPolisher.polishSync(
+            raw,
+            locale: Locale(identifier: "de_DE"),
+            entries: [],
+            level: .off
+        )
+
+        XCTAssertEqual(outcome.text, raw)
+        XCTAssertEqual(outcome.summary.level, .off)
+        XCTAssertFalse(outcome.summary.changedAnything)
+    }
+
+    func testRestartPolishingIsIdempotent() {
+        let first = TranscriptPolisher.polishSync(
+            "Hallo, mein Name ist Peter, Hallo, mein Name ist Philipp",
+            locale: Locale(identifier: "de_DE"),
+            entries: [],
+            level: .standard
+        )
+        let second = TranscriptPolisher.polishSync(
+            first.text,
+            locale: Locale(identifier: "de_DE"),
+            entries: [],
+            level: .standard
+        )
+
+        XCTAssertEqual(second.text, first.text)
+        XCTAssertEqual(second.summary.selfCorrectionsResolved, 0)
+    }
+
     func testNoPeriodIsAppended() {
         let outcome = TranscriptPolisher.polishSync(
             "ähm hallo welt", locale: Locale(identifier: "de_DE"), entries: [], level: .standard
