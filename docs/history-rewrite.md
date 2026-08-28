@@ -10,14 +10,14 @@ Diese Checkliste bereitet eine **spätere, separat freizugebende** Umschreibung 
 - [ ] `OLD_EMAIL`, `NEW_NOREPLY_EMAIL` und `NEW_NAME` werden interaktiv eingegeben, geprüft und nochmals bestätigt.
 - [ ] Für `NEW_NOREPLY_EMAIL` ist entschieden, ob die bestätigte GitHub-Noreply-Adresse des Zielkontos verwendet wird; die Adresse wird in den GitHub-E-Mail-Einstellungen verifiziert.
 - [ ] Alle Mitwirkenden haben Schreibstopp zugesagt; während Analyse, Rewrite und Prüfung entstehen keine neuen Commits, Tags oder Branches.
-- [ ] Alle Beteiligten bestätigen ausdrücklich: **Alle Commit-IDs im umgeschriebenen Scope ändern sich.** Offene Pull Requests, Forks und vorhandene Klone müssen koordiniert, neu basiert oder frisch geklont werden.
+- [ ] Alle Beteiligten bestätigen ausdrücklich: **Jeder tatsächlich umgeschriebene Commit und alle seine Nachfahren erhalten neue IDs.** Historien ohne Verbindung zu einem betroffenen Commit können unveränderte IDs behalten. Offene Pull Requests, Forks und vorhandene Klone müssen koordiniert, neu basiert oder frisch geklont werden.
 - [ ] Branch- und Tag-Schutzregeln sowie die erforderlichen GitHub-Berechtigungen sind inventarisiert. Eine Änderung dieser Regeln ist noch nicht freigegeben.
 
 ## 2. Externe Sicherung und Inventar
 
-- [ ] Außerhalb des Arbeits-Repositorys und auf einem unabhängigen Speicherort wird ein vollständiges Repository-Backup erstellt, zum Beispiel als Mirror-Klon.
-- [ ] Das Backup wird durch einen frischen Test-Klon und `git fsck --full` geprüft.
-- [ ] Vorher werden alle lokalen und Remote-Refs, Branches, Tags, Remotes und Objekt-IDs in einem Protokoll **außerhalb des Repositorys** gesichert:
+- [ ] Außerhalb des Arbeits-Repositorys und auf einem unabhängigen Speicherort wird ein vollständiges Repository-Backup als verifizierter Mirror-Klon erstellt. Ein normaler Klon genügt nicht. Falls kein Mirror-Klon verwendet wird, muss eine ausdrücklich geprüfte Fetch-Refspec alle gewünschten Refs abdecken, zum Beispiel `+refs/*:refs/*`.
+- [ ] Für den Backup-Klon werden Fetch-Refspec und tatsächlich vorhandene Refs geprüft; ein frischer Test-Klon daraus sowie `git fsck --full` müssen erfolgreich sein.
+- [ ] Vorher werden alle lokalen und vom Remote angebotenen Refs, Branches, Tags, Remotes und Objekt-IDs in einem Protokoll **außerhalb des Repositorys** gesichert:
 
   ```bash
   git show-ref --head
@@ -25,8 +25,11 @@ Diese Checkliste bereitet eine **spätere, separat freizugebende** Umschreibung 
   git tag --list --format='%(refname) %(objectname) %(objecttype)'
   git remote --verbose
   git remote show origin
+  git config --get-all remote.origin.fetch
+  git ls-remote --refs origin
   ```
 
+- [ ] GitHub-verwaltete Pull-Request-Refs werden separat inventarisiert und koordiniert. Sie sind serverkontrolliert und dürfen nicht als normal wiederherstellbare oder frei pushbare Backup-Refs eingeplant werden.
 - [ ] Die Wiederherstellung aus dem externen Backup wurde verstanden. Reflogs allein sind **kein** ausreichender Rollback-Plan.
 
 ## 3. Werkzeug und trockene Analyse
@@ -57,13 +60,15 @@ Diese Checkliste bereitet eine **spätere, separat freizugebende** Umschreibung 
   ```
 
 - [ ] Die Datei enthält ausschließlich bestätigte Werte und wird weder committed noch als `.mailmap` im Repository angelegt.
-- [ ] Der spätere Rewrite wird zuerst in einem frischen Test-Klon mit der dokumentierten `git-filter-repo`-Version erprobt. Die geplante Befehlsform lautet:
+- [ ] `git-filter-repo` verarbeitet nur die Refs, die im Rewrite-Klon vorhanden und für den Lauf erreichbar sind. Deshalb werden Mirror-/Fetch-Abdeckung und das Ref-Inventar vor dem Test-Rewrite miteinander verglichen.
+- [ ] Eine Einschränkung mit `--refs` ändert das Verhalten zu einem partiellen Rewrite und kann alte und neue Historie nebeneinander belassen. Jede solche Einschränkung benötigt eine separate Prüfung und Freigabe; sie wird nicht stillschweigend ergänzt.
+- [ ] Der spätere Rewrite wird zuerst in einem frischen Test-Klon mit der dokumentierten `git-filter-repo`-Version erprobt. Die geplante Befehlsform ohne ungeprüfte Ref-Einschränkung lautet:
 
   ```bash
   git filter-repo --mailmap /ABSOLUTE/PATH/TO/CONFIRMED-MAILMAP
   ```
 
-- [ ] Vor Ausführung werden Zielklon, Mailmap-Inhalt, Scope und Backup ein letztes Mal von einer zweiten Person geprüft.
+- [ ] Vor Ausführung werden Zielklon, Mailmap-Inhalt, Scope, vorhandene Refs und Backup ein letztes Mal von einer zweiten Person geprüft.
 - [ ] Dieser Befehl wird **nicht** im Rahmen dieser Anleitung ausgeführt.
 
 ## 5. Prüfung nach einem später genehmigten Test-Rewrite
@@ -71,7 +76,8 @@ Diese Checkliste bereitet eine **spätere, separat freizugebende** Umschreibung 
 - [ ] Alle vorgesehenen Branches, Tags und sonstigen Refs sind vorhanden und zeigen auf die erwartete umgeschriebene Historie.
 - [ ] Autoren-, Committer- und Tagger-Daten werden über alle Refs geprüft; `OLD_EMAIL` kommt nirgends mehr vor.
 - [ ] Commit-Anzahl, Topologie, Merge-Struktur, Dateiinhalte und Tag-Ziele werden gegen das Vorher-Inventar abgeglichen.
-- [ ] Annotierte und signierte Tags werden gesondert geprüft; umgeschriebene signierte Objekte benötigen eine bewusst geplante Neusignierung.
+- [ ] Lightweight Tags werden als direkte Refs auf ihre erwarteten neuen Commit-Ziele geprüft; sie besitzen weder eigenes Tagger-Feld noch eigene Signatur.
+- [ ] Annotierte Tags besitzen ein eigenes Tag-Objekt samt Tagger-Daten und werden deshalb getrennt geprüft. Wird ein signiertes annotiertes Tag umgeschrieben, ist seine bisherige Signatur nicht mehr gültig; seine bewusste Neuerstellung und Neusignierung muss separat geplant und freigegeben werden.
 - [ ] Anwendung und Release-Artefakte werden vollständig neu gebaut; finale Tests und Smoke-Test laufen erneut erfolgreich.
 - [ ] Das Ergebnis wird in einem zweiten frischen Klon geprüft, bevor irgendein Remote geändert wird.
 
