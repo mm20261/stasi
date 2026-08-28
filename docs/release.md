@@ -114,18 +114,27 @@ Fehler. Die Veröffentlichung ist damit fail-closed.
 Die Release-Notizen dürfen keine Secrets enthalten. Erst ein vollständig grüner
 Verify- und Publish-Lauf gilt als erfolgreiche Veröffentlichung.
 
-## Manueller Notfallpfad
+## Manueller Notfallpfad: lokale Diagnose und Wiederherstellungsprüfung
 
-Dieser Pfad ist für einen bewusst beaufsichtigten lokalen Neuaufbau vorgesehen. Er
-verwendet dieselbe Version, denselben Update-Endpunkt und dieselben Prüfungen wie der
-Workflow. Developer-ID-Identität und `notarytool`-Profil müssen bereits sicher im
-lokalen Schlüsselbund eingerichtet sein; ihre Werte gehören nicht ins Repository.
+Dieser Pfad dient ausschließlich einer bewusst beaufsichtigten lokalen Diagnose,
+Artefaktvorbereitung und Wiederherstellungsprüfung. Er lädt nichts hoch, erstellt
+keinen Release und ersetzt das GitHub-Environment-Gate nicht. Eine öffentliche
+Veröffentlichung erfolgt ausschließlich über den oben beschriebenen
+Tag-/Verify-/Publish-Workflow mit dem Environment `release` und Required Review.
+
+Die lokalen Schritte prüfen Tests, App-Smoke, Bundle-Metadaten, Architektur,
+Developer-ID-Signatur, Hardened Runtime, Notarisierung, Gatekeeper, ZIP-Inhalt und
+SHA-256-Prüfsumme. Sie prüfen weder den geschützten Workflow-Checkout noch die
+Environment-Secrets oder das Required-Reviewer-Gate. Developer-ID-Identität und
+`notarytool`-Profil müssen bereits sicher im lokalen Schlüsselbund eingerichtet sein;
+ihre Werte gehören nicht ins Repository.
 
 1. Tests ausführen und das Release-Bundle unsigned bauen:
 
    ```bash
    swift build --build-tests
    xcrun xctest "$(swift build --show-bin-path)/StasiPackageTests.xctest"
+   ./scripts/smoke-test-app.sh
 
    STASI_VERSION='0.10.0' \
    STASI_RELEASE_API_URL='https://api.github.com/repos/mm20261/stasi/releases/latest' \
@@ -146,8 +155,8 @@ lokalen Schlüsselbund eingerichtet sein; ihre Werte gehören nicht ins Reposito
    test "$(lipo -archs build/Stasi.app/Contents/MacOS/Stasi)" = 'arm64'
    ```
 
-3. Mit Developer ID und Hardened Runtime signieren, notarisierten ZIP-Transport
-   einreichen und das Ticket anheften:
+3. Mit Developer ID und Hardened Runtime signieren, Signaturmerkmale prüfen,
+   notarisierten ZIP-Transport einreichen und das Ticket anheften:
 
    ```bash
    export STASI_DEVELOPER_ID_APPLICATION='<Developer ID Application identity>'
@@ -160,6 +169,9 @@ lokalen Schlüsselbund eingerichtet sein; ihre Werte gehören nicht ins Reposito
      --entitlements Release/Stasi.entitlements \
      build/Stasi.app
    codesign --verify --deep --strict --verbose=2 build/Stasi.app
+   codesign -d --verbose=4 build/Stasi.app 2>&1 | grep -Eq 'flags=.*runtime'
+   test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' \
+     build/Stasi.app/Contents/Info.plist)" = 'app.stasi.macos'
 
    ditto -c -k --keepParent build/Stasi.app build/Stasi-notary.zip
    xcrun notarytool submit build/Stasi-notary.zip \
@@ -171,7 +183,7 @@ lokalen Schlüsselbund eingerichtet sein; ihre Werte gehören nicht ins Reposito
    spctl --assess --type execute --verbose=4 build/Stasi.app
    ```
 
-4. Erst nach allen erfolgreichen Prüfungen das finale Archiv und seine Prüfsumme
+4. Nach allen bisherigen Prüfungen das lokale Diagnosearchiv und seine Prüfsumme
    erzeugen und die Prüfsumme sofort gegen das ZIP prüfen:
 
    ```bash
@@ -183,13 +195,26 @@ lokalen Schlüsselbund eingerichtet sein; ihre Werte gehören nicht ins Reposito
    )
    ```
 
-5. Vor einer manuellen Veröffentlichung erneut bestätigen, dass der geschützte Tag
-   `v0.10.0` auf den geprüften Commit zeigt. Danach dürfen ausschließlich
-   `build/Stasi.zip` und `build/Stasi.zip.sha256` an genau diesem Tag veröffentlicht
-   werden.
+5. Das finale ZIP entpacken und das enthaltene Bundle erneut lokal prüfen:
 
-Der Notfallpfad umgeht weder Tag-Schutz noch Required Review, Signatur,
-Notarisierung, Gatekeeper-, Architektur- oder SHA-Prüfung.
+   ```bash
+   archive_check="$(mktemp -d)"
+   trap 'rm -rf "$archive_check"' EXIT
+   ditto -x -k build/Stasi.zip "$archive_check"
+
+   test -d "$archive_check/Stasi.app"
+   codesign --verify --deep --strict --verbose=2 "$archive_check/Stasi.app"
+   codesign -d --verbose=4 "$archive_check/Stasi.app" 2>&1 | \
+     grep -Eq 'flags=.*runtime'
+   xcrun stapler validate "$archive_check/Stasi.app"
+   spctl --assess --type execute --verbose=4 "$archive_check/Stasi.app"
+   test "$(lipo -archs "$archive_check/Stasi.app/Contents/MacOS/Stasi")" = 'arm64'
+   ```
+
+`build/Stasi.zip` und `build/Stasi.zip.sha256` bleiben lokale Diagnoseartefakte und
+werden nicht veröffentlicht. Für eine öffentliche Freigabe muss der geschützte
+Tag-/Verify-/Publish-Workflow repariert beziehungsweise erneut ausgeführt werden; er
+baut und prüft seine Release-Assets selbst hinter dem Environment-Gate.
 
 ## Entitlements und lokale Entwicklung
 
