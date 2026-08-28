@@ -4,6 +4,66 @@ Diese Anleitung beschreibt den aktuellen Vertrag für veröffentlichte, mit Deve
 ID signierte und von Apple notarisierte Builds. Lokale Entwicklungssignaturen sind
 nicht für die öffentliche Verteilung bestimmt.
 
+## Lokaler Übergabestand vom 28. August 2026
+
+Dieser Abschnitt ist eine Übergabe für den nächsten Agenten. Er wird vor der finalen
+öffentlichen Veröffentlichung entfernt oder in einen abgeschlossenen Release-Befund
+umgewandelt.
+
+- Lokaler Branch: `worktree-transcript-cleanup-impl`
+- Geprüfter Stand vor diesem Übergabe-Commit: `b7af044`
+- Remote `main`: `5a5224a`
+- Lokale Commits vor Remote `main`: 16
+- GitHub-Zustand: `PRIVATE`, Default-Branch `main`, keine Tags, keine Releases, nur
+  Remote-Branch `main`
+- Es wurde nichts gepusht, veröffentlicht oder öffentlich geschaltet.
+
+Lokal fertig und reviewt:
+
+- stärkere regelbasierte Neustart- und Selbstkorrekturbereinigung,
+- originalgetreue Auditwerte sowie erhaltener Rohtext,
+- kontrollierte Bundle-Version über `STASI_VERSION`,
+- Bundle-, Update-Endpunkt- und Architekturprüfungen,
+- Tag-/Verify-/Publish-Workflow mit fail-closed Secrets,
+- Developer-ID-, Notarisierungs-, ZIP-, SHA- und Release-Prüfkette,
+- README und diese Release-Dokumentation.
+
+Verifikation auf `b7af044`:
+
+```text
+582 Tests
+4 erwartete TCC-Skips
+0 Fehler
+Release-Metadaten-Smoke vollständig grün
+Finaler Opus-Review: keine Critical- oder Important-Findings
+```
+
+Bewusst offen:
+
+- `actionlint` wurde auf ausdrücklichen Nutzerwunsch nicht installiert. YAML,
+  Expressions, Outputs, `needs`, Permissions, Trigger und Job-Gates wurden stattdessen
+  mit Ruby, `bash -n`, statischen Scans und Opus geprüft.
+- Developer-ID-Signierung, Apple-Notarisierung, Stapling, Gatekeeper des frisch
+  heruntergeladenen ZIPs und `gh release create` benötigen den autorisierten
+  GitHub-Lauf.
+- Deferred Minor: Tag-Push und manueller Main-Dispatch desselben Tags verwenden
+  verschiedene Concurrency-Gruppen und können parallel bis zur Release-Erstellung
+  laufen.
+- Deferred Minor: Der Diagnosebefehl `mkdir release-check` ist bei Wiederholung nicht
+  idempotent.
+
+Nächster Agent:
+
+1. `docs/superpowers/specs/2026-08-28-transkript-release-und-autorenbereinigung-design.md`
+   lesen.
+2. Die drei Pläne unter `docs/superpowers/plans/2026-08-28-*` lesen.
+3. Mit `docs/superpowers/plans/2026-08-28-historie-und-veroeffentlichung.md`
+   fortfahren.
+4. Vor Force-Push, Sichtbarkeitswechsel, Secret-Einrichtung, Tag-Push, Release und
+   Homebrew-Tap jeweils erneut eine ausdrückliche Nutzerfreigabe einholen.
+5. Zuerst den vollständigen öffentlichen Audit ausführen. Bei einem historischen echten
+   Secret stoppen, rotieren und einen separaten Inhaltsrewrite planen.
+
 ## Release-Vertrag
 
 - Tag: `vMAJOR.MINOR.PATCH`
