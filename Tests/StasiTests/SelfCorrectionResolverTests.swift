@@ -165,4 +165,36 @@ final class SelfCorrectionResolverTests: XCTestCase {
         XCTAssertEqual(resolve("Das ist Quatsch und bleibt so"),
                        "Das ist Quatsch und bleibt so")
     }
+
+    func testStrongMarkerAllowsIdenticalFrameWithRightContinuation() {
+        let result = SelfCorrectionResolver.resolve(
+            "Hallo, mein Name ist, nein, Hallo, mein Name ist Philipp",
+            locale: .de
+        )
+
+        XCTAssertEqual(result.text, "Hallo, mein Name ist Philipp")
+        XCTAssertEqual(result.resolvedCount, 1)
+        XCTAssertEqual(result.edits, [
+            SelfCorrectionResolver.Edit(
+                removed: "Hallo mein Name ist",
+                kept: "Hallo mein Name ist Philipp"
+            ),
+        ])
+    }
+
+    func testWeakMarkerAllowsMultiwordReplacementInRepeatedFrame() {
+        let result = SelfCorrectionResolver.resolve(
+            "Wir treffen uns Montag um zehn, ich meine, Wir treffen uns Dienstag um zwölf",
+            locale: .de
+        )
+
+        XCTAssertEqual(result.text, "Wir treffen uns Dienstag um zwölf")
+        XCTAssertEqual(result.resolvedCount, 1)
+        XCTAssertEqual(result.edits, [
+            SelfCorrectionResolver.Edit(
+                removed: "Wir treffen uns Montag um zehn",
+                kept: "Wir treffen uns Dienstag um zwölf"
+            ),
+        ])
+    }
 }

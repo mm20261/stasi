@@ -41,12 +41,41 @@ enum SelfCorrectionResolver {
         let edit: Edit
     }
 
+    private static let minimumRepeatedPrefixWords = 3
+    private static let maximumRepeatedPrefixWords = 12
+    private static let maximumRestartWindowWords = 16
+    private static let maximumRestartCandidatesPerSentence = 32
+
+    private struct PassResult {
+        let text: String
+        let edits: [Edit]
+    }
+
+    private struct AttemptMatch {
+        let leftRange: Range<Int>
+        let rightRange: Range<Int>
+        let sharedPrefixWords: Int
+    }
+
     static func resolve(_ input: String, locale: PolishLocale) -> Result {
         guard locale != .other, !input.isEmpty else {
             return Result(text: input, resolvedCount: 0, edits: [])
         }
 
+        let explicit = resolveExplicitCorrections(in: input, locale: locale)
+        return Result(
+            text: explicit.text,
+            resolvedCount: explicit.edits.count,
+            edits: explicit.edits
+        )
+    }
+
+    private static func resolveExplicitCorrections(
+        in input: String,
+        locale: PolishLocale
+    ) -> PassResult {
         var removals: [Removal] = []
+
         for sentence in sentences(in: input) where !sentence.endsWithQuestion {
             let tokens = tokenize(input, in: sentence.range)
             guard tokens.count >= 3 else { continue }
@@ -60,14 +89,37 @@ enum SelfCorrectionResolver {
                 let before = previousBoundary..<marker.span.lowerBound
                 let after = marker.span.upperBound..<nextBoundary
 
-                // Marker am Satzanfang, kein Ersatz oder direkt ein weiterer Marker.
                 guard !before.isEmpty, !after.isEmpty else { continue }
+
+                if let attempt = matchingRepeatedAttempt(
+                    tokens: tokens,
+                    before: before,
+                    after: after,
+                    locale: locale
+                ) {
+                    let removalRange = tokens[attempt.leftRange.lowerBound].range.lowerBound..<tokens[
+                        attempt.rightRange.lowerBound
+                    ].range.lowerBound
+                    removals.append(Removal(
+                        range: removalRange,
+                        edit: Edit(
+                            removed: phrase(tokens: tokens, range: attempt.leftRange, in: input),
+                            kept: phrase(tokens: tokens, range: attempt.rightRange, in: input)
+                        )
+                    ))
+                    continue
+                }
+
                 guard !startsCompleteSentence(tokens: tokens, range: after, locale: locale) else {
                     continue
                 }
 
-                if let frame = matchingFrame(tokens: tokens, before: before,
-                                             after: after, locale: locale) {
+                if let frame = matchingFrame(
+                    tokens: tokens,
+                    before: before,
+                    after: after,
+                    locale: locale
+                ) {
                     let leftRange = frame.leftStart..<marker.span.lowerBound
                     let rightRange = after.startIndex..<(after.startIndex + frame.length)
                     let removalRange = tokens[frame.leftStart].range.lowerBound..<tokens[
@@ -98,16 +150,22 @@ enum SelfCorrectionResolver {
             }
         }
 
+        return applying(nonOverlapping(removals), to: input)
+    }
+
+    private static func applying(_ removals: [Removal], to input: String) -> PassResult {
         guard !removals.isEmpty else {
-            return Result(text: input, resolvedCount: 0, edits: [])
+            return PassResult(text: input, edits: [])
         }
-        let unique = nonOverlapping(removals)
+
         var output = input
-        for removal in unique.reversed() {
+        for removal in removals.reversed() {
             output.replaceSubrange(removal.range, with: "")
         }
-        return Result(text: compactAfterRemoval(output), resolvedCount: unique.count,
-                      edits: unique.map(\.edit))
+        return PassResult(
+            text: compactAfterRemoval(output),
+            edits: removals.map(\.edit)
+        )
     }
 
     private static func sentences(in input: String) -> [Sentence] {
@@ -176,6 +234,68 @@ enum SelfCorrectionResolver {
         return markers
     }
 
+    private static func matchingRepeatedAttempt(
+        tokens: [Token],
+        before: Range<Int>,
+        after: Range<Int>,
+        locale: PolishLocale
+    ) -> AttemptMatch? {
+        let firstLeftStart = max(before.lowerBound, before.upperBound - maximumRestartWindowWords)
+        var best: AttemptMatch?
+
+        for leftStart in firstLeftStart..<before.upperBound {
+            let leftCount = before.upperBound - leftStart
+            let comparable = min(maximumRepeatedPrefixWords, leftCount, after.count)
+            guard comparable >= minimumRepeatedPrefixWords else { continue }
+
+            var prefix = 0
+            while prefix < comparable,
+                  tokens[leftStart + prefix].normalized
+                    == tokens[after.lowerBound + prefix].normalized {
+                prefix += 1
+            }
+            guard prefix >= minimumRepeatedPrefixWords else { continue }
+
+            let exactLeftPrefix = prefix == leftCount
+            if exactLeftPrefix {
+                guard after.count > leftCount else { continue }
+            } else {
+                guard after.count > prefix else { continue }
+                let comparedRemainder = min(leftCount, after.count)
+                let hasProtectedDifference = (prefix..<comparedRemainder).contains { offset in
+                    let left = tokens[leftStart + offset].normalized
+                    let right = tokens[after.lowerBound + offset].normalized
+                    return left != right
+                        && (locale.protectedFrameWords.contains(left)
+                            || locale.protectedFrameWords.contains(right))
+                }
+                guard !hasProtectedDifference else { continue }
+            }
+
+            let keptLength = min(
+                after.count,
+                max(leftCount, prefix + 1)
+            )
+            let candidate = AttemptMatch(
+                leftRange: leftStart..<before.upperBound,
+                rightRange: after.lowerBound..<(after.lowerBound + keptLength),
+                sharedPrefixWords: prefix
+            )
+
+            if let current = best {
+                if candidate.sharedPrefixWords > current.sharedPrefixWords
+                    || (candidate.sharedPrefixWords == current.sharedPrefixWords
+                        && candidate.leftRange.lowerBound > current.leftRange.lowerBound) {
+                    best = candidate
+                }
+            } else {
+                best = candidate
+            }
+        }
+
+        return best
+    }
+
     private static func matchingFrame(tokens: [Token], before: Range<Int>,
                                       after: Range<Int>, locale: PolishLocale)
         -> FrameMatch? {
@@ -232,9 +352,9 @@ enum SelfCorrectionResolver {
 
     private static func phrase(tokens: [Token], range: Range<Int>,
                                in input: String) -> String {
-        guard let first = tokens[safe: range.lowerBound],
-              let last = tokens[safe: range.index(before: range.upperBound)] else { return "" }
-        return String(input[first.range.lowerBound..<last.range.upperBound])
+        range.compactMap { index in
+            tokens[safe: index].map { String(input[$0.range]) }
+        }.joined(separator: " ")
     }
 
     private static func compactAfterRemoval(_ input: String) -> String {
