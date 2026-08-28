@@ -169,8 +169,6 @@ enum SelfCorrectionResolver {
                     locale: locale
                 ) {
                     let leftRange = frame.leftStart..<marker.span.lowerBound
-                    let rightRange = rightAttempt.startIndex..<(rightAttempt.startIndex
-                        + frame.length)
                     let removalRange = tokens[frame.leftStart].range.lowerBound..<tokens[
                         rightAttempt.lowerBound
                     ].range.lowerBound
@@ -178,7 +176,7 @@ enum SelfCorrectionResolver {
                         range: removalRange,
                         edit: Edit(
                             removed: phrase(tokens: tokens, range: leftRange, in: input),
-                            kept: phrase(tokens: tokens, range: rightRange, in: input)
+                            kept: phrase(tokens: tokens, range: rightAttempt, in: input)
                         )
                     ))
                     continue
@@ -194,7 +192,7 @@ enum SelfCorrectionResolver {
                 removals.append(Removal(
                     range: left.range.lowerBound..<right.range.lowerBound,
                     edit: Edit(removed: String(input[left.range]),
-                               kept: String(input[right.range]))
+                               kept: phrase(tokens: tokens, range: rightAttempt, in: input))
                 ))
             }
         }

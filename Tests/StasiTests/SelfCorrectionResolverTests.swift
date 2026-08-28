@@ -14,6 +14,21 @@ final class SelfCorrectionResolverTests: XCTestCase {
         XCTAssertEqual(resolve("um neun nein um zehn Uhr"), "um zehn Uhr")
     }
 
+    func testFrameEditKeepsFullRightAttempt() {
+        let result = SelfCorrectionResolver.resolve(
+            "um neun nein um zehn Uhr",
+            locale: .de
+        )
+
+        XCTAssertEqual(result.text, "um zehn Uhr")
+        XCTAssertEqual(result.edits, [
+            SelfCorrectionResolver.Edit(
+                removed: "um neun",
+                kept: "um zehn Uhr"
+            ),
+        ])
+    }
+
     func testGermanAmountFrame() {
         XCTAssertEqual(resolve("zehn Euro nein zwölf Euro"), "zwölf Euro")
     }
@@ -47,6 +62,21 @@ final class SelfCorrectionResolverTests: XCTestCase {
 
     func testStrongNumberFallback() {
         XCTAssertEqual(resolve("zehn nein zwölf"), "zwölf")
+    }
+
+    func testTokenClassFallbackEditKeepsFullRightAttempt() {
+        let result = SelfCorrectionResolver.resolve(
+            "zehn nein zwölf Euro",
+            locale: .de
+        )
+
+        XCTAssertEqual(result.text, "zwölf Euro")
+        XCTAssertEqual(result.edits, [
+            SelfCorrectionResolver.Edit(
+                removed: "zehn",
+                kept: "zwölf Euro"
+            ),
+        ])
     }
 
     func testStrongWeekdayFallback() {
