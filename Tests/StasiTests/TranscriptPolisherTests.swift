@@ -246,7 +246,7 @@ final class TranscriptPolisherTests: XCTestCase {
             PolishDetailSection(title: "Füllwörter entfernt", items: ["ähm", "quasi"]),
             PolishDetailSection(title: "Versprecher", items: [
                 "„wir wir“ → „wir“",
-                "„am Montag“ → „am Dienstag, quasi“",
+                "„am Montag“ → „am Dienstag“",
             ]),
             PolishDetailSection(title: "Wörterbuch", items: [
                 "„cloud code“ → „Claude Code“",

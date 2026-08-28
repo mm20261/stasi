@@ -124,6 +124,7 @@ enum SelfCorrectionResolver {
                     tokens: tokens,
                     start: after.lowerBound,
                     limit: after.upperBound,
+                    minimumWords: minimumRepeatedPrefixWords,
                     sentence: sentence,
                     in: input
                 )
@@ -169,6 +170,15 @@ enum SelfCorrectionResolver {
                     locale: locale
                 ) {
                     let leftRange = frame.leftStart..<marker.span.lowerBound
+                    let auditRightEnd = attemptEnd(
+                        tokens: tokens,
+                        start: rightAttempt.lowerBound,
+                        limit: rightAttempt.upperBound,
+                        minimumWords: 2,
+                        sentence: sentence,
+                        in: input
+                    )
+                    let auditRightRange = rightAttempt.lowerBound..<auditRightEnd
                     let removalRange = tokens[frame.leftStart].range.lowerBound..<tokens[
                         rightAttempt.lowerBound
                     ].range.lowerBound
@@ -176,7 +186,7 @@ enum SelfCorrectionResolver {
                         range: removalRange,
                         edit: Edit(
                             removed: phrase(tokens: tokens, range: leftRange, in: input),
-                            kept: phrase(tokens: tokens, range: rightAttempt, in: input)
+                            kept: phrase(tokens: tokens, range: auditRightRange, in: input)
                         )
                     ))
                     continue
@@ -189,10 +199,19 @@ enum SelfCorrectionResolver {
                       let leftClass = tokenClass(left.normalized, locale: locale),
                       leftClass == tokenClass(right.normalized, locale: locale)
                 else { continue }
+                let auditRightEnd = attemptEnd(
+                    tokens: tokens,
+                    start: rightAttempt.lowerBound,
+                    limit: rightAttempt.upperBound,
+                    minimumWords: 1,
+                    sentence: sentence,
+                    in: input
+                )
+                let auditRightRange = rightAttempt.lowerBound..<auditRightEnd
                 removals.append(Removal(
                     range: left.range.lowerBound..<right.range.lowerBound,
                     edit: Edit(removed: String(input[left.range]),
-                               kept: phrase(tokens: tokens, range: rightAttempt, in: input))
+                               kept: phrase(tokens: tokens, range: auditRightRange, in: input))
                 ))
             }
         }
@@ -253,6 +272,7 @@ enum SelfCorrectionResolver {
                     tokens: tokens,
                     start: rightStart,
                     limit: tokens.count,
+                    minimumWords: minimumRepeatedPrefixWords,
                     sentence: sentence,
                     in: input
                 )
@@ -398,10 +418,11 @@ enum SelfCorrectionResolver {
         tokens: [Token],
         start: Int,
         limit: Int,
+        minimumWords: Int,
         sentence: Sentence,
         in input: String
     ) -> Int {
-        let firstPossibleBoundary = start + minimumRepeatedPrefixWords
+        let firstPossibleBoundary = start + minimumWords
         guard firstPossibleBoundary < limit else { return limit }
 
         for index in firstPossibleBoundary..<limit
