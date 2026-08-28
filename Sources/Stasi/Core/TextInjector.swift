@@ -64,12 +64,20 @@ enum TextInjector {
         targetPID: pid_t,
         deliver: (_ chunk: [UniChar], _ targetPID: pid_t) -> Bool
     ) -> Bool {
-        let scalars = Array(text.utf16)
-        var offset = 0
-        while offset < scalars.count {
-            let end = min(offset + 24, scalars.count)
-            guard deliver(Array(scalars[offset..<end]), targetPID) else { return false }
-            offset = end
+        var chunk: [UniChar] = []
+        chunk.reserveCapacity(24)
+
+        for scalar in text.unicodeScalars {
+            let scalarUnits = Array(String(scalar).utf16)
+            if !chunk.isEmpty, chunk.count + scalarUnits.count > 24 {
+                guard deliver(chunk, targetPID) else { return false }
+                chunk.removeAll(keepingCapacity: true)
+            }
+            chunk.append(contentsOf: scalarUnits)
+        }
+
+        if !chunk.isEmpty {
+            guard deliver(chunk, targetPID) else { return false }
         }
         return true
     }

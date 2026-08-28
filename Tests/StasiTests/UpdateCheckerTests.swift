@@ -34,41 +34,95 @@ final class UpdateCheckerTests: XCTestCase {
         )
     }
 
-    func testReleaseConfigurationRejectsMissingBlankAndInvalidValues() {
+    func testReleaseConfigurationRejectsMissingBlankMalformedAndNonHTTPSValues() {
+        let rejected = [
+            "   ",
+            "not a URL",
+            "http://example.com/repos/stasi/releases/latest",
+            "https:///releases/latest",
+            "file:///tmp/release.json",
+            "stasi://example.com/releases/latest",
+        ]
+
         XCTAssertNil(ReleaseConfiguration.repositoryAPIURL(infoDictionary: nil))
         XCTAssertNil(ReleaseConfiguration.repositoryAPIURL(infoDictionary: [:]))
-        XCTAssertNil(ReleaseConfiguration.repositoryAPIURL(
-            infoDictionary: ["STASI_RELEASE_API_URL": "   "]
-        ))
-        XCTAssertNil(ReleaseConfiguration.repositoryAPIURL(
-            infoDictionary: ["STASI_RELEASE_API_URL": "not a URL"]
-        ))
+        for value in rejected {
+            XCTAssertNil(
+                ReleaseConfiguration.repositoryAPIURL(
+                    infoDictionary: ["STASI_RELEASE_API_URL": value]
+                ),
+                "Expected rejection for \(value)"
+            )
+        }
     }
 
     // MARK: Versionsvergleich
 
-    func testNormalizeStripsPrefixAndSplits() {
-        XCTAssertEqual(VersionComparator.components("v0.10"), [0, 10])
-        XCTAssertEqual(VersionComparator.components("0.9"), [0, 9])
-        XCTAssertEqual(VersionComparator.components("V1.2.3"), [1, 2, 3])
+    func testSemVerParserAcceptsExactNumericCoreOptionalVAndMetadata() throws {
+        XCTAssertEqual(try XCTUnwrap(SemVer("0.10.0")).description, "0.10.0")
+        XCTAssertEqual(try XCTUnwrap(SemVer("v1.2.3")).description, "1.2.3")
+        XCTAssertEqual(
+            try XCTUnwrap(SemVer("V2.0.1-rc.2+build.17")).description,
+            "2.0.1-rc.2+build.17"
+        )
     }
 
-    func testNumericComparisonNotLexicographic() {
-        XCTAssertTrue(VersionComparator.isNewer("v0.10", than: "0.9"))
-        XCTAssertFalse(VersionComparator.isNewer("0.9", than: "0.10"))
+    func testSemVerParserRejectsMalformedAndPartialVersions() {
+        let invalid = [
+            "", " ", "release", "1", "1.2", "1.2.3.4", ".1.2.3",
+            "1.2.3-", "1.2.3+", "1.2.3-alpha..1", "01.2.3", "1.02.3",
+            "1.2.03", "1.2.-3", "1.2.3_alpha", "1.2.3+build..1",
+        ]
+
+        for version in invalid {
+            XCTAssertNil(SemVer(version), "Expected invalid SemVer: \(version)")
+        }
     }
 
-    func testIsNewerVariants() {
-        XCTAssertTrue(VersionComparator.isNewer("0.9.1", than: "0.9"))
-        XCTAssertFalse(VersionComparator.isNewer("0.8", than: "0.9"))
-        XCTAssertFalse(VersionComparator.isNewer("0.9", than: "0.9"))
-        XCTAssertTrue(VersionComparator.isNewer("1.0", than: "0.9"))
+    func testSemVerAcceptsArbitrarilyLargeNumericIdentifiers() throws {
+        let hugeCore = try XCTUnwrap(SemVer("184467440737095516160.2.3"))
+        let hugePrerelease = try XCTUnwrap(SemVer("1.0.0-184467440737095516160"))
+        let alphanumericPrerelease = try XCTUnwrap(SemVer("1.0.0-alpha"))
+
+        XCTAssertGreaterThan(hugeCore, try XCTUnwrap(SemVer("999.999.999")))
+        XCTAssertLessThan(hugePrerelease, alphanumericPrerelease)
+        XCTAssertGreaterThan(
+            hugePrerelease,
+            try XCTUnwrap(SemVer("1.0.0-184467440737095516159"))
+        )
+    }
+
+    func testSemVerPrereleaseAndBuildMetadataPrecedence() throws {
+        let ordered = [
+            "1.0.0-alpha",
+            "1.0.0-alpha.1",
+            "1.0.0-alpha.beta",
+            "1.0.0-beta",
+            "1.0.0-beta.2",
+            "1.0.0-beta.11",
+            "1.0.0-rc.1",
+            "1.0.0",
+        ].compactMap(SemVer.init)
+
+        XCTAssertEqual(ordered.count, 8)
+        for pair in zip(ordered, ordered.dropFirst()) {
+            XCTAssertLessThan(pair.0, pair.1)
+        }
+        XCTAssertEqual(SemVer("1.0.0+first"), SemVer("1.0.0+second"))
+        XCTAssertEqual(SemVer("v1.2.3")?.normalizedCore, "1.2.3")
+    }
+
+    func testNumericComparisonRequiresTwoValidSemVers() {
+        XCTAssertEqual(VersionComparator.isNewer("v0.10.0", than: "0.9.0"), true)
+        XCTAssertEqual(VersionComparator.isNewer("0.9.0", than: "0.10.0"), false)
+        XCTAssertNil(VersionComparator.isNewer("release", than: "0.9.0"))
+        XCTAssertNil(VersionComparator.isNewer("1.0.0", than: "dev"))
     }
 
     func testCheckerDefaultsToDisplayedBundleVersion() {
         let checker = makeChecker(
             fetcher: StubReleaseFetcher(result: .success(
-                ReleaseInfo(version: "v1.0", url: releaseURL)
+                ReleaseInfo(version: "v1.0.0", url: releaseURL)
             )),
             currentVersion: nil
         )
@@ -90,7 +144,7 @@ final class UpdateCheckerTests: XCTestCase {
             fetcher: UnexpectedReleaseFetcher(),
             repositoryURL: nil,
             defaults: defaults,
-            currentVersion: "0.9",
+            currentVersion: "0.9.0",
             now: { self.checkedAt }
         )
 
@@ -111,7 +165,7 @@ final class UpdateCheckerTests: XCTestCase {
 
     func testSameVersionShowsUpToDateAndPersistsSuccessfulCheck() async {
         let checker = makeChecker(fetcher: StubReleaseFetcher(result: .success(
-            ReleaseInfo(version: "0.9", url: releaseURL)
+            ReleaseInfo(version: "0.9.0", url: releaseURL)
         )))
 
         await checker.check()
@@ -122,29 +176,178 @@ final class UpdateCheckerTests: XCTestCase {
         XCTAssertNil(checker.state.releaseURL)
 
         let reloaded = makeChecker(fetcher: UnexpectedReleaseFetcher())
-        XCTAssertEqual(reloaded.status, .upToDate(checkedAt))
+        XCTAssertEqual(reloaded.status, .neverChecked)
+    }
+
+    func testInvalidRemoteVersionFailsInsteadOfReportingUpToDate() async {
+        let checker = makeChecker(fetcher: StubReleaseFetcher(result: .success(
+            ReleaseInfo(version: "release-1", url: releaseURL)
+        )))
+
+        await checker.check()
+
+        XCTAssertEqual(checker.status, .failed(message: "Update-Prüfung fehlgeschlagen."))
+        XCTAssertNil(checker.state.lastChecked)
+    }
+
+    func testInvalidCurrentVersionFailsInsteadOfReportingUpToDate() async {
+        let checker = makeChecker(
+            fetcher: StubReleaseFetcher(result: .success(
+                ReleaseInfo(version: "1.0.0", url: releaseURL)
+            )),
+            currentVersion: "dev"
+        )
+
+        await checker.check()
+
+        XCTAssertEqual(checker.status, .failed(message: "Update-Prüfung fehlgeschlagen."))
+        XCTAssertNil(checker.state.lastChecked)
+    }
+
+    func testEndpointReleaseLinkMustBeHTTPSWithHost() async {
+        let invalidURLs = [
+            URL(string: "http://example.com/releases/v1.0.0")!,
+            URL(fileURLWithPath: "/tmp/release"),
+            URL(string: "stasi://example.com/releases/v1.0.0")!,
+            URL(string: "https:///releases/v1.0.0")!,
+        ]
+
+        for invalidURL in invalidURLs {
+            defaults.removePersistentDomain(forName: suiteName)
+            let checker = makeChecker(fetcher: StubReleaseFetcher(result: .success(
+                ReleaseInfo(version: "1.0.0", url: invalidURL)
+            )))
+
+            await checker.check()
+
+            XCTAssertEqual(
+                checker.status,
+                .failed(message: "Update-Prüfung fehlgeschlagen."),
+                "Expected rejection for \(invalidURL)"
+            )
+            XCTAssertNil(checker.state.lastChecked)
+        }
     }
 
     func testNewerVersionShowsUpdateActionAndPersistsReleaseInfo() async {
         let checker = makeChecker(fetcher: StubReleaseFetcher(result: .success(
-            ReleaseInfo(version: "v1.0", url: releaseURL)
+            ReleaseInfo(version: "v1.0.0", url: releaseURL)
         )))
 
         await checker.check()
 
         XCTAssertEqual(
             checker.status,
-            .updateAvailable(version: "1.0", url: releaseURL, checkedAt: checkedAt)
+            .updateAvailable(version: "1.0.0", url: releaseURL, checkedAt: checkedAt)
         )
         XCTAssertEqual(checker.state.lastChecked, checkedAt)
-        XCTAssertEqual(checker.state.availableVersion, "1.0")
+        XCTAssertEqual(checker.state.availableVersion, "1.0.0")
         XCTAssertEqual(checker.state.releaseURL, releaseURL)
+
+        XCTAssertEqual(
+            defaults.string(forKey: "stasi.update.source"),
+            "https://example.com/repos/stasi/releases/latest"
+        )
 
         let reloaded = makeChecker(fetcher: UnexpectedReleaseFetcher())
         XCTAssertEqual(
             reloaded.status,
-            .updateAvailable(version: "1.0", url: releaseURL, checkedAt: checkedAt)
+            .updateAvailable(version: "1.0.0", url: releaseURL, checkedAt: checkedAt)
         )
+    }
+
+    func testPersistedUpdateAcceptsEquivalentNormalizedConfiguredSource() async {
+        let checker = makeChecker(fetcher: StubReleaseFetcher(result: .success(
+            ReleaseInfo(version: "1.0.0", url: releaseURL)
+        )))
+        await checker.check()
+
+        let equivalentSource = URL(string: "HTTPS://EXAMPLE.COM/repos/stasi/releases/latest")!
+        let reloaded = UpdateChecker(
+            fetcher: UnexpectedReleaseFetcher(),
+            repositoryURL: equivalentSource,
+            defaults: defaults,
+            currentVersion: "0.9.0",
+            now: { self.checkedAt }
+        )
+
+        XCTAssertEqual(
+            reloaded.status,
+            .updateAvailable(version: "1.0.0", url: releaseURL, checkedAt: checkedAt)
+        )
+    }
+
+    func testPersistedUpdateFailsClosedWithoutConfiguredOrMatchingSource() async {
+        let checker = makeChecker(fetcher: StubReleaseFetcher(result: .success(
+            ReleaseInfo(version: "1.0.0", url: releaseURL)
+        )))
+        await checker.check()
+
+        let missingSource = UpdateChecker(
+            fetcher: UnexpectedReleaseFetcher(),
+            repositoryURL: nil,
+            defaults: defaults,
+            currentVersion: "0.9.0",
+            now: { self.checkedAt }
+        )
+        let changedSource = UpdateChecker(
+            fetcher: UnexpectedReleaseFetcher(),
+            repositoryURL: URL(string: "https://example.com/repos/other/releases/latest")!,
+            defaults: defaults,
+            currentVersion: "0.9.0",
+            now: { self.checkedAt }
+        )
+
+        XCTAssertEqual(missingSource.status, .neverChecked)
+        XCTAssertEqual(changedSource.status, .neverChecked)
+        XCTAssertNil(missingSource.state.availableVersion)
+        XCTAssertNil(changedSource.state.availableVersion)
+    }
+
+    func testPersistedUpdateIsHiddenWhenCurrentVersionCaughtUp() async {
+        let checker = makeChecker(fetcher: StubReleaseFetcher(result: .success(
+            ReleaseInfo(version: "1.0.0", url: releaseURL)
+        )))
+        await checker.check()
+
+        let equalVersion = makeChecker(
+            fetcher: UnexpectedReleaseFetcher(),
+            currentVersion: "1.0.0"
+        )
+        let newerCurrentVersion = makeChecker(
+            fetcher: UnexpectedReleaseFetcher(),
+            currentVersion: "1.1.0"
+        )
+
+        XCTAssertEqual(equalVersion.status, .neverChecked)
+        XCTAssertEqual(newerCurrentVersion.status, .neverChecked)
+        XCTAssertNil(equalVersion.state.availableVersion)
+        XCTAssertNil(newerCurrentVersion.state.availableVersion)
+    }
+
+    func testLegacyUnboundPersistedUpdateFailsClosed() {
+        defaults.set(checkedAt, forKey: "stasi.update.lastChecked")
+        defaults.set("1.0.0", forKey: "stasi.update.available")
+        defaults.set(releaseURL.absoluteString, forKey: "stasi.update.releaseURL")
+
+        let checker = makeChecker(fetcher: UnexpectedReleaseFetcher())
+
+        XCTAssertEqual(checker.status, .neverChecked)
+        XCTAssertNil(checker.state.availableVersion)
+        XCTAssertNil(checker.state.releaseURL)
+    }
+
+    func testPersistedMalformedVersionOrUnsafeURLFailsClosed() {
+        defaults.set(checkedAt, forKey: "stasi.update.lastChecked")
+        defaults.set("release-1", forKey: "stasi.update.available")
+        defaults.set("http://example.com/releases/v1.0.0", forKey: "stasi.update.releaseURL")
+        defaults.set(repositoryURL.absoluteString, forKey: "stasi.update.source")
+
+        let checker = makeChecker(fetcher: UnexpectedReleaseFetcher())
+
+        XCTAssertEqual(checker.status, .neverChecked)
+        XCTAssertNil(checker.state.availableVersion)
+        XCTAssertNil(checker.state.releaseURL)
     }
 
     func testFailurePreservesPriorReleaseInfoButKeepsVisibleStatusFailed() async {
@@ -152,11 +355,11 @@ final class UpdateCheckerTests: XCTestCase {
         var clock = SequenceClock(values: [firstCheck, checkedAt])
         let checker = UpdateChecker(
             fetcher: StubReleaseFetcher(result: .success(
-                ReleaseInfo(version: "v1.0", url: releaseURL)
+                ReleaseInfo(version: "v1.0.0", url: releaseURL)
             )),
             repositoryURL: repositoryURL,
             defaults: defaults,
-            currentVersion: "0.9",
+            currentVersion: "0.9.0",
             now: { clock.next() }
         )
         await checker.check()
@@ -166,7 +369,7 @@ final class UpdateCheckerTests: XCTestCase {
 
         XCTAssertEqual(checker.status, .failed(message: "Update-Prüfung fehlgeschlagen."))
         XCTAssertEqual(checker.state.lastChecked, firstCheck)
-        XCTAssertEqual(checker.state.availableVersion, "1.0")
+        XCTAssertEqual(checker.state.availableVersion, "1.0.0")
         XCTAssertEqual(checker.state.releaseURL, releaseURL)
     }
 
@@ -178,7 +381,7 @@ final class UpdateCheckerTests: XCTestCase {
         await fetcher.waitUntilStarted()
         XCTAssertEqual(checker.status, .checking)
 
-        await fetcher.succeed(with: ReleaseInfo(version: "0.9", url: releaseURL))
+        await fetcher.succeed(with: ReleaseInfo(version: "0.9.0", url: releaseURL))
         await task.value
         XCTAssertEqual(checker.status, .upToDate(checkedAt))
     }
@@ -245,7 +448,7 @@ final class UpdateCheckerTests: XCTestCase {
 
     private func makeChecker(
         fetcher: some ReleaseFetching,
-        currentVersion: String? = "0.9"
+        currentVersion: String? = "0.9.0"
     ) -> UpdateChecker {
         UpdateChecker(
             fetcher: fetcher,

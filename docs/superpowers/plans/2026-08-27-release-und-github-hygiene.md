@@ -489,29 +489,9 @@ Co-Authored-By: Claude <noreply@anthropic.com>"
 
 - [ ] **Step 1: Erstelle einen `workflow_dispatch`-Workflow**
 
-```yaml
-name: Build signed app
+Historische Plan-Korrektur: Der zunächst erwogene mutable Marketplace-Checkout wurde **verworfen** und ist nicht der implementierte Ansatz. Der Workflow verwendet ausschließlich Shell und das auf `contents: read` begrenzte `GITHUB_TOKEN`: temporäres `GIT_ASKPASS`, `git fetch --no-tags --depth=1` des exakten `$GITHUB_SHA`, detached Checkout von `FETCH_HEAD`, anschließender SHA-Gleichheitscheck und Cleanup der temporären Credential-Hilfe per Trap. Die vollständige, sicherheitsgeprüfte Umsetzung steht in `.github/workflows/release.yml`; dieser historische Plan führt keine tote externe Action-Anleitung mehr als Sollzustand.
 
-on:
-  workflow_dispatch:
-
-permissions:
-  contents: read
-
-jobs:
-  build:
-    runs-on: macos-26
-    steps:
-      - uses: actions/checkout@v4
-      - name: Run tests
-        run: |
-          swift build --build-tests
-          xcrun xctest "$(swift build --show-bin-path)/StasiPackageTests.xctest"
-      - name: Build app
-        run: ./scripts/make-app.sh
-      - name: Smoke test
-        run: ./scripts/smoke-test-app.sh
-```
+Der Workflow bleibt ausschließlich manuell (`workflow_dispatch`), setzt `permissions: contents: read` und führt danach portable Tests, App-Build und Smoke-Test aus.
 
 Verifiziere die aktuell auf GitHub verfügbare Runner-Bezeichnung vor dem Commit. Wenn `macos-26` nicht verfügbar ist, dokumentiere den benötigten self-hosted Runner, statt einen falschen Wert zu committen.
 

@@ -49,7 +49,25 @@ Diese Checkliste bereitet eine **spätere, separat freizugebende** Umschreibung 
   git cat-file --batch-check --batch-all-objects
   ```
 
+- [ ] **Mailmap-Grenze:** `--mailmap` ändert Autoren-, Committer- und Tagger-Metadaten, aber keine frei formulierten Commit-Nachrichten, Trailer oder annotierten Tag-Nachrichten. Deshalb werden diese Inhalte in der trockenen Analyse separat auf den exakt bestätigten Wert geprüft:
+
+  ```bash
+  git log --all --format='%H%x00%B%x00' | grep -aF -- "$OLD_EMAIL" || true
+  git for-each-ref refs/tags \
+    --format='%(objecttype)%00%(refname)%00%(contents)%00' \
+    | grep -aF -- "$OLD_EMAIL" || true
+  ```
+
+  Jeder Treffer wird mit Objekt-ID und Ref protokolliert. Ein Treffer erfordert eine **separat geprüfte, eng begrenzte Regel für Nachrichteninhalte** (zum Beispiel einen später zu reviewenden Message-Callback). Diese Anleitung erfindet oder führt keinen solchen Callback aus. Ohne diese Zusatzentscheidung darf später nicht behauptet werden, `OLD_EMAIL` sei nirgends mehr vorhanden.
+
 - [ ] Annotierte Tags und sonstige Refs werden ausdrücklich in die Analyse einbezogen; nicht nur der aktuelle Branch wird geprüft.
+- [ ] Signierte Commits werden vor dem Rewrite über alle vorgesehenen Refs inventarisiert; Status, Fingerprint und Signer werden außerhalb des Repositorys protokolliert:
+
+  ```bash
+  git log --all --format='%H%x09%G?%x09%GF%x09%GS'
+  ```
+
+  `G`, `U`, `B`, `X`, `Y`, `R` und `E` in `%G?` markieren vorhandene bzw. geprüfte Signaturzustände; `N` bedeutet keine Signatur. Das Inventar wird nicht als Zusage missverstanden, die Signaturen blieben erhalten.
 
 ## 4. Mailmap und geplanter Befehl
 
@@ -69,12 +87,26 @@ Diese Checkliste bereitet eine **spätere, separat freizugebende** Umschreibung 
   ```
 
 - [ ] Vor Ausführung werden Zielklon, Mailmap-Inhalt, Scope, vorhandene Refs und Backup ein letztes Mal von einer zweiten Person geprüft.
+- [ ] Vor Ausführung liegt eine eigene ausdrückliche Freigabe für die Signaturfolgen vor: Sobald ein signierter Commit selbst oder einer seiner Eltern umgeschrieben wird, entsteht für ihn beziehungsweise seine betroffenen Nachfahren ein neues Commit-Objekt. Die ursprüngliche kryptografische Signatur und GitHubs Status „Verified“ gelten für das neue Objekt nicht weiter.
+- [ ] Für alle betroffenen signierten Commits existiert vorab ein **separat reviewter Plan zur bewussten Neuerstellung und Neusignierung**. Dieser legt Identität, Schlüsselzugriff, Commit-Reihenfolge, Merge-Behandlung und anschließende Verifikation fest. Ohne diesen Plan und die ausdrückliche Freigabe wird nicht umgeschrieben. Diese Anleitung erzeugt oder signiert keine Commits.
 - [ ] Dieser Befehl wird **nicht** im Rahmen dieser Anleitung ausgeführt.
 
 ## 5. Prüfung nach einem später genehmigten Test-Rewrite
 
 - [ ] Alle vorgesehenen Branches, Tags und sonstigen Refs sind vorhanden und zeigen auf die erwartete umgeschriebene Historie.
-- [ ] Autoren-, Committer- und Tagger-Daten werden über alle Refs geprüft; `OLD_EMAIL` kommt nirgends mehr vor.
+- [ ] Autoren-, Committer- und Tagger-Metadaten werden über alle Refs auf `OLD_EMAIL` geprüft.
+- [ ] Commit-Nachrichten einschließlich Trailer und Inhalte annotierter Tags werden erneut separat geprüft:
+
+  ```bash
+  git log --all --format='%H%x00%B%x00' | grep -aF -- "$OLD_EMAIL" || true
+  git for-each-ref refs/tags \
+    --format='%(objecttype)%00%(refname)%00%(contents)%00' \
+    | grep -aF -- "$OLD_EMAIL" || true
+  ```
+
+  Nur wenn Metadaten **und** diese Inhaltsprüfungen ohne Fund sind, darf für den geprüften Ref-Umfang festgehalten werden, dass `OLD_EMAIL` nicht mehr vorkommt. Treffer werden nicht durch die Mailmap schöngeredet; sie blockieren die Veröffentlichung bis zur separat freigegebenen Inhaltsregel.
+
+- [ ] Das Vorher-/Nachher-Inventar signierter Commits wird Objekt für Objekt abgeglichen. Für neu erzeugte Commits wird GitHub „Verified“ nicht erwartet, solange der separat freigegebene Neusignierungsplan nicht vollständig ausgeführt und kryptografisch verifiziert wurde.
 - [ ] Commit-Anzahl, Topologie, Merge-Struktur, Dateiinhalte und Tag-Ziele werden gegen das Vorher-Inventar abgeglichen.
 - [ ] Lightweight Tags werden als direkte Refs auf ihre erwarteten neuen Commit-Ziele geprüft; sie besitzen weder eigenes Tagger-Feld noch eigene Signatur.
 - [ ] Annotierte Tags besitzen ein eigenes Tag-Objekt samt Tagger-Daten und werden deshalb getrennt geprüft. Wird ein signiertes annotiertes Tag umgeschrieben, ist seine bisherige Signatur nicht mehr gültig; seine bewusste Neuerstellung und Neusignierung muss separat geplant und freigegeben werden.

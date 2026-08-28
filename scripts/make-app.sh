@@ -10,6 +10,17 @@ BUNDLE_ID="app.stasi.macos"
 VERSION="0.9.0"
 SIGNING_MODE="${STASI_SIGNING_MODE:-local}"
 ENTITLEMENTS="$ROOT/Release/Stasi.entitlements"
+ICON_WORK_DIR=""
+ICONSET=""
+
+cleanup() {
+    if [[ -n "$ICON_WORK_DIR" ]]; then
+        rm -rf "$ICON_WORK_DIR"
+    fi
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 case "$SIGNING_MODE" in
     local|none) ;;
@@ -99,9 +110,9 @@ fi
 
 echo "▸ Icon…"
 ICON_SOURCE="$ROOT/Resources/AppIcon.png"
-ICONSET="$OUT_DIR/.stasi-AppIcon.iconset"
 test -f "$ICON_SOURCE" || { echo "App-Icon-Quelle fehlt: $ICON_SOURCE" >&2; exit 1; }
-rm -rf "$ICONSET"
+ICON_WORK_DIR="$(mktemp -d "$OUT_DIR/.stasi-icon-work.XXXXXX")"
+ICONSET="$ICON_WORK_DIR/AppIcon.iconset"
 mkdir -p "$ICONSET"
 while read -r filename pixels; do
     sips -z "$pixels" "$pixels" "$ICON_SOURCE" --out "$ICONSET/$filename" >/dev/null
@@ -118,7 +129,9 @@ icon_512x512.png 512
 icon_512x512@2x.png 1024
 ICON_SIZES
 iconutil -c icns "$ICONSET" -o "$RESOURCES/AppIcon.icns"
-rm -rf "$ICONSET"
+rm -rf "$ICON_WORK_DIR"
+ICON_WORK_DIR=""
+ICONSET=""
 
 if [[ "$SIGNING_MODE" == "local" ]]; then
     test -f "$ENTITLEMENTS" || {

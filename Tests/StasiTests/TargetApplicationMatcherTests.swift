@@ -96,6 +96,56 @@ final class TargetApplicationMatcherTests: XCTestCase {
         XCTAssertEqual(attemptedChunks[1], "abcdefghijklmnopqrstuvwx")
     }
 
+    func testChunkRoutingDoesNotSplitEmojiAfterTwentyThreeUTF16Units() {
+        let text = String(repeating: "a", count: 23) + "😀" + "b"
+        var chunks: [[UniChar]] = []
+
+        let succeeded = TextInjector.routeChunks(text, targetPID: slack.processIdentifier) { chunk, _ in
+            chunks.append(chunk)
+            return true
+        }
+
+        XCTAssertTrue(succeeded)
+        XCTAssertEqual(chunks.map { String(decoding: $0, as: UTF16.self) }, [
+            String(repeating: "a", count: 23),
+            "😀b",
+        ])
+        XCTAssertTrue(chunks.allSatisfy { $0.count <= 24 })
+    }
+
+    func testChunkRoutingKeepsNonBMPScalarAtExactBoundary() {
+        let text = String(repeating: "a", count: 22) + "😀" + "b"
+        var chunks: [[UniChar]] = []
+
+        _ = TextInjector.routeChunks(text, targetPID: slack.processIdentifier) { chunk, _ in
+            chunks.append(chunk)
+            return true
+        }
+
+        XCTAssertEqual(chunks.map { String(decoding: $0, as: UTF16.self) }, [
+            String(repeating: "a", count: 22) + "😀",
+            "b",
+        ])
+        XCTAssertEqual(chunks.map(\.count), [24, 1])
+    }
+
+    func testChunkRoutingPreservesMultipleNonBMPScalarsAndUTF16Limit() {
+        let text = String(repeating: "𐐷", count: 13) + "🧑🏽‍💻" + "Ende"
+        var chunks: [[UniChar]] = []
+
+        _ = TextInjector.routeChunks(text, targetPID: slack.processIdentifier) { chunk, _ in
+            chunks.append(chunk)
+            return true
+        }
+
+        XCTAssertEqual(chunks.map { String(decoding: $0, as: UTF16.self) }.joined(), text)
+        XCTAssertTrue(chunks.allSatisfy { $0.count <= 24 })
+        XCTAssertTrue(chunks.allSatisfy { chunk in
+            guard let first = chunk.first, let last = chunk.last else { return false }
+            return !(0xDC00...0xDFFF).contains(first) && !(0xD800...0xDBFF).contains(last)
+        })
+    }
+
     func testSameNameAloneDoesNotMatch() {
         let notesNamedSlack = TargetApplication(
             localizedName: "Slack",

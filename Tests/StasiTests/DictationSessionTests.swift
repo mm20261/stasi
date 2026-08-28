@@ -460,6 +460,11 @@ final class DictationSessionTests: XCTestCase {
             lock.withLock { current = target }
             return true
         }
+
+        func editableAndSwitch(to application: TargetApplication?) -> Bool {
+            lock.withLock { current = application }
+            return true
+        }
     }
 
     private final class RevealSpy {
@@ -930,6 +935,141 @@ final class DictationSessionTests: XCTestCase {
         XCTAssertTrue(toasts.contains { $0.contains("Slack") })
         XCTAssertEqual(frontmost.callCount, 2)
         XCTAssertEqual(editability.count, 1)
+    }
+
+    func testInsertLastUsesFullTargetGateAndCapturedPID() async throws {
+        let slack = makeTargetApplication(named: "Slack", processIdentifier: 42)
+        let frontmost = FrontmostApplicationStub(slack)
+        let history = FakeHistoryStore()
+        history.records = [TranscriptionRecord(
+            date: Date(),
+            localeID: "de_DE",
+            rawText: "Letzter Text",
+            correctedText: "Letzter Text",
+            corrections: []
+        )]
+        let injector = TextInjectorSpy()
+        let clipboard = ClipboardSpy()
+        let editability = CallCounter()
+        let app = makeApp(
+            engines: [],
+            history: history,
+            frontmostApplication: { frontmost.application() },
+            isTextFieldEditable: { editability.call(returning: true) },
+            injectText: { text, pid in injector.inject(text, targetPID: pid) },
+            copyToClipboard: { clipboard.copy($0) }
+        )
+
+        app.startCommandLoop()
+        app.enqueue(.insertLast)
+        await waitUntil { injector.callCount == 1 }
+
+        XCTAssertEqual(clipboard.strings, ["Letzter Text"])
+        XCTAssertEqual(frontmost.callCount, 3)
+        XCTAssertEqual(editability.count, 1)
+        XCTAssertEqual(injector.texts, ["Letzter Text"])
+        XCTAssertEqual(injector.targetPIDs, [slack.processIdentifier])
+    }
+
+    func testInsertLastFocusSwitchBetweenEditabilityAndFinalGateSkipsInjection() async {
+        let slack = makeTargetApplication(named: "Slack", processIdentifier: 42)
+        let notes = makeTargetApplication(named: "Notes", processIdentifier: 84)
+        let focus = FocusGateRaceStub(current: slack, target: slack)
+        let history = FakeHistoryStore()
+        history.records = [TranscriptionRecord(
+            date: Date(),
+            localeID: "de_DE",
+            rawText: "Letzter Text",
+            correctedText: "Letzter Text",
+            corrections: []
+        )]
+        let injector = TextInjectorSpy()
+        let clipboard = ClipboardSpy()
+        let app = makeApp(
+            engines: [],
+            history: history,
+            frontmostApplication: { focus.application() },
+            isTextFieldEditable: { focus.editableAndSwitch(to: notes) },
+            injectText: { text, pid in injector.inject(text, targetPID: pid) },
+            copyToClipboard: { clipboard.copy($0) }
+        )
+        var toasts: [String] = []
+        app.onToast = { message, _ in toasts.append(message) }
+
+        app.startCommandLoop()
+        app.enqueue(.insertLast)
+        await waitUntil { !toasts.isEmpty }
+
+        XCTAssertEqual(injector.callCount, 0)
+        XCTAssertEqual(clipboard.strings, ["Letzter Text"])
+        XCTAssertTrue(toasts.contains { $0.contains("Slack") && $0.contains("Zwischenablage") })
+    }
+
+    func testInsertLastInjectionFailureKeepsClipboardAndReportsFailure() async {
+        let slack = makeTargetApplication(named: "Slack", processIdentifier: 42)
+        let history = FakeHistoryStore()
+        history.records = [TranscriptionRecord(
+            date: Date(),
+            localeID: "de_DE",
+            rawText: "Letzter Text",
+            correctedText: "Letzter Text",
+            corrections: []
+        )]
+        let injector = TextInjectorSpy()
+        injector.succeeds = false
+        let clipboard = ClipboardSpy()
+        let app = makeApp(
+            engines: [],
+            history: history,
+            frontmostApplication: { slack },
+            isTextFieldEditable: { true },
+            injectText: { text, pid in injector.inject(text, targetPID: pid) },
+            copyToClipboard: { clipboard.copy($0) }
+        )
+        var toasts: [String] = []
+        app.onToast = { message, _ in toasts.append(message) }
+
+        app.startCommandLoop()
+        app.enqueue(.insertLast)
+        await waitUntil { !toasts.isEmpty }
+
+        XCTAssertEqual(injector.callCount, 1)
+        XCTAssertEqual(clipboard.strings, ["Letzter Text"])
+        XCTAssertTrue(toasts.contains { $0.contains("fehlgeschlagen") && $0.contains("Zwischenablage") })
+    }
+
+    func testInsertLastWithoutEditableTargetKeepsClipboardAndReportsSkip() async {
+        let slack = makeTargetApplication(named: "Slack", processIdentifier: 42)
+        let frontmost = FrontmostApplicationStub(slack)
+        let history = FakeHistoryStore()
+        history.records = [TranscriptionRecord(
+            date: Date(),
+            localeID: "de_DE",
+            rawText: "Letzter Text",
+            correctedText: "Letzter Text",
+            corrections: []
+        )]
+        let injector = TextInjectorSpy()
+        let clipboard = ClipboardSpy()
+        let app = makeApp(
+            engines: [],
+            history: history,
+            frontmostApplication: { frontmost.application() },
+            isTextFieldEditable: { false },
+            injectText: { text, pid in injector.inject(text, targetPID: pid) },
+            copyToClipboard: { clipboard.copy($0) }
+        )
+        var toasts: [String] = []
+        app.onToast = { message, _ in toasts.append(message) }
+
+        app.startCommandLoop()
+        app.enqueue(.insertLast)
+        await waitUntil { !toasts.isEmpty }
+
+        XCTAssertEqual(injector.callCount, 0)
+        XCTAssertEqual(frontmost.callCount, 2)
+        XCTAssertEqual(clipboard.strings, ["Letzter Text"])
+        XCTAssertTrue(toasts.contains { $0.contains("Slack") && $0.contains("Zwischenablage") })
     }
 
     func testSessionSnapshotsAreImmutable() async {

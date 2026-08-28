@@ -24,14 +24,27 @@ enum ReleaseConfiguration {
             return nil
         }
         let value = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !value.isEmpty,
-              let url = URL(string: value),
-              let scheme = url.scheme?.lowercased(),
-              ["http", "https"].contains(scheme),
-              url.host != nil else {
+        guard let url = URL(string: value), SecureReleaseURL.isValid(url) else {
             return nil
         }
         return url
+    }
+}
+
+enum SecureReleaseURL {
+    static func isValid(_ url: URL) -> Bool {
+        url.scheme?.lowercased() == "https" && url.host?.isEmpty == false
+    }
+
+    static func sourceIdentifier(for url: URL) -> String? {
+        guard isValid(url), var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
+            return nil
+        }
+        components.scheme = "https"
+        components.host = components.host?.lowercased()
+        components.fragment = nil
+        if components.port == 443 { components.port = nil }
+        return components.string
     }
 }
 
@@ -71,34 +84,152 @@ struct GitHubReleaseFetcher: ReleaseFetching {
     }
 }
 
-// MARK: - Versionsvergleich (numerisch, nicht lexikografisch!)
+// MARK: - Striktes Semantic Versioning
+
+struct SemVer: Comparable, CustomStringConvertible {
+    private enum PrereleaseIdentifier: Equatable {
+        case numeric(String)
+        case alphanumeric(String)
+    }
+
+    let major: String
+    let minor: String
+    let patch: String
+    private let prerelease: [PrereleaseIdentifier]
+    private let prereleaseText: String?
+    private let buildMetadata: String?
+
+    var normalizedCore: String { "\(major).\(minor).\(patch)" }
+
+    var description: String {
+        var value = normalizedCore
+        if let prereleaseText { value += "-\(prereleaseText)" }
+        if let buildMetadata { value += "+\(buildMetadata)" }
+        return value
+    }
+
+    init?(_ rawValue: String) {
+        var value = rawValue
+        if value.first == "v" || value.first == "V" {
+            value.removeFirst()
+        }
+        guard !value.isEmpty, value == value.trimmingCharacters(in: .whitespacesAndNewlines) else {
+            return nil
+        }
+
+        let buildParts = value.split(separator: "+", omittingEmptySubsequences: false)
+        guard buildParts.count <= 2 else { return nil }
+        let precedencePart = String(buildParts[0])
+        let parsedBuild = buildParts.count == 2 ? String(buildParts[1]) : nil
+        if let parsedBuild, !Self.validDotIdentifiers(parsedBuild, allowLeadingZeroNumeric: true) {
+            return nil
+        }
+
+        let precedenceParts = precedencePart.split(separator: "-", maxSplits: 1, omittingEmptySubsequences: false)
+        guard !precedenceParts[0].isEmpty else { return nil }
+        let coreParts = precedenceParts[0].split(separator: ".", omittingEmptySubsequences: false)
+        guard coreParts.count == 3,
+              let major = Self.parseCoreNumber(coreParts[0]),
+              let minor = Self.parseCoreNumber(coreParts[1]),
+              let patch = Self.parseCoreNumber(coreParts[2]) else {
+            return nil
+        }
+
+        let parsedPrerelease = precedenceParts.count == 2 ? String(precedenceParts[1]) : nil
+        var identifiers: [PrereleaseIdentifier] = []
+        if let parsedPrerelease {
+            guard Self.validDotIdentifiers(parsedPrerelease, allowLeadingZeroNumeric: false) else {
+                return nil
+            }
+            identifiers = parsedPrerelease.split(separator: ".").map { identifier in
+                if identifier.allSatisfy({ $0.isNumber }) {
+                    return .numeric(String(identifier))
+                }
+                return .alphanumeric(String(identifier))
+            }
+        }
+
+        self.major = major
+        self.minor = minor
+        self.patch = patch
+        prerelease = identifiers
+        prereleaseText = parsedPrerelease
+        buildMetadata = parsedBuild
+    }
+
+    static func == (lhs: SemVer, rhs: SemVer) -> Bool {
+        lhs.major == rhs.major && lhs.minor == rhs.minor && lhs.patch == rhs.patch
+            && lhs.prerelease == rhs.prerelease
+    }
+
+    static func < (lhs: SemVer, rhs: SemVer) -> Bool {
+        let lhsCore = [lhs.major, lhs.minor, lhs.patch]
+        let rhsCore = [rhs.major, rhs.minor, rhs.patch]
+        for (left, right) in zip(lhsCore, rhsCore) where left != right {
+            return numericIdentifierIsLess(left, than: right)
+        }
+        if lhs.prerelease.isEmpty { return false }
+        if rhs.prerelease.isEmpty { return true }
+
+        for (left, right) in zip(lhs.prerelease, rhs.prerelease) {
+            if left == right { continue }
+            switch (left, right) {
+            case let (.numeric(a), .numeric(b)): return numericIdentifierIsLess(a, than: b)
+            case (.numeric, .alphanumeric): return true
+            case (.alphanumeric, .numeric): return false
+            case let (.alphanumeric(a), .alphanumeric(b)): return a < b
+            }
+        }
+        return lhs.prerelease.count < rhs.prerelease.count
+    }
+
+    private static func numericIdentifierIsLess(_ lhs: String, than rhs: String) -> Bool {
+        if lhs.count != rhs.count { return lhs.count < rhs.count }
+        return lhs < rhs
+    }
+
+    private static func parseCoreNumber(_ value: Substring) -> String? {
+        guard !value.isEmpty,
+              value.allSatisfy({ $0.isASCII && $0.isNumber }),
+              value == "0" || value.first != "0" else {
+            return nil
+        }
+        return String(value)
+    }
+
+    private static func validDotIdentifiers(
+        _ value: String,
+        allowLeadingZeroNumeric: Bool
+    ) -> Bool {
+        let identifiers = value.split(separator: ".", omittingEmptySubsequences: false)
+        guard !identifiers.isEmpty else { return false }
+        return identifiers.allSatisfy { identifier in
+            guard !identifier.isEmpty,
+                  identifier.allSatisfy({ character in
+                      character.isASCII && (character.isLetter || character.isNumber || character == "-")
+                  }) else {
+                return false
+            }
+            if !allowLeadingZeroNumeric,
+               identifier.allSatisfy({ $0.isNumber }),
+               identifier.count > 1,
+               identifier.first == "0" {
+                return false
+            }
+            return true
+        }
+    }
+}
 
 enum VersionComparator {
-    /// „v0.10" → [0, 10]; „V1.2.3" → [1, 2, 3]
-    static func components(_ version: String) -> [Int] {
-        version.trimmingCharacters(in: .whitespaces)
-            .dropFirst(version.hasPrefix("v") || version.hasPrefix("V") ? 1 : 0)
-            .split(separator: ".")
-            .compactMap { Int($0) }
+    /// nil bedeutet: Mindestens eine Seite ist kein unterstütztes SemVer.
+    static func isNewer(_ candidate: String, than current: String) -> Bool? {
+        guard let candidate = SemVer(candidate), let current = SemVer(current) else { return nil }
+        return candidate > current
     }
 
-    /// true, wenn candidate strikt neuer ist als current.
-    static func isNewer(_ candidate: String, than current: String) -> Bool {
-        let a = components(candidate)
-        let b = components(current)
-        for i in 0..<max(a.count, b.count) {
-            let left = i < a.count ? a[i] : 0
-            let right = i < b.count ? b[i] : 0
-            if left != right { return left > right }
-        }
-        return false
-    }
-
-    /// Anzeigbare Form ohne Präfix: „v0.10" → „0.10"
-    static func display(_ version: String) -> String {
-        version.trimmingCharacters(in: .whitespaces)
-            .dropFirst(version.hasPrefix("v") || version.hasPrefix("V") ? 1 : 0)
-            .description
+    static func display(_ version: String) -> String? {
+        SemVer(version)?.description
     }
 }
 
@@ -232,6 +363,13 @@ final class UpdateChecker {
     private static let lastCheckedKey = "stasi.update.lastChecked"
     private static let availableKey = "stasi.update.available"
     private static let releaseURLKey = "stasi.update.releaseURL"
+    private static let sourceKey = "stasi.update.source"
+
+    private enum CheckError: Error {
+        case invalidSource
+        case invalidReleaseURL
+        case invalidVersion
+    }
 
     init(
         fetcher: any ReleaseFetching = GitHubReleaseFetcher(),
@@ -246,24 +384,35 @@ final class UpdateChecker {
         self.currentVersion = currentVersion ?? AppVersion.display
         self.now = now
 
+        let configuredSource = repositoryURL.flatMap(SecureReleaseURL.sourceIdentifier(for:))
+        let persistedSource = defaults.string(forKey: Self.sourceKey)
         let lastChecked = defaults.object(forKey: Self.lastCheckedKey) as? Date
         let available = defaults.string(forKey: Self.availableKey)
         let releaseURL = defaults.string(forKey: Self.releaseURLKey).flatMap(URL.init(string:))
-        let initialState = State(
-            lastChecked: lastChecked,
-            availableVersion: available,
-            releaseURL: releaseURL
-        )
-        state = initialState
-        if let lastChecked, let available, let releaseURL {
+        let persistedUpdateIsCurrent = configuredSource != nil
+            && configuredSource == persistedSource
+            && lastChecked != nil
+            && available.flatMap(SemVer.init) != nil
+            && SemVer(self.currentVersion) != nil
+            && releaseURL.map(SecureReleaseURL.isValid) == true
+            && VersionComparator.isNewer(available ?? "", than: self.currentVersion) == true
+
+        if persistedUpdateIsCurrent,
+           let lastChecked,
+           let available,
+           let releaseURL {
+            state = State(
+                lastChecked: lastChecked,
+                availableVersion: available,
+                releaseURL: releaseURL
+            )
             status = .updateAvailable(
                 version: available,
                 url: releaseURL,
                 checkedAt: lastChecked
             )
-        } else if let lastChecked {
-            status = .upToDate(lastChecked)
         } else {
+            state = State(lastChecked: nil, availableVersion: nil, releaseURL: nil)
             status = .neverChecked
         }
     }
@@ -282,13 +431,21 @@ final class UpdateChecker {
         }
 
         do {
+            guard SecureReleaseURL.sourceIdentifier(for: repositoryURL) != nil else {
+                throw CheckError.invalidSource
+            }
             let release = try await fetcher.fetchLatestRelease(from: repositoryURL)
+            guard SecureReleaseURL.isValid(release.url) else {
+                throw CheckError.invalidReleaseURL
+            }
+            guard let newer = VersionComparator.isNewer(release.version, than: currentVersion),
+                  let version = VersionComparator.display(release.version) else {
+                throw CheckError.invalidVersion
+            }
             let checkedAt = now()
-            let newer = VersionComparator.isNewer(release.version, than: currentVersion)
 
             state.lastChecked = checkedAt
             if newer {
-                let version = VersionComparator.display(release.version)
                 state.availableVersion = version
                 state.releaseURL = release.url
                 status = .updateAvailable(
@@ -301,16 +458,18 @@ final class UpdateChecker {
                 state.releaseURL = nil
                 status = .upToDate(checkedAt)
             }
-            persistSuccessfulCheck()
+            persistSuccessfulCheck(sourceURL: repositoryURL)
         } catch {
             DebugLog.log("STASI-APP: Update-Check fehlgeschlagen: \(error.localizedDescription)")
             status = .failed(message: "Update-Prüfung fehlgeschlagen.")
         }
     }
 
-    private func persistSuccessfulCheck() {
-        guard let lastChecked = state.lastChecked else { return }
+    private func persistSuccessfulCheck(sourceURL: URL) {
+        guard let lastChecked = state.lastChecked,
+              let sourceIdentifier = SecureReleaseURL.sourceIdentifier(for: sourceURL) else { return }
         defaults.set(lastChecked, forKey: Self.lastCheckedKey)
+        defaults.set(sourceIdentifier, forKey: Self.sourceKey)
 
         if let available = state.availableVersion {
             defaults.set(available, forKey: Self.availableKey)

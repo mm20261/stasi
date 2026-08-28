@@ -19,6 +19,7 @@ LOG=""
 PID=""
 STOP_STATUS=""
 ICON_CHECK_DIR="$APP_OUTPUT_DIR/icon-check.iconset"
+REAL_HOME_PROBE=""
 
 stop_process() {
     local status=0
@@ -51,6 +52,9 @@ stop_process() {
 cleanup() {
     stop_process || true
     rm -rf "$ICON_CHECK_DIR"
+    if [[ -n "$REAL_HOME_PROBE" && ( -e "$REAL_HOME_PROBE" || -L "$REAL_HOME_PROBE" ) ]]; then
+        rm -f -- "$REAL_HOME_PROBE"
+    fi
     if [[ -n "$CLEAN_ROOM" ]]; then
         rm -rf "$CLEAN_ROOM"
     fi
@@ -119,6 +123,21 @@ printf '%s\n' \
     "(deny file-read* (require-all (subpath \"$ROOT/.build\") (require-not (subpath \"$CLEAN_ROOM\"))))" \
     "(deny file-write* (require-all (subpath \"$DEVELOPER_HOME\") (require-not (subpath \"$CLEAN_ROOM\"))))" \
     > "$SANDBOX_PROFILE"
+
+for _ in {1..20}; do
+    candidate="$DEVELOPER_HOME/.stasi-sandbox-write-probe.$$.$RANDOM.$RANDOM"
+    if [[ ! -e "$candidate" && ! -L "$candidate" ]]; then
+        REAL_HOME_PROBE="$candidate"
+        break
+    fi
+done
+test -n "$REAL_HOME_PROBE"
+test ! -e "$REAL_HOME_PROBE" && test ! -L "$REAL_HOME_PROBE"
+if "$SANDBOX_EXEC" -f "$SANDBOX_PROFILE" /usr/bin/touch "$REAL_HOME_PROBE" 2>/dev/null; then
+    echo "Sandbox erlaubt unerwartet einen Schreibzugriff im echten HOME: $REAL_HOME_PROBE" >&2
+    exit 1
+fi
+test ! -e "$REAL_HOME_PROBE" && test ! -L "$REAL_HOME_PROBE"
 
 "$SANDBOX_EXEC" -f "$SANDBOX_PROFILE" /usr/bin/cksum \
     "$CLEAN_APP/Contents/Resources/Stasi_Stasi.bundle/Geist.ttf" \

@@ -91,6 +91,12 @@ final class AppState {
 
     private static let unreadableHistoryMessage =
         "Verlauf konnte nicht geladen werden. Die vorhandene Datei ist beschädigt und bleibt schreibgeschützt."
+
+    private enum InjectionGateResult {
+        case injected
+        case targetOrFocusChanged
+        case injectionFailed
+    }
     private var didPresentUnreadableHistory = false
     private(set) var recordStart: Date?
     private let now: @MainActor () -> Date
@@ -1005,49 +1011,66 @@ final class AppState {
         // auch wenn Ziel-App oder Textfokus vor dem Einfügen gewechselt haben.
         copyToClipboard(trimmed)
 
+        let frontmostApplication = frontmostApplication
         let isTextFieldEditable = isTextFieldEditable
         let injectText = injectText
         Task.detached(priority: .userInitiated) { [weak self] in
-            var shouldInject = false
-            var injectionAttempted = false
-            let sameTargetBeforeEditabilityCheck = await MainActor.run { [weak self] in
-                guard let self else { return false }
-                return TargetApplicationMatcher.matches(
-                    captured: targetApplicationSnapshot,
-                    current: self.frontmostApplication()
-                )
-            }
-            if sameTargetBeforeEditabilityCheck, isTextFieldEditable() {
-                let sameTargetImmediatelyBeforeInjection = await MainActor.run { [weak self] in
-                    guard let self else { return false }
-                    return TargetApplicationMatcher.matches(
-                        captured: targetApplicationSnapshot,
-                        current: self.frontmostApplication()
-                    )
-                }
-                if sameTargetImmediatelyBeforeInjection {
-                    injectionAttempted = true
-                    shouldInject = injectText(
-                        trimmed,
-                        targetApplicationSnapshot.processIdentifier
-                    )
-                }
-            }
+            let result = await Self.runInjectionGate(
+                text: trimmed,
+                capturedTarget: targetApplicationSnapshot,
+                frontmostApplication: frontmostApplication,
+                isTextFieldEditable: isTextFieldEditable,
+                injectText: injectText
+            )
             // Zwei Poll-Zyklen Sichtbarkeit, auch wenn das Einfügen nur einen
             // kurzen CGEvent-Chunk benötigt. Der verzögerte Spinner bleibt bei
             // insgesamt schneller Verarbeitung trotzdem unsichtbar.
             try? await Task.sleep(nanoseconds: 100_000_000)
             await MainActor.run { [weak self] in
                 guard let self else { return }
-                if !shouldInject {
-                    let message = injectionAttempted
-                        ? "Einfügen in \(targetApplicationSnapshot.localizedName) ist fehlgeschlagen. Der vollständige Text bleibt in Verlauf und Zwischenablage."
-                        : "Nicht in \(targetApplicationSnapshot.localizedName) eingefügt: Ziel-App oder Textfokus hat sich geändert. Der Text liegt in der Zwischenablage."
-                    self.onToast?(message, false)
+                switch result {
+                case .injected:
+                    break
+                case .injectionFailed:
+                    self.onToast?(
+                        "Einfügen in \(targetApplicationSnapshot.localizedName) ist fehlgeschlagen. Der vollständige Text bleibt in Verlauf und Zwischenablage.",
+                        false
+                    )
+                case .targetOrFocusChanged:
+                    self.onToast?(
+                        "Nicht in \(targetApplicationSnapshot.localizedName) eingefügt: Ziel-App oder Textfokus hat sich geändert. Der Text liegt in der Zwischenablage.",
+                        false
+                    )
                 }
                 self.resetSessionPresentationToIdle()
             }
         }
+    }
+
+    private nonisolated static func runInjectionGate(
+        text: String,
+        capturedTarget: TargetApplication,
+        frontmostApplication: @escaping @MainActor () -> TargetApplication?,
+        isTextFieldEditable: @escaping @Sendable () -> Bool,
+        injectText: @escaping @Sendable (String, pid_t) -> Bool
+    ) async -> InjectionGateResult {
+        let sameTargetBeforeEditabilityCheck = await frontmostApplication().map {
+            TargetApplicationMatcher.matches(captured: capturedTarget, current: $0)
+        } ?? false
+        guard sameTargetBeforeEditabilityCheck, isTextFieldEditable() else {
+            return .targetOrFocusChanged
+        }
+
+        let sameTargetImmediatelyBeforeInjection = await frontmostApplication().map {
+            TargetApplicationMatcher.matches(captured: capturedTarget, current: $0)
+        } ?? false
+        guard sameTargetImmediatelyBeforeInjection else {
+            return .targetOrFocusChanged
+        }
+
+        return injectText(text, capturedTarget.processIdentifier)
+            ? .injected
+            : .injectionFailed
     }
 
     private func teardown(_ session: DictationSession) async {
@@ -1111,12 +1134,37 @@ final class AppState {
         guard let record = history.records.first else { return }
         let text = record.correctedText
         copy(record)
-        guard let targetPID = frontmostApplication()?.processIdentifier else { return }
+        guard let capturedTarget = frontmostApplication() else {
+            onToast?("Nicht eingefügt: Keine Ziel-App erkannt. Der Text liegt in der Zwischenablage.", false)
+            return
+        }
+        let frontmostApplication = frontmostApplication
         let isTextFieldEditable = isTextFieldEditable
         let injectText = injectText
-        Task.detached(priority: .userInitiated) {
-            if isTextFieldEditable() {
-                _ = injectText(text, targetPID)
+        Task.detached(priority: .userInitiated) { [weak self] in
+            let result = await Self.runInjectionGate(
+                text: text,
+                capturedTarget: capturedTarget,
+                frontmostApplication: frontmostApplication,
+                isTextFieldEditable: isTextFieldEditable,
+                injectText: injectText
+            )
+            await MainActor.run { [weak self] in
+                guard let self else { return }
+                switch result {
+                case .injected:
+                    break
+                case .injectionFailed:
+                    self.onToast?(
+                        "Einfügen in \(capturedTarget.localizedName) ist fehlgeschlagen. Der Text bleibt in der Zwischenablage.",
+                        false
+                    )
+                case .targetOrFocusChanged:
+                    self.onToast?(
+                        "Nicht in \(capturedTarget.localizedName) eingefügt: Ziel-App oder Textfokus hat sich geändert. Der Text liegt in der Zwischenablage.",
+                        false
+                    )
+                }
             }
         }
     }
