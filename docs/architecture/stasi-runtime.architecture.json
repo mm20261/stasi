@@ -1,0 +1,277 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "Stasi Runtime-Architektur",
+    "output": "stasi-runtime.architecture.html",
+    "quality_profile": "showcase",
+    "repository": {
+      "url": "https://github.com/mm20261/stasi",
+      "revision": "020f0f82848b120acf4ee0c64bd5e7ffdb69f1e0"
+    },
+    "viewBox": [1360, 800]
+  },
+  "layout": {
+    "mode": "grid",
+    "origin": [50, 180],
+    "cols": 8,
+    "gapX": 30,
+    "gapY": 92,
+    "cellW": 130,
+    "cellH": 76
+  },
+  "components": [
+    {
+      "id": "appShell",
+      "type": "frontend",
+      "label": "App-Shell & Hotkey",
+      "sublabel": "SwiftUI + AppKit",
+      "tag": "MainActor",
+      "row": 1,
+      "col": 0,
+      "size": [130, 76],
+      "sources": [
+        { "path": "Sources/Stasi/MainApp.swift", "line": 7, "label": "StasiApp" },
+        { "path": "Sources/Stasi/MainApp.swift", "line": 210, "label": "AppDelegate" }
+      ]
+    },
+    {
+      "id": "appState",
+      "type": "backend",
+      "label": "AppState",
+      "sublabel": "Orchestrierung & Status",
+      "tag": "@MainActor",
+      "row": 1,
+      "col": 1,
+      "size": [130, 76],
+      "sources": [
+        { "path": "Sources/Stasi/Core/AppState.swift", "line": 13, "label": "AppState" }
+      ]
+    },
+    {
+      "id": "session",
+      "type": "backend",
+      "label": "DictationSession",
+      "sublabel": "Ressourcen je Diktat",
+      "tag": "Lifecycle",
+      "row": 1,
+      "col": 2,
+      "size": [130, 76],
+      "sources": [
+        { "path": "Sources/Stasi/Core/DictationSession.swift", "line": 7, "label": "Session" }
+      ]
+    },
+    {
+      "id": "audio",
+      "type": "backend",
+      "label": "AudioCapture",
+      "sublabel": "input-only AUHAL",
+      "tag": "CoreAudio callback",
+      "row": 1,
+      "col": 3,
+      "size": [130, 76],
+      "sources": [
+        { "path": "Sources/Stasi/Core/AudioCapture.swift", "line": 135, "label": "AudioCapture" }
+      ]
+    },
+    {
+      "id": "speech",
+      "type": "backend",
+      "label": "TranscriptionEngine",
+      "sublabel": "Speech-Stream",
+      "tag": "actor",
+      "row": 1,
+      "col": 4,
+      "size": [130, 76],
+      "sources": [
+        { "path": "Sources/Stasi/Core/TranscriptionEngine.swift", "line": 88, "label": "Speech-Actor" }
+      ]
+    },
+    {
+      "id": "polish",
+      "type": "backend",
+      "label": "Nachbearbeitung",
+      "sublabel": "Füllwörter & Korrektur",
+      "tag": "regelbasiert",
+      "row": 1,
+      "col": 5,
+      "size": [130, 76],
+      "sources": [
+        { "path": "Sources/Stasi/Core/TranscriptPolisher.swift", "line": 123, "label": "TranscriptPolisher" }
+      ]
+    },
+    {
+      "id": "delivery",
+      "type": "database",
+      "label": "Verlauf & Ausgabe",
+      "sublabel": "Store + Injector",
+      "tag": "lokal + Accessibility",
+      "row": 1,
+      "col": 6,
+      "size": [130, 76],
+      "sources": [
+        { "path": "Sources/Stasi/Core/TranscriptionRecord.swift", "line": 102, "label": "HistoryStore" },
+        { "path": "Sources/Stasi/Core/TextInjector.swift", "line": 24, "label": "TextInjector" }
+      ]
+    },
+    {
+      "id": "targetApp",
+      "type": "external",
+      "label": "Ziel-App",
+      "sublabel": "aktuelles Textfeld",
+      "row": 1,
+      "col": 7,
+      "size": [130, 76]
+    },
+    {
+      "id": "appleFrameworks",
+      "type": "external",
+      "label": "Apple Frameworks",
+      "sublabel": "CoreAudio + Speech",
+      "row": 0,
+      "col": 4,
+      "size": [130, 76]
+    },
+    {
+      "id": "dictionary",
+      "type": "database",
+      "label": "DictionaryStore",
+      "sublabel": "eigene Schreibweisen",
+      "tag": "lokal",
+      "row": 2,
+      "col": 5,
+      "size": [130, 76],
+      "sources": [
+        { "path": "Sources/Stasi/Core/DictionaryStore.swift", "line": 8, "label": "DictionaryStore" }
+      ]
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "region",
+      "label": "Stasi-Prozess · lokal auf macOS",
+      "wraps": ["appShell", "appState", "session", "audio", "speech", "polish", "delivery", "dictionary"],
+      "pad": 24
+    },
+    {
+      "kind": "security-group",
+      "label": "macOS-Berechtigungen: Mikrofon · Speech · Bedienungshilfen",
+      "wraps": ["audio", "speech", "delivery"],
+      "pad": 16
+    }
+  ],
+  "connections": [
+    {
+      "id": "shellToState",
+      "from": "appShell",
+      "to": "appState",
+      "label": "Hotkey / UI-Aktion",
+      "variant": "emphasis",
+      "labelAt": [195, 460]
+    },
+    {
+      "id": "stateToSession",
+      "from": "appState",
+      "to": "session",
+      "label": "starten / stoppen",
+      "variant": "emphasis",
+      "labelAt": [355, 460]
+    },
+    {
+      "id": "sessionToAudio",
+      "from": "session",
+      "to": "audio",
+      "label": "Aufnahme-Lifecycle",
+      "variant": "emphasis",
+      "labelAt": [515, 460]
+    },
+    {
+      "id": "audioToSpeech",
+      "from": "audio",
+      "to": "speech",
+      "label": "AVAudioPCMBuffer",
+      "variant": "emphasis",
+      "labelAt": [675, 460]
+    },
+    {
+      "id": "speechToPolish",
+      "from": "speech",
+      "to": "polish",
+      "label": "Rohtranskript",
+      "variant": "emphasis",
+      "labelAt": [835, 460]
+    },
+    {
+      "id": "polishToDelivery",
+      "from": "polish",
+      "to": "delivery",
+      "label": "bereinigter Text",
+      "variant": "emphasis",
+      "labelAt": [995, 460]
+    },
+    {
+      "id": "deliveryToTarget",
+      "from": "delivery",
+      "to": "targetApp",
+      "label": "Zwischenablage + ⌘V",
+      "variant": "security",
+      "labelAt": [1155, 460]
+    },
+    {
+      "id": "frameworksToAudio",
+      "from": "appleFrameworks",
+      "to": "audio",
+      "label": "AUHAL",
+      "variant": "dashed",
+      "fromSide": "bottom",
+      "toSide": "top"
+    },
+    {
+      "id": "frameworksToSpeech",
+      "from": "appleFrameworks",
+      "to": "speech",
+      "label": "Speech.framework",
+      "variant": "dashed",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "labelAt": [850, 270]
+    },
+    {
+      "id": "dictionaryToPolish",
+      "from": "dictionary",
+      "to": "polish",
+      "label": "bevorzugte Schreibweisen",
+      "fromSide": "top",
+      "toSide": "bottom"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "Concurrency-Grenzen",
+      "items": [
+        "AppState und UI laufen auf dem MainActor",
+        "TranscriptionEngine besitzt den Speech-Stream als actor",
+        "CoreAudio liefert Puffer über einen engen Callback-Pfad"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "Lokaler Hauptpfad",
+      "items": [
+        "Audioaufnahme ohne Öffnen des System-Ausgabegeräts",
+        "Regelbasierte Nachbearbeitung vor Speicherung und Einfügen",
+        "Verlauf und Wörterbuch liegen im lokalen Application Support"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "Systemgrenzen",
+      "items": [
+        "macOS schützt Mikrofon, Speech und Bedienungshilfen separat",
+        "Die Ziel-App liegt außerhalb des Stasi-Prozesses",
+        "Quellbelege sind an Commit 020f0f8 gebunden"
+      ]
+    }
+  ]
+}
