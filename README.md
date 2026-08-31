@@ -120,6 +120,13 @@ Konfigurationspfad fest verdrahtet ist.
 
 ## Architektur
 
+[![Stasi Runtime-Architektur](docs/architecture/stasi-runtime-preview.png)](docs/architecture/README.md)
+
+Die [geprüfte Runtime-Architektur](docs/architecture/README.md) zeigt den
+Diktat-Hauptpfad, die Actor- und CoreAudio-Grenzen sowie revisionsgebundene
+Quellbelege. Die [interaktive Karte](docs/architecture/stasi-runtime.architecture.html)
+liegt als eigenständige HTML-Datei im Repository.
+
 ```
 Sources/Stasi/
 ├── MainApp.swift            App-Szene, AppDelegate (Poll), Statusleiste

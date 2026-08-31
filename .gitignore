@@ -7,8 +7,9 @@ icon-check.iconset/
 # macOS
 .DS_Store
 
-# Editor
+# Editor und lokale Agent-Sitzungen
 .vscode/
+.claude/
 
 # SwiftPM
 .swiftpm/
