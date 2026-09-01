@@ -307,6 +307,14 @@ echter, vom Nutzer reproduzierter Bug:
     zuverlässig im Unified Log). Über 2 MB wird die vorherige Datei nach `debug.log.1`
     rotiert. Erste Anlaufstelle bei Fehlersuche.
 
+15. **StasiResources.bundle: NIEMALS `Bundle.module` als Fallback auswerten.**
+    SwiftPMs generierter `Bundle.module`-Accessor bricht mit fatalError ab, wenn das
+    Paket-Bundle `Stasi_Stasi.bundle` in der .app fehlt (kaputte/veraltete Kopie aus
+    Downloads) → EXC_BREAKPOINT direkt beim Start in `FontLoader` (Crash vom
+    01.09.2026). `StasiResources.resolve()` muss ohne Paket-Fund auf `Bundle.main`
+    zurückfallen; Ressourcen fehlen dann, aber die App startet. In `make-app.sh`/
+    Release-CI wird das Paket-Bundle zusätzlich explizit verifiziert.
+
 ## Tests
 
 - **`swift test` kann an der Runner-Infra hängen** – zuverlässig:

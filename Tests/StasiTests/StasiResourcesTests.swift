@@ -41,6 +41,24 @@ final class StasiResourcesTests: XCTestCase {
         )
     }
 
+    func testResolveReturnsMainBundleInsteadOfCrashingWithoutFallback() throws {
+        // Fehlt das Paket-Bundle (kaputte .app), darf es keinen
+        // Bundle.module-fatalError geben: Fallback darf nil sein, dann gilt
+        // mainBundle als aktiver Fallback (keine Ressourcen, aber kein Crash).
+        let fixture = try makeMainBundleFixture(includeResourceBundle: false)
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+
+        let resolved = StasiResources.resolve(
+            mainBundle: fixture.mainBundle,
+            moduleBundle: nil
+        )
+
+        XCTAssertEqual(
+            resolved.bundleURL.standardizedFileURL,
+            fixture.mainBundle.bundleURL.standardizedFileURL
+        )
+    }
+
     private func makeMainBundleFixture(
         includeResourceBundle: Bool
     ) throws -> (root: URL, mainBundle: Bundle, resourceBundleURL: URL) {
