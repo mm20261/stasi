@@ -6,6 +6,30 @@ und das Projekt verwendet [Semantic Versioning](https://semver.org/lang/de/).
 
 ## [Unreleased]
 
+### Behoben
+
+- Satzanfang-Großschreibung überschrieb Wörterbuch-Ziele (macOS → MacOS) und
+  griff nach Abkürzungen wie „z.B.“; deutsche Doppelwörter („das das“), das Adverb
+  „eh“ und satzinitiale „Also,“/„Actually,“ wurden fälschlich entfernt; markerlose
+  Selbstkorrektur ignorierte Negationen.
+- Kaputte `dictionary.json` wurde beim nächsten Speichern überschrieben, ein defekter
+  Datensatz machte die ganze Historie unsichtbar, eine kurz fehlende Datei setzte das
+  Wörterbuch auf die Beispiel-Einträge zurück. Jetzt Schreibschutz, elementweises
+  Laden, `.corrupt`-Sicherung, Schema-Version 1 und Aufräumen verwaister Audiodateien.
+- Modell-Download lief in den 15-s-Watchdog („Bitte Stasi neu starten“); Einfügen
+  ohne Watchdog; Tap-Neuinstallation während der Aufnahme verlor das Loslassen;
+  Startton konnte die Aufnahme ewig blockieren; Update-Prüfung verstand `v0.10` nicht.
+- Aufnahme-Pill lag unter anderen Fenstern und blieb beim Monitorwechsel stehen.
+
+### Geändert
+
+- Nachbearbeitung, Auto-gelernt und Historien-Schreiben laufen nicht mehr auf dem
+  Hauptthread; Regelsätze und Regexe werden einmal kompiliert; Leerlauf-Poll schreibt
+  keine Observable-Felder mehr.
+- Historien- und Wörterbuchlisten laden lazy; Accessibility-Labels für Icon-Buttons;
+  Kontrast kleiner Beschriftungen auf volle Deckkraft.
+- Aufbewahrung und 7/30-Tage-Filter rechnen in Kalendertagen statt in 86 400 s.
+
 ## [0.10.0] - unveröffentlicht
 
 ### Hinzugefügt
