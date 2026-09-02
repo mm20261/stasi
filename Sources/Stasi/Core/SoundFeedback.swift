@@ -50,18 +50,28 @@ final class NSSoundCompletionPlayer: NSObject, NSSoundDelegate {
     private var sound: NSSound?
     private var lifetime: NSSoundCompletionPlayer?
     private var cancelled = false
+    private var timeoutTask: Task<Void, Never>?
 
     static func play(_ sound: NSSound,
+                     timeoutInterval: TimeInterval? = nil,
                      starter: @escaping Starter = { sound, _ in sound.play() }) async {
         let player = NSSoundCompletionPlayer()
         await withTaskCancellationHandler {
-            await player.play(sound, starter: starter)
+            await player.play(
+                sound,
+                timeoutInterval: timeoutInterval ?? max(0, sound.duration) + 0.5,
+                starter: starter
+            )
         } onCancel: {
             Task { @MainActor in player.cancel() }
         }
     }
 
-    private func play(_ sound: NSSound, starter: @escaping Starter) async {
+    private func play(
+        _ sound: NSSound,
+        timeoutInterval: TimeInterval,
+        starter: @escaping Starter
+    ) async {
         await withCheckedContinuation { continuation in
             self.continuation = continuation
             self.sound = sound
@@ -69,6 +79,12 @@ final class NSSoundCompletionPlayer: NSObject, NSSoundDelegate {
             sound.delegate = self
             if cancelled || Task.isCancelled || !starter(sound, self) {
                 finish()
+            } else {
+                timeoutTask = Task { @MainActor [weak self] in
+                    try? await Task.sleep(for: .seconds(timeoutInterval))
+                    guard !Task.isCancelled else { return }
+                    self?.finish()
+                }
             }
         }
     }
@@ -86,6 +102,9 @@ final class NSSoundCompletionPlayer: NSObject, NSSoundDelegate {
     private func finish() {
         guard let continuation else { return }
         self.continuation = nil
+        let timeoutTask = self.timeoutTask
+        self.timeoutTask = nil
+        timeoutTask?.cancel()
         sound?.delegate = nil
         sound = nil
         lifetime = nil

@@ -52,7 +52,7 @@ final class AppState {
     private let revealRecoveryFile: @MainActor (URL) -> Void
     private let frontmostApplication: @MainActor () -> TargetApplication?
     private let isTextFieldEditable: @Sendable () -> Bool
-    private let injectText: @Sendable (String, pid_t) -> Bool
+    private let injectText: @Sendable (String, pid_t) async -> Bool
     private let copyToClipboard: @MainActor (String) -> Void
     private let soundFeedback: any SoundFeedback
     private(set) var modelReadyByLocale: [String: Bool] = [:]
@@ -103,10 +103,14 @@ final class AppState {
     private let levelTraceEnabled: Bool
     private let consumeTimeoutNanoseconds: UInt64
     private let minimumPushToTalkDuration: TimeInterval
+    private let maximumRecordingDuration: TimeInterval
     @ObservationIgnored private var lastLevelTraceUptime: TimeInterval = 0
     @ObservationIgnored private var phaseEnteredAt = Date()
     @ObservationIgnored private var processingStartedAt: Date?
     @ObservationIgnored private var watchdogRecoveryQueued = false
+    @ObservationIgnored private var recordingLimitCommitQueued = false
+    @ObservationIgnored private var modelPreparationWaiters = 0
+    @ObservationIgnored private var activeInjectionID: UUID?
     private let permissionCheckMailbox = PermissionCheckMailbox()
 
     // MARK: Command-Channel
@@ -117,6 +121,8 @@ final class AppState {
     enum HotkeyCommand: Sendable, Equatable {
         case press, release, discard, commit, handsFree, copyLast, insertLast, tapStopped
         case prepareModel(Locale)
+        case audioRuntimeError(AudioCaptureRuntimeError, UUID)
+        case recordingLimitReached
         case phaseWatchdog
         case deleteHistory(TranscriptionRecord)
         case deleteAllHistory
@@ -144,8 +150,10 @@ final class AppState {
     func startCommandLoop() {
         guard !commandLoopStarted else { return }
         commandLoopStarted = true
-        Task {
-            for await cmd in commandStream {
+        Task { [weak self] in
+            guard let stream = self?.commandStream else { return }
+            for await cmd in stream {
+                guard let self else { return }
                 switch cmd {
                 case .press: hotkeyPressed()
                 case .release: hotkeyReleased()
@@ -154,8 +162,18 @@ final class AppState {
                 case .handsFree: handsFreeToggle()
                 case .copyLast: copyLast()
                 case .insertLast: insertLast()
-                case .tapStopped: tapInstalled = false
+                case .tapStopped:
+                    tapInstalled = false
+                    if phase == .recording, recordingSource == .pushToTalk {
+                        requestCommit()
+                    }
                 case .prepareModel(let locale): await prepareModel(for: locale)
+                case let .audioRuntimeError(error, sessionID):
+                    await handleAudioRuntimeErrorCommand(error, sessionID: sessionID)
+                case .recordingLimitReached:
+                    guard phase == .recording else { break }
+                    onToast?("Maximaldauer erreicht – Aufnahme wird beendet.", false)
+                    requestCommit()
                 case .phaseWatchdog: await recoverFromPhaseWatchdog()
                 case .deleteHistory(let record): await performDeleteHistoryRecord(record)
                 case .deleteAllHistory: await performDeleteAllHistory()
@@ -192,6 +210,7 @@ final class AppState {
          },
          consumeTimeoutNanoseconds: UInt64 = 2_000_000_000,
          minimumPushToTalkDuration: TimeInterval = PillChrome.presentationDelay,
+         maximumRecordingDuration: TimeInterval = 10 * 60,
          installHotkey: Bool = true,
          startHotkey: @escaping @MainActor (HotkeyEngine, HotkeyEngine.Combo) -> Bool = { engine, _ in
              engine.start()
@@ -212,8 +231,8 @@ final class AppState {
          isTextFieldEditable: @escaping @Sendable () -> Bool = {
              TextInjector.isFocusedElementEditable()
          },
-         injectText: @escaping @Sendable (String, pid_t) -> Bool = { text, targetPID in
-             TextInjector.inject(text, targetPID: targetPID)
+         injectText: @escaping @Sendable (String, pid_t) async -> Bool = { text, targetPID in
+             await TextInjector.inject(text, targetPID: targetPID)
          },
          copyToClipboard: @escaping @MainActor (String) -> Void = { text in
              NSPasteboard.general.clearContents()
@@ -233,6 +252,7 @@ final class AppState {
         self.spellChecker = spellChecker
         self.consumeTimeoutNanoseconds = consumeTimeoutNanoseconds
         self.minimumPushToTalkDuration = minimumPushToTalkDuration
+        self.maximumRecordingDuration = maximumRecordingDuration
         let resolvedAudioDirectory = audioDirectory ?? DictionaryStore.appSupportDirectory
             .appendingPathComponent("audio", isDirectory: true)
         self.audioDirectory = resolvedAudioDirectory
@@ -262,6 +282,10 @@ final class AppState {
 
         // Audio→Engine-Verdrahtung passiert pro Diktat in startDictation
         // (Stream + EIN Drain-Task, garantiert Puffer-Reihenfolge).
+    }
+
+    deinit {
+        commandContinuation.finish()
     }
 
     private func presentUnreadableHistoryIfNeeded() {
@@ -402,6 +426,9 @@ final class AppState {
     }
 
     private func reinstallHotkey() {
+        if phase == .recording, recordingSource == .pushToTalk {
+            enqueue(.commit)
+        }
         hotkey?.stop()
         hotkey = nil
         tapInstalled = false // sonst blockt der installTap-Guard den neuen Hotkey
@@ -422,6 +449,9 @@ final class AppState {
     func prepareModel(for locale: Locale) async {
         let key = locale.identifier
         guard modelReadyByLocale[key] != true else { return }
+
+        modelPreparationWaiters += 1
+        defer { modelPreparationWaiters -= 1 }
 
         if let running = modelPreparationTasks[key] {
             modelReadyByLocale[key] = await running.value
@@ -500,6 +530,9 @@ final class AppState {
 
     private func setupShouldContinue(_ session: DictationSession) async -> Bool {
         guard session === currentSession else { return false }
+        if Task.isCancelled, session.state == .settingUp {
+            session.state = .stopping
+        }
         switch session.state {
         case .settingUp:
             return true
@@ -513,10 +546,6 @@ final class AppState {
     }
 
     func startDictation(source: RecordingSource = .pushToTalk) {
-        if phase == .setupTimedOut {
-            onToast?("Die Aufnahmevorbereitung antwortet nicht. Bitte Stasi neu starten.", false)
-            return
-        }
         if phase == .preparing {
             stopDictation()
             return
@@ -630,20 +659,8 @@ final class AppState {
                         health.closeSpeechIngress(audioContinuation)
                     },
                     onRuntimeError: { [weak self, weak session] error in
-                        Task { @MainActor in
-                            guard let self, let session else { return }
-                            if session.state == .settingUp,
-                               let setupTask = session.setupTask {
-                                session.cancelStartCue()
-                                Task { @MainActor [weak self, weak session] in
-                                    await setupTask.value
-                                    guard let self, let session else { return }
-                                    await self.handleAudioRuntimeError(error, session: session)
-                                }
-                                return
-                            }
-                            await self.handleAudioRuntimeError(error, session: session)
-                        }
+                        guard let self, let session else { return }
+                        self.enqueue(.audioRuntimeError(error, session.id))
                     }
                 ) { chunk in
                     health.ingest(chunk, into: audioContinuation)
@@ -659,7 +676,6 @@ final class AppState {
                 }
                 session.markCaptureActivationWon()
                 let startCueCompleted = await self.playRecordingStartCue(for: session)
-                guard !Task.isCancelled else { return }
                 guard await self.setupShouldContinue(session),
                       startCueCompleted else { return }
                 if let runtimeError = health.audioRuntimeError {
@@ -694,6 +710,7 @@ final class AppState {
         guard session === currentSession, session.state == .settingUp else { return }
         session.beginCompletion(intent)
         session.cancelStartCue()
+        session.setupTask?.cancel()
         session.state = .stopping
         if timedOut {
             phase = .setupTimedOut
@@ -816,6 +833,19 @@ final class AppState {
         )
     }
 
+    private func handleAudioRuntimeErrorCommand(
+        _ error: AudioCaptureRuntimeError,
+        sessionID: UUID
+    ) async {
+        guard let session = currentSession, session.id == sessionID else { return }
+        if session.state == .settingUp, let setupTask = session.setupTask {
+            session.cancelStartCue()
+            await setupTask.value
+            guard let currentSession, currentSession.id == sessionID else { return }
+        }
+        await handleAudioRuntimeError(error, session: session)
+    }
+
     private func completeTerminalFailure(
         _ session: DictationSession,
         fallbackMessage: String
@@ -897,7 +927,17 @@ final class AppState {
     /// Wird direkt aus dem bestehenden 20-Hz-Main-RunLoop-Poll gerufen.
     /// Nur ein thread-sicheres Enqueue; kein Task entsteht im Timer-Callback.
     func checkPhaseWatchdog(now: Date = Date(), timeout: TimeInterval = 15) {
-        guard phase == .preparing || phase == .transcribing || phase == .polishing else { return }
+        if phase == .recording {
+            _ = snapshotRecordingDuration(at: now)
+            guard !recordingLimitCommitQueued,
+                  elapsed >= maximumRecordingDuration else { return }
+            recordingLimitCommitQueued = true
+            enqueue(.recordingLimitReached)
+            return
+        }
+        guard phase == .preparing || phase == .transcribing
+                || phase == .polishing || phase == .injecting else { return }
+        guard !(phase == .preparing && modelPreparationWaiters > 0) else { return }
         guard !watchdogRecoveryQueued,
               now.timeIntervalSince(phaseEnteredAt) >= timeout else { return }
         watchdogRecoveryQueued = true
@@ -915,7 +955,16 @@ final class AppState {
                 watchdogRecoveryQueued = false
                 return
             }
-            onToast?("Die Aufnahmevorbereitung antwortet nicht. Bitte Stasi neu starten.", false)
+            await teardown(session)
+            finishAbortedSession(session)
+            onToast?("Die Aufnahmevorbereitung hat zu lange gedauert. Bitte erneut versuchen.", false)
+            DebugLog.log("STASI-WATCH: Setup abgeräumt, neuer Start ist möglich")
+            return
+        }
+        if phase == .injecting {
+            resetSessionPresentationToIdle()
+            onToast?("Einfügen fehlgeschlagen, Text liegt in der Zwischenablage", false)
+            DebugLog.log("STASI-WATCH: Hängendes Einfügen auf BEREIT zurückgesetzt")
             return
         }
         guard phase == .transcribing || phase == .polishing else {
@@ -1031,6 +1080,8 @@ final class AppState {
         await teardown(session)
         await playSound(.processingCompleted, for: session)
         phase = .injecting
+        let injectionID = UUID()
+        activeInjectionID = injectionID
         partialText = trimmed
         // Auto-Kopieren: Das letzte Protokoll liegt immer in der Zwischenablage,
         // auch wenn Ziel-App oder Textfokus vor dem Einfügen gewechselt haben.
@@ -1052,7 +1103,7 @@ final class AppState {
             // insgesamt schneller Verarbeitung trotzdem unsichtbar.
             try? await Task.sleep(nanoseconds: 100_000_000)
             await MainActor.run { [weak self] in
-                guard let self else { return }
+                guard let self, self.activeInjectionID == injectionID else { return }
                 switch result {
                 case .injected:
                     break
@@ -1077,7 +1128,7 @@ final class AppState {
         capturedTarget: TargetApplication,
         frontmostApplication: @escaping @MainActor () -> TargetApplication?,
         isTextFieldEditable: @escaping @Sendable () -> Bool,
-        injectText: @escaping @Sendable (String, pid_t) -> Bool
+        injectText: @escaping @Sendable (String, pid_t) async -> Bool
     ) async -> InjectionGateResult {
         let sameTargetBeforeEditabilityCheck = await frontmostApplication().map {
             TargetApplicationMatcher.matches(captured: capturedTarget, current: $0)
@@ -1093,7 +1144,7 @@ final class AppState {
             return .targetOrFocusChanged
         }
 
-        return injectText(text, capturedTarget.processIdentifier)
+        return await injectText(text, capturedTarget.processIdentifier)
             ? .injected
             : .injectionFailed
     }
@@ -1126,6 +1177,8 @@ final class AppState {
         recordStart = nil
         discardRequested = false
         commitRequested = false
+        recordingLimitCommitQueued = false
+        activeInjectionID = nil
         phase = .idle
     }
 
@@ -1200,8 +1253,6 @@ final class AppState {
             startDictation(source: .handsFree)
         } else if phase == .preparing {
             stopDictation()
-        } else if phase == .setupTimedOut {
-            onToast?("Die Aufnahmevorbereitung antwortet nicht. Bitte Stasi neu starten.", false)
         } else if phase == .recording {
             requestCommit()
         }
@@ -1300,7 +1351,12 @@ final class AppState {
     /// dadurch braucht die Pill keinen eigenen Einblende-Timer.
     func updateElapsedFromPoll(now explicitNow: Date? = nil) {
         guard phase == .recording else { return }
-        _ = snapshotRecordingDuration(at: explicitNow)
+        let current = explicitNow ?? now()
+        _ = snapshotRecordingDuration(at: current)
+        guard !recordingLimitCommitQueued,
+              elapsed >= maximumRecordingDuration else { return }
+        recordingLimitCommitQueued = true
+        enqueue(.recordingLimitReached)
     }
 
     /// Durchgehende Dauer ab Loslassen über Transkription, Nachbearbeitung
@@ -1314,7 +1370,7 @@ final class AppState {
     }
 }
 
-private final class PermissionCheckMailbox: @unchecked Sendable {
+final class PermissionCheckMailbox: @unchecked Sendable {
     struct Result: Sendable {
         let ax: Bool
         let listen: Bool
@@ -1335,6 +1391,7 @@ private final class PermissionCheckMailbox: @unchecked Sendable {
     func finish(ax: Bool, listen: Bool) {
         lock.lock()
         pending = Result(ax: ax, listen: listen)
+        checking = false
         lock.unlock()
     }
 
@@ -1343,7 +1400,6 @@ private final class PermissionCheckMailbox: @unchecked Sendable {
         defer { lock.unlock() }
         guard let pending else { return nil }
         self.pending = nil
-        checking = false
         return pending
     }
 }

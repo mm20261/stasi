@@ -170,6 +170,17 @@ final class AudioCapture: AudioCapturing, @unchecked Sendable {
         _ buffer: AVAudioPCMBuffer
     ) -> OSStatus
 
+    struct ConversionResult {
+        let status: AVAudioConverterOutputStatus
+        let errorDescription: String?
+    }
+
+    typealias ConversionOperation = (
+        _ converter: AVAudioConverter,
+        _ input: AVAudioPCMBuffer,
+        _ output: AVAudioPCMBuffer
+    ) -> ConversionResult
+
     /// Unveraenderliche Identitaet eines Hardware-Runs. Der CoreAudio-refCon und
     /// jeder konfigurierte Test-Sink binden direkt dieses Objekt; sie lesen nie den
     /// aktuellen Run des AudioCapture-Control-Planes.
@@ -359,7 +370,11 @@ final class AudioCapture: AudioCapturing, @unchecked Sendable {
         private func decrementCallbackCount() -> Int {
             while true {
                 let current = callbackCount.load(ordering: .relaxed)
-                precondition(current > 0)
+                assert(current > 0, "Callback-Zähler darf nicht unterlaufen")
+                guard current > 0 else {
+                    reportRuntimeError(.bufferCopyFailed)
+                    return 0
+                }
                 if callbackCount.compareExchange(
                     expected: current,
                     desired: current - 1,
@@ -387,6 +402,7 @@ final class AudioCapture: AudioCapturing, @unchecked Sendable {
 
     private let audioUnitHooks: AudioUnitHooks?
     private let converterFactory: AudioConverterFactory
+    private let conversionOperation: ConversionOperation
     private let renderOperation: RenderOperation
     private let onRunDeinit: @Sendable () -> Void
     private nonisolated(unsafe) var converter: AVAudioConverter?
@@ -438,6 +454,7 @@ final class AudioCapture: AudioCapturing, @unchecked Sendable {
          converterFactory: @escaping AudioConverterFactory = { input, output in
              AVAudioConverter(from: input, to: output)
          },
+         conversionOperation: @escaping ConversionOperation = AudioCapture.convert,
          renderOperation: @escaping RenderOperation = { unit, flags, timeStamp, frameCount, buffer in
              guard let unit else { return kAudio_ParamError }
              return AudioUnitRender(unit,
@@ -458,6 +475,7 @@ final class AudioCapture: AudioCapturing, @unchecked Sendable {
         precondition(backlogCapacity > 0)
         self.audioUnitHooks = audioUnitHooks
         self.converterFactory = converterFactory
+        self.conversionOperation = conversionOperation
         self.renderOperation = renderOperation
         self.onRunDeinit = onRunDeinit
         self.backlogCapacity = backlogCapacity
@@ -1040,22 +1058,15 @@ final class AudioCapture: AudioCapturing, @unchecked Sendable {
                 ))
                 return
             }
-            nonisolated(unsafe) let input = buffer
-            let consumed = Latch()
-            var error: NSError?
-            let status = converter.convert(to: converted, error: &error) { _, outStatus in
-                if consumed.take() {
-                    outStatus.pointee = .noDataNow
-                    return nil
-                }
-                outStatus.pointee = .haveData
-                return input
-            }
-            guard error == nil, status != .error, converted.frameLength > 0 else {
-                let details = error?.localizedDescription ?? "AVAudioConverter lieferte keine Audiodaten."
+            let result = conversionOperation(converter, buffer, converted)
+            guard result.status != .error, result.errorDescription == nil else {
+                let details = result.errorDescription ?? "AVAudioConverter meldete einen Fehler."
                 context.reportRuntimeError(.conversionFailed(details))
                 return
             }
+            // Resampler dürfen wegen ihrer Filterlatenz zunächst null Frames
+            // ausgeben. Das ist ein leerer Chunk, kein Aufnahmefehler.
+            guard converted.frameLength > 0 else { return }
             processed = converted
         } else {
             processed = buffer
@@ -1073,6 +1084,28 @@ final class AudioCapture: AudioCapturing, @unchecked Sendable {
             }
         }
         onBuffer?(AudioChunk(buffer: processed))
+    }
+
+    private static func convert(
+        _ converter: AVAudioConverter,
+        _ input: AVAudioPCMBuffer,
+        _ output: AVAudioPCMBuffer
+    ) -> ConversionResult {
+        nonisolated(unsafe) let input = input
+        let consumed = Latch()
+        var error: NSError?
+        let status = converter.convert(to: output, error: &error) { _, outStatus in
+            if consumed.take() {
+                outStatus.pointee = .noDataNow
+                return nil
+            }
+            outStatus.pointee = .haveData
+            return input
+        }
+        return ConversionResult(
+            status: status,
+            errorDescription: error?.localizedDescription
+        )
     }
 
     @discardableResult
@@ -1198,8 +1231,9 @@ final class AudioCapture: AudioCapturing, @unchecked Sendable {
                     beforeDequeue()
                     let slot = Int(read % UInt64(capacity))
                     let pointer = slots.advanced(by: slot)
+                    assert(pointer.pointee != nil, "Publizierter Audio-Slot ist leer")
                     guard let retained = pointer.pointee else {
-                        preconditionFailure("Publizierter Audio-Slot ist leer")
+                        return nil
                     }
                     pointer.pointee = nil
                     readIndex.store(read &+ 1, ordering: .releasing)

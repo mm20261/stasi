@@ -60,6 +60,9 @@ final class UpdateCheckerTests: XCTestCase {
 
     func testSemVerParserAcceptsExactNumericCoreOptionalVAndMetadata() throws {
         XCTAssertEqual(try XCTUnwrap(SemVer("0.10.0")).description, "0.10.0")
+        XCTAssertEqual(try XCTUnwrap(SemVer("v0.10")).description, "0.10.0")
+        XCTAssertEqual(try XCTUnwrap(SemVer("1.0")).description, "1.0.0")
+        XCTAssertEqual(try XCTUnwrap(SemVer("1")).description, "1.0.0")
         XCTAssertEqual(try XCTUnwrap(SemVer("v1.2.3")).description, "1.2.3")
         XCTAssertEqual(
             try XCTUnwrap(SemVer("V2.0.1-rc.2+build.17")).description,
@@ -67,9 +70,9 @@ final class UpdateCheckerTests: XCTestCase {
         )
     }
 
-    func testSemVerParserRejectsMalformedAndPartialVersions() {
+    func testSemVerParserRejectsMalformedVersions() {
         let invalid = [
-            "", " ", "release", "1", "1.2", "1.2.3.4", ".1.2.3",
+            "", " ", "release", "1.2.3.4", ".1.2.3",
             "1.2.3-", "1.2.3+", "1.2.3-alpha..1", "01.2.3", "1.02.3",
             "1.2.03", "1.2.-3", "1.2.3_alpha", "1.2.3+build..1",
         ]
@@ -137,6 +140,23 @@ final class UpdateCheckerTests: XCTestCase {
         XCTAssertEqual(payload.htmlURL.absoluteString, "https://example.com/releases/v0.10")
     }
 
+    func testGitHubRequestUsesEphemeralConfigurationAndRequiredHeaders() throws {
+        let configuration = GitHubReleaseFetcher.makeConfiguration()
+        let request = GitHubReleaseFetcher.makeRequest(
+            repositoryURL: repositoryURL,
+            appVersion: "1.0"
+        )
+
+        XCTAssertNil(configuration.urlCache)
+        XCTAssertFalse(configuration.httpShouldSetCookies)
+        XCTAssertEqual(configuration.timeoutIntervalForRequest, 15)
+        XCTAssertEqual(request.value(forHTTPHeaderField: "User-Agent"), "Stasi/1.0")
+        XCTAssertEqual(
+            request.value(forHTTPHeaderField: "Accept"),
+            "application/vnd.github+json"
+        )
+    }
+
     // MARK: Expliziter Checkstatus
 
     func testMissingReleaseURLIsReportedAsNotConfigured() async {
@@ -159,7 +179,7 @@ final class UpdateCheckerTests: XCTestCase {
 
         await checker.check()
 
-        XCTAssertEqual(checker.status, .failed(message: "Update-Prüfung fehlgeschlagen."))
+        XCTAssertEqual(checker.status, .failed(message: "Ungültige Antwort vom Update-Server."))
         XCTAssertNil(checker.state.lastChecked)
     }
 
@@ -186,7 +206,7 @@ final class UpdateCheckerTests: XCTestCase {
 
         await checker.check()
 
-        XCTAssertEqual(checker.status, .failed(message: "Update-Prüfung fehlgeschlagen."))
+        XCTAssertEqual(checker.status, .failed(message: "Ungültige Versionsangabe in der Update-Antwort."))
         XCTAssertNil(checker.state.lastChecked)
     }
 
@@ -200,7 +220,7 @@ final class UpdateCheckerTests: XCTestCase {
 
         await checker.check()
 
-        XCTAssertEqual(checker.status, .failed(message: "Update-Prüfung fehlgeschlagen."))
+        XCTAssertEqual(checker.status, .failed(message: "Ungültige Versionsangabe in der Update-Antwort."))
         XCTAssertNil(checker.state.lastChecked)
     }
 
@@ -222,7 +242,7 @@ final class UpdateCheckerTests: XCTestCase {
 
             XCTAssertEqual(
                 checker.status,
-                .failed(message: "Update-Prüfung fehlgeschlagen."),
+                .failed(message: "Ungültige Antwort vom Update-Server."),
                 "Expected rejection for \(invalidURL)"
             )
             XCTAssertNil(checker.state.lastChecked)
@@ -367,7 +387,7 @@ final class UpdateCheckerTests: XCTestCase {
         checker.replaceFetcher(HTTPFailingReleaseFetcher())
         await checker.check()
 
-        XCTAssertEqual(checker.status, .failed(message: "Update-Prüfung fehlgeschlagen."))
+        XCTAssertEqual(checker.status, .failed(message: "Ungültige Antwort vom Update-Server."))
         XCTAssertEqual(checker.state.lastChecked, firstCheck)
         XCTAssertEqual(checker.state.availableVersion, "1.0.0")
         XCTAssertEqual(checker.state.releaseURL, releaseURL)
@@ -384,6 +404,22 @@ final class UpdateCheckerTests: XCTestCase {
         await fetcher.succeed(with: ReleaseInfo(version: "0.9.0", url: releaseURL))
         await task.value
         XCTAssertEqual(checker.status, .upToDate(checkedAt))
+    }
+
+    func testOfflineAndRateLimitFailuresHaveDistinctMessages() async {
+        let offline = makeChecker(fetcher: OfflineReleaseFetcher())
+        await offline.check()
+        XCTAssertEqual(
+            offline.status,
+            .failed(message: "Keine Internetverbindung. Update-Prüfung nicht möglich.")
+        )
+
+        let rateLimited = makeChecker(fetcher: RateLimitedReleaseFetcher())
+        await rateLimited.check()
+        XCTAssertEqual(
+            rateLimited.status,
+            .failed(message: "GitHub-Limit erreicht. Bitte später erneut prüfen.")
+        )
     }
 
     // MARK: Pure UI-Ableitung
@@ -479,6 +515,18 @@ private struct UnexpectedReleaseFetcher: ReleaseFetching {
 private struct HTTPFailingReleaseFetcher: ReleaseFetching {
     func fetchLatestRelease(from repositoryURL: URL) async throws -> ReleaseInfo {
         throw GitHubReleaseFetcher.FetchError.badStatus
+    }
+}
+
+private struct OfflineReleaseFetcher: ReleaseFetching {
+    func fetchLatestRelease(from repositoryURL: URL) async throws -> ReleaseInfo {
+        throw URLError(.notConnectedToInternet)
+    }
+}
+
+private struct RateLimitedReleaseFetcher: ReleaseFetching {
+    func fetchLatestRelease(from repositoryURL: URL) async throws -> ReleaseInfo {
+        throw GitHubReleaseFetcher.FetchError.rateLimited
     }
 }
 

@@ -69,16 +69,40 @@ struct GitHubReleaseFetcher: ReleaseFetching {
         }
     }
 
-    enum FetchError: Error { case badStatus }
+    enum FetchError: Error { case badStatus, rateLimited }
+
+    private let session: URLSession
+    private let appVersion: String
+
+    init(appVersion: String = AppVersion.display) {
+        self.appVersion = appVersion
+        session = URLSession(configuration: Self.makeConfiguration())
+    }
+
+    static func makeConfiguration() -> URLSessionConfiguration {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.urlCache = nil
+        configuration.httpShouldSetCookies = false
+        configuration.timeoutIntervalForRequest = 15
+        return configuration
+    }
+
+    static func makeRequest(repositoryURL: URL, appVersion: String) -> URLRequest {
+        var request = URLRequest(url: repositoryURL)
+        request.timeoutInterval = 15
+        request.setValue("Stasi/\(appVersion)", forHTTPHeaderField: "User-Agent")
+        request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
+        return request
+    }
 
     func fetchLatestRelease(from repositoryURL: URL) async throws -> ReleaseInfo {
-        var request = URLRequest(url: repositoryURL)
-        request.timeoutInterval = 10
-        request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
-        let (data, response) = try await URLSession.shared.data(for: request)
-        guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
+        let request = Self.makeRequest(repositoryURL: repositoryURL, appVersion: appVersion)
+        let (data, response) = try await session.data(for: request)
+        guard let http = response as? HTTPURLResponse else {
             throw FetchError.badStatus
         }
+        if http.statusCode == 403 { throw FetchError.rateLimited }
+        guard http.statusCode == 200 else { throw FetchError.badStatus }
         let payload = try JSONDecoder().decode(Payload.self, from: data)
         return ReleaseInfo(version: payload.tagName, url: payload.htmlURL)
     }
@@ -127,9 +151,10 @@ struct SemVer: Comparable, CustomStringConvertible {
 
         let precedenceParts = precedencePart.split(separator: "-", maxSplits: 1, omittingEmptySubsequences: false)
         guard !precedenceParts[0].isEmpty else { return nil }
-        let coreParts = precedenceParts[0].split(separator: ".", omittingEmptySubsequences: false)
-        guard coreParts.count == 3,
-              let major = Self.parseCoreNumber(coreParts[0]),
+        var coreParts = precedenceParts[0].split(separator: ".", omittingEmptySubsequences: false)
+        guard (1...3).contains(coreParts.count) else { return nil }
+        while coreParts.count < 3 { coreParts.append("0") }
+        guard let major = Self.parseCoreNumber(coreParts[0]),
               let minor = Self.parseCoreNumber(coreParts[1]),
               let patch = Self.parseCoreNumber(coreParts[2]) else {
             return nil
@@ -468,8 +493,27 @@ final class UpdateChecker {
             persistSuccessfulCheck(sourceURL: repositoryURL)
         } catch {
             DebugLog.log("STASI-APP: Update-Check fehlgeschlagen: \(error.localizedDescription)")
-            status = .failed(message: "Update-Prüfung fehlgeschlagen.")
+            status = .failed(message: Self.failureMessage(for: error))
         }
+    }
+
+    private static func failureMessage(for error: Error) -> String {
+        if let urlError = error as? URLError,
+           [
+               .notConnectedToInternet, .networkConnectionLost, .cannotFindHost,
+               .cannotConnectToHost, .dnsLookupFailed, .timedOut,
+           ].contains(urlError.code) {
+            return "Keine Internetverbindung. Update-Prüfung nicht möglich."
+        }
+        if let fetchError = error as? GitHubReleaseFetcher.FetchError,
+           case .rateLimited = fetchError {
+            return "GitHub-Limit erreicht. Bitte später erneut prüfen."
+        }
+        if let checkError = error as? CheckError,
+           case .invalidVersion = checkError {
+            return "Ungültige Versionsangabe in der Update-Antwort."
+        }
+        return "Ungültige Antwort vom Update-Server."
     }
 
     private func persistSuccessfulCheck(sourceURL: URL) {

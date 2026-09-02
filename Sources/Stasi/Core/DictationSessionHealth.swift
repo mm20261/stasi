@@ -65,29 +65,38 @@ final class DictationSessionHealth: @unchecked Sendable {
             lock.unlock()
             return
         }
+        lock.unlock()
+
         let result = continuation.yield(chunk)
+        var shouldFinish = false
+        lock.lock()
+        guard !speechIngressClosed else {
+            lock.unlock()
+            return
+        }
         switch result {
         case .enqueued:
-            lock.unlock()
+            break
         case .dropped:
             if failureStorage == nil {
                 failureStorage = .speechBufferOverflow
             }
             speechIngressClosed = true
-            lock.unlock()
-            continuation.finish()
+            shouldFinish = true
         case .terminated:
             if failureStorage == nil {
                 failureStorage = .speechStreamTerminated
             }
             speechIngressClosed = true
-            lock.unlock()
         @unknown default:
             if failureStorage == nil {
                 failureStorage = .speechStreamTerminated
             }
             speechIngressClosed = true
-            lock.unlock()
+        }
+        lock.unlock()
+        if shouldFinish {
+            continuation.finish()
         }
     }
 

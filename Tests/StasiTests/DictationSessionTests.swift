@@ -178,7 +178,6 @@ final class DictationSessionTests: XCTestCase {
         private(set) var finalizeStillRunning = false
         private var shouldBlockStart = false
         private var startEntered = false
-        private var blockedStartContinuation: CheckedContinuation<Void, Never>?
         private var shouldBlockNextFeed = false
         private var blockedFeedContinuation: CheckedContinuation<Void, Never>?
 
@@ -210,8 +209,7 @@ final class DictationSessionTests: XCTestCase {
         func hasEnteredStart() -> Bool { startEntered }
 
         func unblockStart() {
-            blockedStartContinuation?.resume()
-            blockedStartContinuation = nil
+            shouldBlockStart = false
         }
 
         func blockNextFeed() {
@@ -235,8 +233,10 @@ final class DictationSessionTests: XCTestCase {
             startCount += 1
             startEntered = true
             if shouldBlockStart {
-                shouldBlockStart = false
-                await withCheckedContinuation { blockedStartContinuation = $0 }
+                while shouldBlockStart {
+                    try Task.checkCancellation()
+                    try await Task.sleep(nanoseconds: 10_000_000)
+                }
             }
             if let startError { throw startError }
             let (stream, continuation) = AsyncThrowingStream<TranscriptionChunk, Error>.makeStream()
@@ -319,6 +319,21 @@ final class DictationSessionTests: XCTestCase {
         }
 
         func resolve(_ granted: Bool) { continuation?.resume(returning: granted) }
+    }
+
+    private actor InjectionGate {
+        private var continuation: CheckedContinuation<Bool, Never>?
+        private(set) var entered = false
+
+        func inject() async -> Bool {
+            entered = true
+            return await withCheckedContinuation { continuation = $0 }
+        }
+
+        func resolve(_ result: Bool = true) {
+            continuation?.resume(returning: result)
+            continuation = nil
+        }
     }
 
     private actor ModelInstallerSpy {
@@ -533,6 +548,7 @@ final class DictationSessionTests: XCTestCase {
                          spellChecker: @escaping @MainActor (String, String) -> Bool = { _, _ in true },
                          consumeTimeoutNanoseconds: UInt64 = 2_000_000_000,
                          minimumPushToTalkDuration: TimeInterval = 0,
+                         maximumRecordingDuration: TimeInterval = 600,
                          history: (any HistoryStoring)? = nil,
                          frontmostApplication: @escaping @MainActor () -> TargetApplication? = {
                              TargetApplication(
@@ -542,7 +558,7 @@ final class DictationSessionTests: XCTestCase {
                              )
                          },
                          isTextFieldEditable: @escaping @Sendable () -> Bool = { false },
-                         injectText: @escaping @Sendable (String, pid_t) -> Bool = { _, _ in true },
+                         injectText: @escaping @Sendable (String, pid_t) async -> Bool = { _, _ in true },
                          copyToClipboard: @escaping @MainActor (String) -> Void = { _ in },
                          recoveryStore: AudioRecoveryStore? = nil,
                          revealRecoveryFile: @escaping @MainActor (URL) -> Void = { _ in },
@@ -553,7 +569,7 @@ final class DictationSessionTests: XCTestCase {
         let dictionary = DictionaryStore(directory: root.appendingPathComponent("dictionary"))
         let history = history ?? HistoryStore(directory: root.appendingPathComponent("history"))
         var remaining = engines
-        return AppState(
+        let app = AppState(
             settings: makeSettings(),
             dictionary: dictionary,
             history: history,
@@ -564,6 +580,7 @@ final class DictationSessionTests: XCTestCase {
             spellChecker: spellChecker,
             consumeTimeoutNanoseconds: consumeTimeoutNanoseconds,
             minimumPushToTalkDuration: minimumPushToTalkDuration,
+            maximumRecordingDuration: maximumRecordingDuration,
             installHotkey: false,
             audioDirectory: root.appendingPathComponent("audio"),
             audioRecoveryStore: recoveryStore,
@@ -575,6 +592,8 @@ final class DictationSessionTests: XCTestCase {
             now: now,
             soundFeedback: soundFeedback
         )
+        app.startCommandLoop()
+        return app
     }
 
     func testUnreadableHistoryIsReportedWhenToastChannelIsInstalled() throws {
@@ -1402,6 +1421,27 @@ final class DictationSessionTests: XCTestCase {
         XCTAssertNil(app.currentSession)
     }
 
+    func testAudioRuntimeErrorFromBackgroundCallbackEndsSessionWithToast() async {
+        let audio = FakeAudioCapture()
+        let app = makeApp(audio: audio, engines: [FakeSpeechEngine(text: "Fehler")])
+        var toasts: [String] = []
+        app.onToast = { message, _ in toasts.append(message) }
+        app.startCommandLoop()
+
+        app.startDictation()
+        await waitUntil { app.phase == .recording }
+        let callbackReturned = expectation(description: "Audio-Callback kehrt zurück")
+        DispatchQueue.global(qos: .userInitiated).async {
+            audio.fail(.conversionFailed("Hintergrund"))
+            callbackReturned.fulfill()
+        }
+
+        await fulfillment(of: [callbackReturned], timeout: 1)
+        await waitUntil { app.phase == .idle }
+        XCTAssertTrue(toasts.contains { $0.localizedCaseInsensitiveContains("Audioaufnahme") })
+        XCTAssertNil(app.currentSession)
+    }
+
     func testRuntimeErrorDuringDiscardDoesNotRecoverOrToast() async throws {
         let directory = makeDirectory()
         let audio = FakeAudioCapture()
@@ -1829,6 +1869,20 @@ final class DictationSessionTests: XCTestCase {
         XCTAssertEqual(toasts.first?.1, false)
     }
 
+    func testDiscardCancelsHungSetupWithinOneSecond() async {
+        let speech = FakeSpeechEngine()
+        await speech.blockStart()
+        let app = makeApp(audio: FakeAudioCapture(), engines: [speech])
+
+        app.startDictation()
+        await waitUntil { await speech.hasEnteredStart() }
+        let started = Date()
+        app.stopDictation()
+        await waitUntil(timeout: 0.9) { app.phase == .idle && app.currentSession == nil }
+
+        XCTAssertLessThan(Date().timeIntervalSince(started), 1)
+    }
+
     func testPreparingIsVisibleAndSecondHandsFreeActivationJoinsSetupBeforeTeardown() async {
         let audio = FakeAudioCapture()
         let speech = FakeSpeechEngine()
@@ -1849,13 +1903,6 @@ final class DictationSessionTests: XCTestCase {
         let metricsBeforeTimeout = await speech.metrics()
         XCTAssertEqual(metricsBeforeTimeout.finishCount, 0)
 
-        app.checkPhaseWatchdog(now: Date().addingTimeInterval(16))
-        await waitUntil { app.phase == .setupTimedOut }
-        XCTAssertEqual(audio.stopCount, 0)
-        let metricsWhileBlocked = await speech.metrics()
-        XCTAssertEqual(metricsWhileBlocked.finishCount, 0)
-
-        await speech.unblockStart()
         await waitUntil { app.phase == .idle && app.currentSession == nil }
 
         let metrics = await speech.metrics()
@@ -1864,20 +1911,47 @@ final class DictationSessionTests: XCTestCase {
         XCTAssertEqual(metrics.finishCount, 1)
     }
 
-    func testPreparingWatchdogShowsRestartStateUntilSetupReturns() async {
+    func testPreparingWatchdogCleansUpAndAllowsNextStart() async {
         let speech = FakeSpeechEngine()
         await speech.blockStart()
-        let app = makeApp(audio: FakeAudioCapture(), engines: [speech])
+        let factory = AudioFactorySpy()
+        let app = makeApp(
+            audioFactory: { factory.make() },
+            engines: [speech, FakeSpeechEngine()]
+        )
         app.startCommandLoop()
 
         app.startDictation()
         await waitUntil { await speech.hasEnteredStart() }
         app.checkPhaseWatchdog(now: Date().addingTimeInterval(16))
-        await waitUntil { app.phase == .setupTimedOut }
-
-        XCTAssertNotNil(app.currentSession)
-        await speech.unblockStart()
         await waitUntil { app.phase == .idle && app.currentSession == nil }
+
+        app.startDictation()
+        await waitUntil { app.phase == .recording && factory.captures.count == 2 }
+        app.requestDiscard()
+        await waitUntil { app.phase == .idle }
+    }
+
+    func testLongModelPreparationIsExcludedFromSetupWatchdog() async {
+        let gate = PermissionGate()
+        let app = makeApp(
+            audio: FakeAudioCapture(),
+            engines: [FakeSpeechEngine()],
+            modelInstaller: { _ in _ = await gate.request() }
+        )
+        app.startCommandLoop()
+
+        app.startDictation()
+        await waitUntil { await gate.requested }
+        app.checkPhaseWatchdog(now: Date().addingTimeInterval(20))
+        await Task.yield()
+
+        XCTAssertEqual(app.phase, .preparing)
+        XCTAssertNotNil(app.currentSession)
+        await gate.resolve(true)
+        await waitUntil { app.phase == .recording }
+        app.requestDiscard()
+        await waitUntil { app.phase == .idle }
     }
 
     func testCaptureBoundaryDiscardsHardwareAndCueBuffersAndStartsDurationAtActivation() async throws {
@@ -2441,6 +2515,114 @@ final class DictationSessionTests: XCTestCase {
         XCTAssertFalse(audio.isRunning)
         XCTAssertEqual(toasts.last?.0, Copy.toastTranscriptionAborted)
         XCTAssertEqual(toasts.last?.1, false)
+    }
+
+    func testPhaseWatchdogRecoversHungInjectionToIdle() async {
+        let gate = InjectionGate()
+        let app = makeApp(
+            audio: FakeAudioCapture(),
+            engines: [FakeSpeechEngine(text: "Bleibt in der Zwischenablage")],
+            isTextFieldEditable: { true },
+            injectText: { _, _ in await gate.inject() }
+        )
+        var toasts: [String] = []
+        app.onToast = { message, _ in toasts.append(message) }
+        app.startCommandLoop()
+
+        app.startDictation()
+        await waitUntil { app.phase == .recording }
+        app.stopDictation()
+        await waitUntil {
+            guard app.phase == .injecting else { return false }
+            return await gate.entered
+        }
+        app.checkPhaseWatchdog(now: Date().addingTimeInterval(16))
+        await waitUntil { app.phase == .idle }
+
+        XCTAssertEqual(
+            toasts.last,
+            "Einfügen fehlgeschlagen, Text liegt in der Zwischenablage"
+        )
+        await gate.resolve()
+    }
+
+    func testReinstallHotkeyCommitsRunningPushToTalkRecording() async {
+        let audio = FakeAudioCapture()
+        let app = makeApp(
+            audio: audio,
+            engines: [FakeSpeechEngine(text: "Hotkey-Wechsel")]
+        )
+        app.startCommandLoop()
+        app.startDictation()
+        await waitUntil { app.phase == .recording }
+
+        app.applyHotkey(.init(keyCode: 49, flags: CGEventFlags.maskCommand.rawValue))
+
+        await waitUntil { app.phase == .idle }
+        XCTAssertEqual(app.history.records.first?.rawText, "Hotkey-Wechsel")
+        XCTAssertEqual(audio.stopCount, 1)
+    }
+
+    func testBackgroundTapStoppedCommitsRunningPushToTalkRecording() async {
+        let audio = FakeAudioCapture()
+        let app = makeApp(
+            audio: audio,
+            engines: [FakeSpeechEngine(text: "Tap gestoppt")]
+        )
+        app.startCommandLoop()
+        app.startDictation()
+        await waitUntil { app.phase == .recording }
+        let callbackReturned = expectation(description: "Tap-Stopped-Callback kehrt zurück")
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            app.enqueue(.tapStopped)
+            callbackReturned.fulfill()
+        }
+
+        await fulfillment(of: [callbackReturned], timeout: 1)
+        await waitUntil { app.phase == .idle }
+        XCTAssertEqual(app.history.records.first?.rawText, "Tap gestoppt")
+        XCTAssertEqual(audio.stopCount, 1)
+    }
+
+    func testRecordingMaximumDurationQueuesCommitAndWarning() async {
+        let clock = FakeClock()
+        let audio = FakeAudioCapture()
+        let app = makeApp(
+            audio: audio,
+            engines: [FakeSpeechEngine(text: "Maximaldauer")],
+            maximumRecordingDuration: 10,
+            now: { clock.now }
+        )
+        var toasts: [String] = []
+        app.onToast = { message, _ in toasts.append(message) }
+        app.startCommandLoop()
+        app.startDictation()
+        await waitUntil { app.phase == .recording }
+
+        clock.advance(by: 10.1)
+        app.updateElapsedFromPoll()
+
+        await waitUntil { app.phase == .idle }
+        XCTAssertEqual(app.history.records.first?.rawText, "Maximaldauer")
+        XCTAssertTrue(toasts.contains { $0.localizedCaseInsensitiveContains("Maximaldauer") })
+    }
+
+    func testCommandLoopDoesNotRetainAppState() async {
+        weak var weakApp: AppState?
+
+        do {
+            var app: AppState? = makeApp(
+                audio: FakeAudioCapture(),
+                engines: [FakeSpeechEngine()]
+            )
+            app?.startCommandLoop()
+            weakApp = app
+            app = nil
+        }
+
+        await waitUntil { weakApp == nil }
+        XCTAssertNil(weakApp)
     }
 
     func testRecordUsesLocaleSnapshotFromSession() async {

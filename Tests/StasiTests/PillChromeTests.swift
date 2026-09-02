@@ -78,6 +78,21 @@ final class PillChromeTests: XCTestCase {
     }
 
     @MainActor
+    func testNSSoundCompletionReturnsWhenDelegateNeverSignals() async throws {
+        let sound = try XCTUnwrap(NSSound(named: "Tink"))
+        let started = Date()
+
+        await NSSoundCompletionPlayer.play(
+            sound,
+            timeoutInterval: 0.02,
+            starter: { _, _ in true }
+        )
+
+        XCTAssertLessThan(Date().timeIntervalSince(started), 0.5)
+        XCTAssertNil(sound.delegate)
+    }
+
+    @MainActor
     func testNSSoundCompletionCancellationStopsWaitingAndClearsDelegate() async throws {
         let sound = try XCTUnwrap(NSSound(named: "Tink"))
         let started = expectation(description: "Starter wurde aufgerufen")

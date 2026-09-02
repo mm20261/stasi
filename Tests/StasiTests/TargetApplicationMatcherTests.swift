@@ -81,6 +81,23 @@ final class TargetApplicationMatcherTests: XCTestCase {
         XCTAssertTrue(deliveries.allSatisfy { $0.1 == slack.processIdentifier })
     }
 
+    func testInjectionRunsBlockingChunkTimingOnDedicatedSerialQueue() async {
+        let delivered = expectation(description: "Chunk wurde auf Injection-Queue verarbeitet")
+
+        let succeeded = await TextInjector.inject(
+            "Test",
+            targetPID: slack.processIdentifier,
+            deliver: { _, _ in
+                dispatchPrecondition(condition: .onQueue(TextInjector.injectionQueue))
+                delivered.fulfill()
+                return true
+            }
+        )
+
+        await fulfillment(of: [delivered], timeout: 1)
+        XCTAssertTrue(succeeded)
+    }
+
     func testChunkRoutingAbortsAfterMiddleEventCreationFailure() {
         let text = String(repeating: "abcdefghijklmnopqrstuvwx", count: 3)
         var attemptedChunks: [String] = []

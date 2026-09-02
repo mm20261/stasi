@@ -1,7 +1,32 @@
 import Foundation
 import XCTest
+@testable import Stasi
 
 final class ConcurrencyArchitectureTests: XCTestCase {
+    func testPermissionMailboxCanBeginAgainAfterFinishWithoutConsume() {
+        let mailbox = PermissionCheckMailbox()
+
+        XCTAssertTrue(mailbox.begin())
+        mailbox.finish(ax: true, listen: false)
+
+        XCTAssertTrue(mailbox.begin())
+    }
+
+    func testAudioReleasePathsDoNotUseCrashOnlyPreconditions() throws {
+        let source = try source(named: "Sources/Stasi/Core/AudioCapture.swift")
+
+        XCTAssertFalse(source.contains("precondition(current > 0)"))
+        XCTAssertFalse(source.contains("preconditionFailure(\"Publizierter Audio-Slot ist leer\")"))
+    }
+
+    func testSpeechYieldHappensAfterHealthLockIsReleased() throws {
+        let source = try source(named: "Sources/Stasi/Core/DictationSessionHealth.swift")
+        let unlock = try XCTUnwrap(source.range(of: "lock.unlock()"))
+        let yield = try XCTUnwrap(source.range(of: "continuation.yield(chunk)"))
+
+        XCTAssertLessThan(unlock.lowerBound, yield.lowerBound)
+    }
+
     func testCallbackFilesAvoidDynamicMainActorChecks() throws {
         let repository = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
@@ -86,5 +111,16 @@ final class ConcurrencyArchitectureTests: XCTestCase {
             searchStart = source.index(after: closingBrace)
         }
         return bodies
+    }
+
+    private func source(named relativePath: String) throws -> String {
+        let repository = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        return try String(
+            contentsOf: repository.appendingPathComponent(relativePath),
+            encoding: .utf8
+        )
     }
 }

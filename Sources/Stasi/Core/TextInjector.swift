@@ -22,37 +22,66 @@ enum TargetApplicationMatcher {
 // Benötigt Bedienungshilfen-Berechtigung (Accessibility).
 
 enum TextInjector {
+    static let injectionQueue = DispatchQueue(
+        label: "stasi.inject",
+        qos: .userInteractive
+    )
+
     @discardableResult
-    static func inject(_ text: String, targetPID: pid_t) -> Bool {
-        guard targetPID > 0,
-              let source = CGEventSource(stateID: .combinedSessionState) else { return false }
-        return routeChunks(text, targetPID: targetPID) { chunk, pid in
-            let length = chunk.count
-            guard let down = CGEvent(
-                keyboardEventSource: source,
-                virtualKey: 0,
-                keyDown: true
-            ) else {
-                NSLog("STASI-INJECT: Key-down-Erzeugung fehlgeschlagen – Route abgebrochen")
-                return false
+    static func inject(_ text: String, targetPID: pid_t) async -> Bool {
+        await onInjectionQueue {
+            guard targetPID > 0,
+                  let source = CGEventSource(stateID: .combinedSessionState) else { return false }
+            return routeChunks(text, targetPID: targetPID) { chunk, pid in
+                let length = chunk.count
+                guard let down = CGEvent(
+                    keyboardEventSource: source,
+                    virtualKey: 0,
+                    keyDown: true
+                ) else {
+                    NSLog("STASI-INJECT: Key-down-Erzeugung fehlgeschlagen – Route abgebrochen")
+                    return false
+                }
+                // Beide Events entstehen vor dem ersten Post. Scheitert key-up nach
+                // erfolgreichem key-down-Aufbau, bleibt kein down-ohne-up im System.
+                guard let up = CGEvent(
+                    keyboardEventSource: source,
+                    virtualKey: 0,
+                    keyDown: false
+                ) else {
+                    NSLog("STASI-INJECT: Key-up-Erzeugung fehlgeschlagen – Route abgebrochen")
+                    return false
+                }
+                down.keyboardSetUnicodeString(stringLength: length, unicodeString: chunk)
+                up.keyboardSetUnicodeString(stringLength: length, unicodeString: chunk)
+                down.postToPid(pid)
+                Thread.sleep(forTimeInterval: 0.002)
+                up.postToPid(pid)
+                Thread.sleep(forTimeInterval: 0.006)
+                return true
             }
-            // Beide Events entstehen vor dem ersten Post. Scheitert key-up nach
-            // erfolgreichem key-down-Aufbau, bleibt kein down-ohne-up im System.
-            guard let up = CGEvent(
-                keyboardEventSource: source,
-                virtualKey: 0,
-                keyDown: false
-            ) else {
-                NSLog("STASI-INJECT: Key-up-Erzeugung fehlgeschlagen – Route abgebrochen")
-                return false
+        }
+    }
+
+    /// Testnaht für Queue-Bindung und Timing ohne globale Tastaturereignisse.
+    @discardableResult
+    static func inject(
+        _ text: String,
+        targetPID: pid_t,
+        deliver: @escaping @Sendable (_ chunk: [UniChar], _ targetPID: pid_t) -> Bool
+    ) async -> Bool {
+        await onInjectionQueue {
+            routeChunks(text, targetPID: targetPID, deliver: deliver)
+        }
+    }
+
+    private static func onInjectionQueue(
+        _ operation: @escaping @Sendable () -> Bool
+    ) async -> Bool {
+        await withCheckedContinuation { continuation in
+            injectionQueue.async {
+                continuation.resume(returning: operation())
             }
-            down.keyboardSetUnicodeString(stringLength: length, unicodeString: chunk)
-            up.keyboardSetUnicodeString(stringLength: length, unicodeString: chunk)
-            down.postToPid(pid)
-            Thread.sleep(forTimeInterval: 0.002)
-            up.postToPid(pid)
-            Thread.sleep(forTimeInterval: 0.006)
-            return true
         }
     }
 
@@ -87,6 +116,7 @@ enum TextInjector {
     /// `inject()` einen System-Beep auslösen (kein Textfeld im Fokus).
     static func isFocusedElementEditable() -> Bool {
         let systemWide = AXUIElementCreateSystemWide()
+        _ = messagingTimeoutConfigured
         var app: CFTypeRef?
         guard AXUIElementCopyAttributeValue(systemWide,
                                             kAXFocusedApplicationAttribute as CFString,
@@ -114,6 +144,13 @@ enum TextInjector {
         ) == .success && settable.boolValue
         return isEditableRole(roleString, valueSettable: valueSettable)
     }
+
+    /// Der AX-Systemknoten ist pro Prozess konfiguriert; 500 ms verhindern,
+    /// dass eine nicht antwortende Ziel-App die Injection unbegrenzt festhält.
+    private static let messagingTimeoutConfigured: Void = {
+        let systemWide = AXUIElementCreateSystemWide()
+        AXUIElementSetMessagingTimeout(systemWide, 0.5)
+    }()
 
     /// Reine Rollen-Prüfung, testbar ohne AX-Abhängigkeit.
     static func isEditableRole(_ role: String, valueSettable: Bool) -> Bool {

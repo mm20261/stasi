@@ -594,6 +594,50 @@ final class AudioCaptureFileTests: XCTestCase {
         _ = await capture.stop()
     }
 
+    func testConverterZeroFrameLatencyChunkIsSkippedWithoutRuntimeError() async throws {
+        let targetFormat = format()
+        let nativeFormat = try XCTUnwrap(AVAudioFormat(
+            commonFormat: .pcmFormatFloat32,
+            sampleRate: 48_000,
+            channels: 1,
+            interleaved: false
+        ))
+        let sinkBox = SinkBox()
+        let delivered = expectation(description: "Null-Frame-Chunk wird nicht geliefert")
+        delivered.isInverted = true
+        let errorReported = expectation(description: "Null-Frame-Chunk ist kein Fehler")
+        errorReported.isInverted = true
+        let capture = AudioCapture(
+            audioUnitHooks: AudioCapture.AudioUnitHooks(
+                configureInput: { _, _, sink in
+                    sinkBox.store(sink)
+                    return nativeFormat
+                },
+                initialize: {}, start: {}, stop: {}, uninitialize: {}, dispose: {}
+            ),
+            conversionOperation: { _, _, converted in
+                converted.frameLength = 0
+                return .init(status: .haveData, errorDescription: nil)
+            }
+        )
+        try capture.start(
+            outputFormat: targetFormat,
+            recordTo: nil,
+            captureInitiallyActive: true,
+            onRuntimeError: { _ in errorReported.fulfill() }
+        ) { _ in delivered.fulfill() }
+        let buffer = try XCTUnwrap(AVAudioPCMBuffer(
+            pcmFormat: nativeFormat,
+            frameCapacity: 16
+        ))
+        buffer.frameLength = 16
+
+        try XCTUnwrap(sinkBox.load())(buffer)
+        _ = await capture.stop()
+
+        await fulfillment(of: [delivered, errorReported], timeout: 0.05)
+    }
+
     func testDifferentFormatsWithUnavailableConverterTearDownAudioUnitAndCloseFile() throws {
         let url = makeDirectory().appendingPathComponent("converter-unavailable.wav")
         let targetFormat = format()
