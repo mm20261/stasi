@@ -194,6 +194,7 @@ final class AudioCapture: AudioCapturing, @unchecked Sendable {
 
         nonisolated(unsafe) var audioUnit: AudioUnit?
         nonisolated(unsafe) var inputBuffer: AVAudioPCMBuffer?
+        nonisolated(unsafe) var renderBufferPool: RenderBufferPool?
         var audioUnitPrepared = false
         var audioUnitInitialized = false
         var audioUnitStarted = false
@@ -322,14 +323,29 @@ final class AudioCapture: AudioCapturing, @unchecked Sendable {
             guard admissionAtEntry == CaptureAdmission.active.rawValue,
                   admission.load(ordering: .acquiring) == admissionAtEntry,
                   !reporter.hasReported else { return }
-            guard let owned = AudioCapture.copy(buffer) else {
+            guard let pool = renderBufferPool else {
                 reportRuntimeError(.bufferCopyFailed)
                 return
             }
-            switch backlog.tryEnqueue(owned) {
-            case .enqueued, .closed:
+            guard let slot = pool.acquire() else {
+                reportRuntimeError(.processingBacklog)
+                return
+            }
+            guard pool.copy(buffer, into: slot) else {
+                // Fataler Pfad: Der Slot bleibt bis zum Run-Abbau im Poolbesitz.
+                // Eine Rueckgabe vom RT-Thread wuerde den Worker-seitigen Free-Ring
+                // von SPSC zu MPSC machen.
+                reportRuntimeError(.bufferCopyFailed)
+                return
+            }
+            switch backlog.tryEnqueue(slot) {
+            case .enqueued:
+                return
+            case .closed:
+                // Geplanter Stop; auch hier keine zweite Free-Ring-Producerseite.
                 return
             case .full:
+                // Fataler Pfad; der Pool-deinit gibt den nicht publizierten Slot frei.
                 reportRuntimeError(.processingBacklog)
             }
         }
@@ -547,6 +563,14 @@ final class AudioCapture: AudioCapturing, @unchecked Sendable {
             } else {
                 native = try configureAUHAL(run: run, preferredMicUID: preferredMicUID)
             }
+            let poolFrameCapacity = run.inputBuffer?.frameCapacity
+                ?? AVAudioFrameCount(Self.requestedMaximumFrames)
+            guard let renderBufferPool = RenderBufferPool(
+                format: native,
+                capacity: backlogCapacity + 1,
+                frameCapacity: poolFrameCapacity
+            ) else { throw AudioCaptureError.invalidInputFormat }
+            run.renderBufferPool = renderBufferPool
 
             if native == outputFormat {
                 converter = nil
@@ -1005,9 +1029,17 @@ final class AudioCapture: AudioCapturing, @unchecked Sendable {
         let backlog = context.backlog
         processingWorkerStarted = true
         processingQueue.async { [weak self] in
-            while let buffer = backlog.next() {
-                guard let self else { return }
+            while let slot = backlog.next() {
+                guard let pool = context.renderBufferPool,
+                      let buffer = pool.buffer(at: slot) else { continue }
+                guard let self else {
+                    pool.release(slot)
+                    continue
+                }
                 self.process(buffer, context: context)
+                // Erst nach Konverter, WAV und synchronem onBuffer-Aufruf darf der
+                // eindeutig dem Worker gehörende Slot wieder zum RT-Producer zurück.
+                pool.release(slot)
             }
         }
     }
@@ -1084,7 +1116,22 @@ final class AudioCapture: AudioCapturing, @unchecked Sendable {
                 return
             }
         }
-        onBuffer?(AudioChunk(buffer: processed))
+        let deliveryBuffer: AVAudioPCMBuffer
+        if processed === buffer {
+            // `health.ingest` legt AudioChunk unverändert in einen AsyncStream;
+            // `speech.feed` reicht denselben AVAudioPCMBuffer als AnalyzerInput weiter.
+            // Beide dürfen ihn nach Rückkehr aus onBuffer noch halten. Deshalb entsteht
+            // bei formatgleichem Audio genau hier off-RT eine eigene Speech-Kopie. Ein
+            // konvertierter Zielpuffer ist bereits unabhängig vom Render-Pool.
+            guard let copy = Self.copyForDelivery(processed) else {
+                context.reportRuntimeError(.bufferCopyFailed)
+                return
+            }
+            deliveryBuffer = copy
+        } else {
+            deliveryBuffer = processed
+        }
+        onBuffer?(AudioChunk(buffer: deliveryBuffer))
     }
 
     private static func convert(
@@ -1118,33 +1165,38 @@ final class AudioCapture: AudioCapturing, @unchecked Sendable {
         return length
     }
 
-    /// Deep-Copy eines Render-Puffers in eigenen Speicher.
-    nonisolated static func copy(_ buffer: AVAudioPCMBuffer) -> AVAudioPCMBuffer? {
+    /// Off-RT-Deep-Copy fuer Konsumenten, die den Puffer asynchron behalten duerfen.
+    nonisolated static func copyForDelivery(_ buffer: AVAudioPCMBuffer) -> AVAudioPCMBuffer? {
         guard buffer.frameLength > 0,
               let copy = AVAudioPCMBuffer(pcmFormat: buffer.format,
                                           frameCapacity: buffer.frameLength)
         else { return nil }
+        return copySamples(from: buffer, to: copy) ? copy : nil
+    }
 
-        copy.frameLength = buffer.frameLength
-        let channels = Int(buffer.format.channelCount)
-        let frames = Int(buffer.frameLength)
+    /// Kopiert PCM-Nutzdaten in bereits allozierten Speicher. Diese Funktion ist
+    /// der einzige Copy-Baustein im Render-Pfad und fuehrt selbst keine Allokation aus.
+    nonisolated static func copySamples(from source: AVAudioPCMBuffer,
+                                        to destination: AVAudioPCMBuffer) -> Bool {
+        guard source.frameLength > 0,
+              source.frameLength <= destination.frameCapacity,
+              source.format == destination.format else { return false }
 
-        if let source = buffer.floatChannelData, let destination = copy.floatChannelData {
-            for channel in 0..<channels {
-                destination[channel].update(from: source[channel], count: frames)
-            }
-        } else if let source = buffer.int16ChannelData, let destination = copy.int16ChannelData {
-            for channel in 0..<channels {
-                destination[channel].update(from: source[channel], count: frames)
-            }
-        } else if let source = buffer.int32ChannelData, let destination = copy.int32ChannelData {
-            for channel in 0..<channels {
-                destination[channel].update(from: source[channel], count: frames)
-            }
-        } else {
-            return nil
+        destination.frameLength = source.frameLength
+        let sourceBuffers = UnsafeMutableAudioBufferListPointer(source.mutableAudioBufferList)
+        let destinationBuffers = UnsafeMutableAudioBufferListPointer(
+            destination.mutableAudioBufferList
+        )
+        guard sourceBuffers.count == destinationBuffers.count else { return false }
+
+        for index in sourceBuffers.indices {
+            let byteCount = Int(sourceBuffers[index].mDataByteSize)
+            guard byteCount == Int(destinationBuffers[index].mDataByteSize),
+                  let sourceData = sourceBuffers[index].mData,
+                  let destinationData = destinationBuffers[index].mData else { return false }
+            memcpy(destinationData, sourceData, byteCount)
         }
-        return copy
+        return true
     }
 
     /// Einmal-Flag, nur vom Audio-Thread innerhalb eines synchronen Calls benutzt.
@@ -1156,11 +1208,99 @@ final class AudioCapture: AudioCapturing, @unchecked Sendable {
         }
     }
 
+    /// Vor Start vollstaendig allokierter SPSC-Pool. Der RT-Producer entnimmt
+    /// Indizes, der serielle Worker gibt sie zurueck. Die AVAudioPCMBuffer bleiben
+    /// ueber die gesamte Run-Lebensdauer genau einmal im Besitz dieses Pools.
+    final class RenderBufferPool: @unchecked Sendable {
+        private let capacity: Int
+        private let buffers: UnsafeMutablePointer<Unmanaged<AVAudioPCMBuffer>?>
+        private let freeSlots: UnsafeMutablePointer<Int>
+        private let readIndex = Atomic<UInt64>(0)
+        private let writeIndex: Atomic<UInt64>
+
+        init?(format: AVAudioFormat,
+              capacity: Int,
+              frameCapacity: AVAudioFrameCount) {
+            guard capacity > 0, frameCapacity > 0 else { return nil }
+            self.capacity = capacity
+            buffers = .allocate(capacity: capacity)
+            buffers.initialize(repeating: nil, count: capacity)
+            freeSlots = .allocate(capacity: capacity)
+            freeSlots.initialize(repeating: 0, count: capacity)
+            writeIndex = Atomic(UInt64(capacity))
+
+            for index in 0..<capacity {
+                guard let buffer = AVAudioPCMBuffer(pcmFormat: format,
+                                                    frameCapacity: frameCapacity) else {
+                    releaseBuffers()
+                    freeSlots.deinitialize(count: capacity)
+                    freeSlots.deallocate()
+                    buffers.deinitialize(count: capacity)
+                    buffers.deallocate()
+                    return nil
+                }
+                buffers.advanced(by: index).pointee = Unmanaged.passRetained(buffer)
+                freeSlots.advanced(by: index).pointee = index
+            }
+        }
+
+        deinit {
+            releaseBuffers()
+            freeSlots.deinitialize(count: capacity)
+            freeSlots.deallocate()
+            buffers.deinitialize(count: capacity)
+            buffers.deallocate()
+        }
+
+        /// O(1), lock-frei und ohne ARC-/Heap-Allokation im RT-Callback.
+        func acquire() -> Int? {
+            let read = readIndex.load(ordering: .relaxed)
+            let write = writeIndex.load(ordering: .acquiring)
+            guard read != write else { return nil }
+            let slot = freeSlots.advanced(by: Int(read % UInt64(capacity))).pointee
+            readIndex.store(read &+ 1, ordering: .releasing)
+            return slot
+        }
+
+        func buffer(at slot: Int) -> AVAudioPCMBuffer? {
+            guard slot >= 0, slot < capacity,
+                  let retained = buffers.advanced(by: slot).pointee else { return nil }
+            return retained.takeUnretainedValue()
+        }
+
+        func copy(_ source: AVAudioPCMBuffer, into slot: Int) -> Bool {
+            guard let destination = buffer(at: slot) else { return false }
+            return AudioCapture.copySamples(from: source, to: destination)
+        }
+
+        /// Nur der serielle Worker ist Producer dieser Rueckgabe-Ringseite.
+        func release(_ slot: Int) {
+            guard slot >= 0, slot < capacity else {
+                assertionFailure("Ungueltiger Render-Pool-Slot")
+                return
+            }
+            let write = writeIndex.load(ordering: .relaxed)
+            let read = readIndex.load(ordering: .acquiring)
+            guard write &- read < UInt64(capacity) else {
+                assertionFailure("Render-Pool-Slot doppelt freigegeben")
+                return
+            }
+            freeSlots.advanced(by: Int(write % UInt64(capacity))).pointee = slot
+            writeIndex.store(write &+ 1, ordering: .releasing)
+        }
+
+        private func releaseBuffers() {
+            for index in 0..<capacity {
+                let pointer = buffers.advanced(by: index)
+                pointer.pointee?.release()
+                pointer.pointee = nil
+            }
+        }
+    }
+
     /// Lock-freier Single-Producer/Single-Consumer-Ring mit exakt fester
-    /// Kapazitaet. Die Slots liegen in explizit verwaltetem Pointer-Speicher;
-    /// Swift-Array-Exklusivitaet wird deshalb nicht producer-/consumer-uebergreifend
-    /// verletzt. ARC-Besitz wird pro belegtem Slot mit Unmanaged exakt einmal
-    /// uebernommen und beim Dequeue, Discard oder Deinit exakt einmal abgegeben.
+    /// Kapazitaet. Er transportiert nur Pool-Indizes RT -> Worker; der eigentliche
+    /// Pufferbesitz bleibt eindeutig beim RenderBufferPool.
     final class ProcessingBacklog: @unchecked Sendable {
         enum EnqueueResult: Equatable {
             case enqueued
@@ -1176,7 +1316,7 @@ final class AudioCapture: AudioCapturing, @unchecked Sendable {
         private let afterProducerAdmissionCheck: @Sendable () -> Void
         private let beforeDequeue: @Sendable () -> Void
         private let capacity: Int
-        private let slots: UnsafeMutablePointer<Unmanaged<AVAudioPCMBuffer>?>
+        private let slots: UnsafeMutablePointer<Int>
 
         init(capacity: Int,
              afterProducerAdmissionCheck: @escaping @Sendable () -> Void = {},
@@ -1186,16 +1326,15 @@ final class AudioCapture: AudioCapturing, @unchecked Sendable {
             self.afterProducerAdmissionCheck = afterProducerAdmissionCheck
             self.beforeDequeue = beforeDequeue
             slots = .allocate(capacity: capacity)
-            slots.initialize(repeating: nil, count: capacity)
+            slots.initialize(repeating: 0, count: capacity)
         }
 
         deinit {
-            releaseAllSlots()
             slots.deinitialize(count: capacity)
             slots.deallocate()
         }
 
-        func tryEnqueue(_ buffer: AVAudioPCMBuffer) -> EnqueueResult {
+        func tryEnqueue(_ poolSlot: Int) -> EnqueueResult {
             guard !finishing.load(ordering: .sequentiallyConsistent) else {
                 return .closed
             }
@@ -1216,14 +1355,14 @@ final class AudioCapture: AudioCapturing, @unchecked Sendable {
             }
 
             let slot = Int(write % UInt64(capacity))
-            slots.advanced(by: slot).pointee = Unmanaged.passRetained(buffer)
+            slots.advanced(by: slot).pointee = poolSlot
             writeIndex.store(write &+ 1, ordering: .releasing)
             completeProducer()
             available.signal()
             return .enqueued
         }
 
-        func next() -> AVAudioPCMBuffer? {
+        func next() -> Int? {
             while true {
                 available.wait()
                 let read = readIndex.load(ordering: .relaxed)
@@ -1231,14 +1370,9 @@ final class AudioCapture: AudioCapturing, @unchecked Sendable {
                 if read != write {
                     beforeDequeue()
                     let slot = Int(read % UInt64(capacity))
-                    let pointer = slots.advanced(by: slot)
-                    assert(pointer.pointee != nil, "Publizierter Audio-Slot ist leer")
-                    guard let retained = pointer.pointee else {
-                        return nil
-                    }
-                    pointer.pointee = nil
+                    let poolSlot = slots.advanced(by: slot).pointee
                     readIndex.store(read &+ 1, ordering: .releasing)
-                    return retained.takeRetainedValue()
+                    return poolSlot
                 }
                 if finishing.load(ordering: .sequentiallyConsistent) {
                     // Ein Producer, der die Finish-Grenze gerade kreuzt, publiziert
@@ -1260,7 +1394,6 @@ final class AudioCapture: AudioCapturing, @unchecked Sendable {
         /// Nur im synchronen Start-Fehlerpfad, wenn noch kein Worker existiert.
         func discard() {
             finishing.store(true, ordering: .sequentiallyConsistent)
-            releaseAllSlots()
             readIndex.store(writeIndex.load(ordering: .acquiring), ordering: .releasing)
         }
 
@@ -1271,13 +1404,6 @@ final class AudioCapture: AudioCapturing, @unchecked Sendable {
             }
         }
 
-        private func releaseAllSlots() {
-            for index in 0..<capacity {
-                let pointer = slots.advanced(by: index)
-                pointer.pointee?.release()
-                pointer.pointee = nil
-            }
-        }
     }
 
     /// Genau ein Runtimefehler pro Start. Der Render-Callback macht nur einen

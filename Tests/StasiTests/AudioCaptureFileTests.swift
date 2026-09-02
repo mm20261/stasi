@@ -115,6 +115,23 @@ final class AudioCaptureFileTests: XCTestCase {
         }
     }
 
+    private final class BufferSpy: @unchecked Sendable {
+        private let lock = NSLock()
+        private var storage: [AVAudioPCMBuffer] = []
+
+        var values: [AVAudioPCMBuffer] {
+            lock.lock()
+            defer { lock.unlock() }
+            return storage
+        }
+
+        func record(_ value: AVAudioPCMBuffer) {
+            lock.lock()
+            storage.append(value)
+            lock.unlock()
+        }
+    }
+
     private final class CallbackMetrics: @unchecked Sendable {
         struct Sample {
             let frames: AVAudioFrameCount
@@ -1424,21 +1441,12 @@ final class AudioCaptureFileTests: XCTestCase {
         XCTAssertTrue(errorSpy.values.isEmpty, "Runtime-/Backlogfehler: \(errorSpy.values)")
     }
 
-    func testFinishedBacklogReturnsClosedAndReleasesLateProducer() throws {
-        var buffer: AVAudioPCMBuffer? = try XCTUnwrap(AVAudioPCMBuffer(
-            pcmFormat: format(),
-            frameCapacity: 16
-        ))
-        buffer?.frameLength = 16
-        let weakBuffer = WeakBufferBox()
-        weakBuffer.value = buffer
+    func testFinishedBacklogReturnsClosedForLateProducer() {
         let backlog = AudioCapture.ProcessingBacklog(capacity: 1)
 
         backlog.finish()
-        XCTAssertEqual(backlog.tryEnqueue(try XCTUnwrap(buffer)), .closed)
-        buffer = nil
+        XCTAssertEqual(backlog.tryEnqueue(7), .closed)
         XCTAssertNil(backlog.next())
-        XCTAssertNil(weakBuffer.value)
     }
 
     func testFinishCrossingProducerReturnsClosedWithoutPublishingSlot() throws {
@@ -1453,14 +1461,8 @@ final class AudioCaptureFileTests: XCTestCase {
                 allowProducer.wait()
             }
         )
-        let buffer = try XCTUnwrap(AVAudioPCMBuffer(
-            pcmFormat: format(),
-            frameCapacity: 16
-        ))
-        buffer.frameLength = 16
-
         DispatchQueue.global(qos: .userInitiated).async {
-            resultBox.store(backlog.tryEnqueue(buffer))
+            resultBox.store(backlog.tryEnqueue(7))
             producerCompleted.signal()
         }
         XCTAssertEqual(producerEntered.wait(timeout: .now() + 1), .success)
@@ -1472,56 +1474,21 @@ final class AudioCaptureFileTests: XCTestCase {
         XCTAssertNil(backlog.next())
     }
 
-    func testBacklogDrainTransfersAndReleasesSlotOwnership() throws {
+    func testBacklogDrainTransfersPoolSlotIndex() {
         let backlog = AudioCapture.ProcessingBacklog(capacity: 1)
-        let weakBuffer = WeakBufferBox()
-        var buffer: AVAudioPCMBuffer? = try XCTUnwrap(AVAudioPCMBuffer(
-            pcmFormat: format(),
-            frameCapacity: 16
-        ))
-        buffer?.frameLength = 16
-        weakBuffer.value = buffer
 
-        XCTAssertEqual(backlog.tryEnqueue(try XCTUnwrap(buffer)), .enqueued)
-        buffer = nil
-        XCTAssertNotNil(weakBuffer.value)
-
-        var dequeued: AVAudioPCMBuffer? = backlog.next()
-        XCTAssertNotNil(dequeued)
-        XCTAssertNotNil(weakBuffer.value)
-        dequeued = nil
-        XCTAssertNil(weakBuffer.value)
+        XCTAssertEqual(backlog.tryEnqueue(23), .enqueued)
+        XCTAssertEqual(backlog.next(), 23)
 
         backlog.finish()
         XCTAssertNil(backlog.next())
     }
 
-    func testBacklogDiscardAndDeinitReleaseQueuedSlotOwnership() throws {
-        let discardedWeakBuffer = WeakBufferBox()
-        var discarded: AVAudioPCMBuffer? = try XCTUnwrap(AVAudioPCMBuffer(
-            pcmFormat: format(),
-            frameCapacity: 16
-        ))
-        discarded?.frameLength = 16
-        discardedWeakBuffer.value = discarded
+    func testBacklogDiscardDropsQueuedPoolSlotIndex() {
         let discardedBacklog = AudioCapture.ProcessingBacklog(capacity: 1)
-        XCTAssertEqual(discardedBacklog.tryEnqueue(try XCTUnwrap(discarded)), .enqueued)
-        discarded = nil
+        XCTAssertEqual(discardedBacklog.tryEnqueue(11), .enqueued)
         discardedBacklog.discard()
-        XCTAssertNil(discardedWeakBuffer.value)
-
-        let deinitWeakBuffer = WeakBufferBox()
-        var retained: AVAudioPCMBuffer? = try XCTUnwrap(AVAudioPCMBuffer(
-            pcmFormat: format(),
-            frameCapacity: 16
-        ))
-        retained?.frameLength = 16
-        deinitWeakBuffer.value = retained
-        var retainedBacklog: AudioCapture.ProcessingBacklog? = .init(capacity: 1)
-        XCTAssertEqual(retainedBacklog?.tryEnqueue(try XCTUnwrap(retained)), .enqueued)
-        retained = nil
-        retainedBacklog = nil
-        XCTAssertNil(deinitWeakBuffer.value)
+        XCTAssertNil(discardedBacklog.next())
     }
 
     func testLateProducerAfterFinishDoesNotReportProcessingBacklog() async throws {
@@ -1781,7 +1748,7 @@ final class AudioCaptureFileTests: XCTestCase {
 
         DispatchQueue.global(qos: .userInitiated).async {
             let level = AudioCapture.computeLevel(of: backgroundBuffer)
-            let copied = AudioCapture.copy(backgroundBuffer)
+            let copied = AudioCapture.copyForDelivery(backgroundBuffer)
             backgroundBuffer.floatChannelData?[0][0] = 0
 
             XCTAssertGreaterThan(level, 0)
@@ -1791,5 +1758,242 @@ final class AudioCaptureFileTests: XCTestCase {
         }
 
         wait(for: [completed], timeout: 1)
+    }
+
+    func testRenderBufferPoolReturnsNilAfterCapacityIsExhausted() throws {
+        let pool = try XCTUnwrap(AudioCapture.RenderBufferPool(
+            format: format(),
+            capacity: 3,
+            frameCapacity: 64
+        ))
+
+        XCTAssertNotNil(pool.acquire())
+        XCTAssertNotNil(pool.acquire())
+        XCTAssertNotNil(pool.acquire())
+        XCTAssertNil(pool.acquire())
+    }
+
+    func testReturnedRenderBufferPoolSlotBecomesAvailableAgain() throws {
+        let pool = try XCTUnwrap(AudioCapture.RenderBufferPool(
+            format: format(),
+            capacity: 1,
+            frameCapacity: 64
+        ))
+        let slot = try XCTUnwrap(pool.acquire())
+
+        XCTAssertNil(pool.acquire())
+        pool.release(slot)
+
+        XCTAssertEqual(pool.acquire(), slot)
+    }
+
+    func testRenderBufferPoolDeinitReleasesEveryPreallocatedBuffer() throws {
+        let weakBuffer = WeakBufferBox()
+        var pool: AudioCapture.RenderBufferPool? = try XCTUnwrap(
+            AudioCapture.RenderBufferPool(
+                format: format(),
+                capacity: 2,
+                frameCapacity: 64
+            )
+        )
+        weakBuffer.value = pool?.buffer(at: 0)
+        XCTAssertNotNil(weakBuffer.value)
+
+        pool = nil
+
+        XCTAssertNil(weakBuffer.value)
+    }
+
+    func testRetainedSpeechChunkIsNotMutatedWhenPoolSlotIsReused() async throws {
+        let outputFormat = try XCTUnwrap(AVAudioFormat(
+            commonFormat: .pcmFormatFloat32,
+            sampleRate: 48_000,
+            channels: 1,
+            interleaved: false
+        ))
+        let sinkBox = SinkBox()
+        let retainedChunks = BufferSpy()
+        let delivered = expectation(description: "Beide Speech-Kopien geliefert")
+        delivered.expectedFulfillmentCount = 2
+        let capture = AudioCapture(
+            audioUnitHooks: AudioCapture.AudioUnitHooks(
+                configureInput: { _, _, sink in
+                    sinkBox.store(sink)
+                    return outputFormat
+                },
+                initialize: {}, start: {}, stop: {}, uninitialize: {}, dispose: {}
+            ),
+            backlogCapacity: 1
+        )
+        try capture.start(outputFormat: outputFormat,
+                          recordTo: nil,
+                          captureInitiallyActive: true) { chunk in
+            retainedChunks.record(chunk.buffer)
+            delivered.fulfill()
+        }
+        let renderBuffer = try XCTUnwrap(AVAudioPCMBuffer(
+            pcmFormat: outputFormat,
+            frameCapacity: 16
+        ))
+        renderBuffer.frameLength = 16
+        let sink = try XCTUnwrap(sinkBox.load())
+
+        renderBuffer.floatChannelData?[0][0] = 0.25
+        sink(renderBuffer)
+        while retainedChunks.values.count < 1 { await Task.yield() }
+        renderBuffer.floatChannelData?[0][0] = 0.75
+        sink(renderBuffer)
+
+        await fulfillment(of: [delivered], timeout: 1)
+        let chunks = retainedChunks.values
+        XCTAssertEqual(chunks[0].floatChannelData?[0][0], 0.25)
+        XCTAssertEqual(chunks[1].floatChannelData?[0][0], 0.75)
+        _ = await capture.stop()
+    }
+
+    func testTwoHundredProductionRenderCallbacksWithoutConsumptionReportBacklog() async throws {
+        let outputFormat = try XCTUnwrap(AVAudioFormat(
+            commonFormat: .pcmFormatFloat32,
+            sampleRate: 48_000,
+            channels: 1,
+            interleaved: false
+        ))
+        let consumerEntered = DispatchSemaphore(value: 0)
+        let allowConsumer = DispatchSemaphore(value: 0)
+        let callbacksFinished = DispatchSemaphore(value: 0)
+        let callbackCount = LockedInt()
+        let didBlockConsumer = LockedFlag()
+        let errorReported = expectation(description: "Pool-Erschöpfung meldet Backlog")
+        let errorSpy = ErrorSpy()
+        let capture = AudioCapture(
+            audioUnitHooks: hooks(format: outputFormat),
+            renderOperation: { _, _, _, frameCount, buffer in
+                callbackCount.increment()
+                buffer.frameLength = AVAudioFrameCount(frameCount)
+                for index in 0..<Int(frameCount) {
+                    buffer.floatChannelData?[0][index] = Float(index) / 200
+                }
+                return noErr
+            },
+            backlogCapacity: 4,
+            beforeProcessing: {
+                guard !didBlockConsumer.get() else { return }
+                didBlockConsumer.set(true)
+                consumerEntered.signal()
+                allowConsumer.wait()
+            }
+        )
+        try capture.start(
+            outputFormat: outputFormat,
+            recordTo: nil,
+            captureInitiallyActive: true,
+            onRuntimeError: { error in
+                errorSpy.record(error)
+                errorReported.fulfill()
+            }
+        ) { _ in XCTFail("Der blockierte Consumer darf keinen Chunk liefern") }
+
+        DispatchQueue.global(qos: .userInteractive).async {
+            for _ in 0..<200 {
+                XCTAssertEqual(capture.renderCurrentInputForTesting(frameCount: 64), noErr)
+            }
+            callbacksFinished.signal()
+        }
+
+        XCTAssertEqual(consumerEntered.wait(timeout: .now() + 1), .success)
+        XCTAssertEqual(callbacksFinished.wait(timeout: .now() + 1), .success)
+        await fulfillment(of: [errorReported], timeout: 1)
+        XCTAssertEqual(callbackCount.value, 200)
+        XCTAssertEqual(errorSpy.values, [.processingBacklog])
+
+        allowConsumer.signal()
+        _ = await capture.stop()
+    }
+
+    func testPooledRenderPathProducesByteIdenticalWAV() async throws {
+        let outputFormat = format()
+        let directory = makeDirectory()
+        let referenceURL = directory.appendingPathComponent("reference.wav")
+        let pooledURL = directory.appendingPathComponent("pooled.wav")
+        let sinkBox = SinkBox()
+        let buffers = try (0..<3).map { chunkIndex in
+            let buffer = try XCTUnwrap(AVAudioPCMBuffer(
+                pcmFormat: outputFormat,
+                frameCapacity: 32
+            ))
+            buffer.frameLength = 32
+            for frame in 0..<32 {
+                buffer.int16ChannelData?[0][frame] = Int16(chunkIndex * 100 + frame)
+            }
+            return buffer
+        }
+
+        try writeReferenceWAV(buffers, format: outputFormat, to: referenceURL)
+        let capture = AudioCapture(audioUnitHooks: AudioCapture.AudioUnitHooks(
+            configureInput: { _, _, sink in
+                sinkBox.store(sink)
+                return outputFormat
+            },
+            initialize: {}, start: {}, stop: {}, uninitialize: {}, dispose: {}
+        ))
+        try capture.start(
+            outputFormat: outputFormat,
+            recordTo: pooledURL,
+            captureInitiallyActive: true
+        ) { _ in }
+        let sink = try XCTUnwrap(sinkBox.load())
+        buffers.forEach(sink)
+
+        let returnedURL = await capture.stop()
+        XCTAssertEqual(returnedURL, pooledURL)
+        XCTAssertEqual(try Data(contentsOf: pooledURL), try Data(contentsOf: referenceURL))
+    }
+
+    func testProductionRenderPathRunsFromGlobalBackgroundQueue() async throws {
+        let outputFormat = try XCTUnwrap(AVAudioFormat(
+            commonFormat: .pcmFormatFloat32,
+            sampleRate: 48_000,
+            channels: 1,
+            interleaved: false
+        ))
+        let rendered = expectation(description: "Render-Operation läuft im Hintergrund")
+        let delivered = expectation(description: "Hintergrund-Render wird geliefert")
+        let capture = AudioCapture(
+            audioUnitHooks: hooks(format: outputFormat),
+            renderOperation: { _, _, _, frameCount, buffer in
+                XCTAssertFalse(Thread.isMainThread)
+                buffer.frameLength = AVAudioFrameCount(frameCount)
+                buffer.floatChannelData?[0][0] = 0.375
+                rendered.fulfill()
+                return noErr
+            }
+        )
+        try capture.start(outputFormat: outputFormat,
+                          recordTo: nil,
+                          captureInitiallyActive: true) { chunk in
+            XCTAssertEqual(chunk.buffer.floatChannelData?[0][0], 0.375)
+            delivered.fulfill()
+        }
+
+        DispatchQueue.global(qos: .userInteractive).async {
+            XCTAssertEqual(capture.renderCurrentInputForTesting(frameCount: 32), noErr)
+        }
+
+        await fulfillment(of: [rendered, delivered], timeout: 1)
+        _ = await capture.stop()
+    }
+
+    private func writeReferenceWAV(_ buffers: [AVAudioPCMBuffer],
+                                   format: AVAudioFormat,
+                                   to url: URL) throws {
+        let file = try AVAudioFile(
+            forWriting: url,
+            settings: format.settings,
+            commonFormat: format.commonFormat,
+            interleaved: format.isInterleaved
+        )
+        for buffer in buffers {
+            try file.write(from: buffer)
+        }
     }
 }
