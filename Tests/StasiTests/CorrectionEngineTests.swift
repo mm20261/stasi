@@ -79,6 +79,19 @@ final class CorrectionEngineTests: XCTestCase {
         XCTAssertEqual(text, "Claude Code")
     }
 
+    func testEqualLengthSourcesUseDeterministicOrder() {
+        let entries = [
+            DictionaryEntry(type: .correction, from: "Bravo", to: "B"),
+            DictionaryEntry(type: .correction, from: "Alpha", to: "A"),
+        ]
+
+        for _ in 0..<5 {
+            let result = CorrectionEngine.correct("alpha bravo", entries: entries)
+            XCTAssertEqual(result.text, "A B")
+            XCTAssertEqual(result.applied.map(\.pattern), ["Alpha", "Bravo"])
+        }
+    }
+
     func testMultipleOccurrences() {
         let entries = [DictionaryEntry(type: .correction, from: "cloud code", to: "Claude Code")]
         let (text, applied) = CorrectionEngine.correct("cloud code und nochmal CloudCode", entries: entries)

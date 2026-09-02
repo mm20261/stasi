@@ -73,11 +73,6 @@ enum ProtocolSearch {
             || record.targetApp.range(of: query, options: options) != nil
     }
 
-    /// Trefferzähler für die Suchzeile („7 TREFFER").
-    static func hitCount(in records: [TranscriptionRecord]) -> Int {
-        records.count
-    }
-
     // MARK: Tagesgruppierung (Protokolle-Ansicht)
 
     struct DayGroup {

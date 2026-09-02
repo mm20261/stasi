@@ -20,7 +20,7 @@ final class PillPanel: NSPanel {
                    backing: .buffered, defer: false)
         isOpaque = false
         backgroundColor = .clear
-        level = .floating
+        level = .statusBar
         collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         hasShadow = true
         worksWhenModal = true
@@ -30,15 +30,16 @@ final class PillPanel: NSPanel {
     }
 
     func positionBottomCenter() {
-        guard let screen = NSScreen.main?.visibleFrame else { return }
+        guard let screen = (screen ?? NSScreen.main)?.visibleFrame else { return }
         setFrameOrigin(NSPoint(x: screen.midX - frame.width / 2,
                                y: screen.minY + 28))
     }
 
     /// Breite wechseln (✕/✓ ein-/ausblenden) und horizontal neu zentrieren.
     func resize(to size: NSSize) {
+        let visibleFrame = (screen ?? NSScreen.main)?.visibleFrame
         setContentSize(size)
-        if let screen = NSScreen.main?.visibleFrame {
+        if let screen = visibleFrame {
             setFrameOrigin(NSPoint(x: screen.midX - size.width / 2,
                                    y: frame.minY))
         }
@@ -48,7 +49,7 @@ final class PillPanel: NSPanel {
 // MARK: - Controller
 
 @MainActor
-final class PillController {
+final class PillController: NSObject {
     static let shared = PillController()
     var app: AppState?
     private var pillPanel: PillPanel?
@@ -64,6 +65,38 @@ final class PillController {
     private var lastModelReady = true
     private var recordingPillVisible = false
     private var spinnerVisible = false
+
+    private override init() {
+        super.init()
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(screenParametersDidChange),
+            name: NSApplication.didChangeScreenParametersNotification,
+            object: nil
+        )
+    }
+
+    deinit {
+        NotificationCenter.default.removeObserver(
+            self,
+            name: NSApplication.didChangeScreenParametersNotification,
+            object: nil
+        )
+    }
+
+    @objc nonisolated private func screenParametersDidChange() {
+        performSelector(
+            onMainThread: #selector(repositionVisiblePanels),
+            with: nil,
+            waitUntilDone: false
+        )
+    }
+
+    @objc private func repositionVisiblePanels() {
+        if recordingPillVisible { pillPanel?.positionBottomCenter() }
+        if spinnerVisible { spinnerPanel?.positionBottomCenter() }
+        if toastPanel?.isVisible == true { toastPanel?.positionBottomCenter() }
+    }
 
     func sync(phase: AppState.Phase, partialText: String, elapsed: TimeInterval,
               processingElapsed: TimeInterval, level: Double,
@@ -94,7 +127,7 @@ final class PillController {
                 return
             }
             let view = ensurePill(app: app)
-            view.applyChrome(for: source)
+            view.applyChrome()
             view.update(level: level, secs: elapsed,
                         partialText: partialText, modelReady: modelReady)
             let newlyVisible = !recordingPillVisible
@@ -106,8 +139,7 @@ final class PillController {
                     startAnimation()
                 }
                 pillPanel?.resize(to: NSSize(
-                    width: PillChrome.pillWidth(for: source,
-                                                hasPartialText: hasPartialText,
+                    width: PillChrome.pillWidth(hasPartialText: hasPartialText,
                                                 modelReady: modelReady),
                     height: PillChrome.pillHeight(hasPartialText: hasPartialText)
                 ))
@@ -323,10 +355,9 @@ final class RecordingPillView: NSView {
     }
 
     /// ✕ und ✓ sind in beiden Aufnahmemodi sichtbar.
-    func applyChrome(for source: RecordingSource) {
-        let show = PillChrome.showsButtons(for: source)
-        discardButton.isHidden = !show
-        commitButton.isHidden = !show
+    func applyChrome() {
+        discardButton.isHidden = false
+        commitButton.isHidden = false
         applyBackground()
     }
 
@@ -360,7 +391,6 @@ final class RecordingPillView: NSView {
         }
         transcriptLabel.isHidden = !hasPartialText
         widthConstraint.constant = PillChrome.pillWidth(
-            for: .pushToTalk,
             hasPartialText: hasPartialText,
             modelReady: modelReady
         )

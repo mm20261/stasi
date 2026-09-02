@@ -1,6 +1,4 @@
 import SwiftUI
-import AppKit
-import UniformTypeIdentifiers
 
 // MARK: - Der Bericht (v3)
 // Aufgabe: das letzte Diktat finden und kopieren.
@@ -21,21 +19,14 @@ struct DashboardView: View {
 
     // MARK: Daten
 
-    private var todayRecords: [TranscriptionRecord] {
-        app.history.records.filter { calendar.isDateInToday($0.date) }
-    }
-
-    /// Hero = neuestes Protokoll überhaupt (nicht nur heute).
-    private var heroRecord: TranscriptionRecord? {
-        app.history.records.first
-    }
-
-    /// „Früher heute": heutige Einträge ohne den Hero.
-    private var earlierToday: [TranscriptionRecord] {
-        todayRecords.filter { $0.id != heroRecord?.id }
-    }
-
     var body: some View {
+        let records = app.history.records
+        let heroRecord = records.first
+        let earlierToday = records.filter {
+            calendar.isDateInToday($0.date) && $0.id != heroRecord?.id
+        }
+        let stats = DashboardStats(records: records, calendar: calendar)
+
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
                 topbar
@@ -53,7 +44,11 @@ struct DashboardView: View {
                     })
                     .padding(.top, 12)
                 }
-                mainGrid
+                mainGrid(
+                    heroRecord: heroRecord,
+                    earlierToday: earlierToday,
+                    stats: stats
+                )
                     .padding(.top, 20)
             }
             .padding(.horizontal, Theme.Metrics.contentPaddingH)
@@ -63,7 +58,7 @@ struct DashboardView: View {
         .frame(maxWidth: .infinity, alignment: .center)
         .onAppear { app.refreshPermissionState() }
         .sheet(item: $rawTextRecord) { record in
-            RawTranscriptView(record: record, onCopy: { copyRawText(record) })
+            RawTranscriptView(record: record, onCopy: { RecordActions.copyRawText(record) })
         }
     }
 
@@ -158,19 +153,26 @@ struct DashboardView: View {
 
     // MARK: Grid
 
-    private var mainGrid: some View {
+    private func mainGrid(
+        heroRecord: TranscriptionRecord?,
+        earlierToday: [TranscriptionRecord],
+        stats: DashboardStats
+    ) -> some View {
         HStack(alignment: .top, spacing: Theme.Metrics.gridGap) {
-            leftColumn
+            leftColumn(heroRecord: heroRecord, earlierToday: earlierToday)
                 .frame(maxWidth: .infinity, alignment: .topLeading)
                 .layoutPriority(1) // v4: minmax(0, 1fr) – Liste schrumpft, Ellipsis
-            rail
+            rail(stats: stats)
                 .frame(width: Theme.Metrics.railWidth)
         }
     }
 
     @ViewBuilder
-    private var leftColumn: some View {
-        if app.history.records.isEmpty {
+    private func leftColumn(
+        heroRecord: TranscriptionRecord?,
+        earlierToday: [TranscriptionRecord]
+    ) -> some View {
+        if heroRecord == nil {
             FirstStartEmptyState(
                 onTry: { app.startDictation() },
                 onChangeKey: { selection.section = .einstellungen }
@@ -185,7 +187,7 @@ struct DashboardView: View {
                     heroCard(hero)
                 }
                 if !earlierToday.isEmpty {
-                    earlierSection
+                    earlierSection(earlierToday)
                 }
             }
         }
@@ -224,7 +226,13 @@ struct DashboardView: View {
 
                 if record.audioPath != nil {
                     Button {
-                        Task { @MainActor in togglePlay(record) }
+                        Task { @MainActor in
+                            RecordActions.togglePlay(
+                                record,
+                                player: player,
+                                playingId: $playingId
+                            )
+                        }
                     } label: {
                         Label(playingId == record.id ? "Stopp" : "Anhören",
                               systemImage: playingId == record.id ? "stop.fill" : "play.fill")
@@ -266,37 +274,20 @@ struct DashboardView: View {
     }
 
     private func heroMenu(_ record: TranscriptionRecord) -> some View {
-        Menu {
-            Button("Rohtext anzeigen") { rawTextRecord = record }
-            Button("Rohtext kopieren") { copyRawText(record) }
-            Divider()
-            Button("Audio extrahieren (.wav)") { extractAudio(record) }
-            Button("Export als .txt") { export(record, asMarkdown: false) }
-            Button("Export als .md") { export(record, asMarkdown: true) }
-            Divider()
-            Button("Löschen", role: .destructive) {
-                Task { @MainActor in
-                    if playingId == record.id { player.stop(); playingId = nil }
-                    app.deleteHistoryRecord(record)
-                }
-            }
-        } label: {
-            Image(systemName: "ellipsis")
-                .font(.system(size: 12))
-                .foregroundColor(Theme.Palette.text3)
-                .frame(width: 27, height: 27)
-                .contentShape(Rectangle())
-                .scaleOnHover()
-        }
-        .menuStyle(.borderlessButton)
-        .menuIndicator(.hidden)
-        .accessibilityLabel("Weitere Aktionen für Protokoll")
+        RecordActionsMenu(
+            record: record,
+            rawTextRecord: $rawTextRecord,
+            playingId: $playingId,
+            player: player,
+            onDelete: { app.deleteHistoryRecord(record) }
+        )
     }
 
     // MARK: „Früher heute"
 
-    private var earlierSection: some View {
-        VStack(alignment: .leading, spacing: 6) {
+    private func earlierSection(_ records: [TranscriptionRecord]) -> some View {
+        let lastID = records.last?.id
+        return VStack(alignment: .leading, spacing: 6) {
             HStack {
                 Spacer()
                 Button {
@@ -315,13 +306,16 @@ struct DashboardView: View {
             }
             .padding(.horizontal, 2)
 
-            VStack(spacing: 0) {
-                ForEach(Array(earlierToday.enumerated()), id: \.element.id) { index, record in
+            LazyVStack(spacing: 0) {
+                ForEach(records) { record in
                     earlierRow(record)
                         .background(Theme.Palette.papier)
-                    if index < earlierToday.count - 1 {
-                        Divider().overlay(Theme.Palette.linieInnen).padding(.leading, 16)
-                    }
+                        .overlay(alignment: .bottom) {
+                            if record.id != lastID {
+                                Divider().overlay(Theme.Palette.linieInnen)
+                                    .padding(.leading, 16)
+                            }
+                        }
                 }
             }
             .secondaryCard(padding: 0)
@@ -333,27 +327,34 @@ struct DashboardView: View {
         EarlierRowView(record: record,
                        isPlaying: playingId == record.id,
                        calendar: calendar,
-                       onPlay: { Task { @MainActor in togglePlay(record) } },
+                       onPlay: {
+                           Task { @MainActor in
+                               RecordActions.togglePlay(
+                                   record,
+                                   player: player,
+                                   playingId: $playingId
+                               )
+                           }
+                       },
                        onCopy: { Task { @MainActor in app.copy(record) } },
                        onOpen: { selection.section = .protokolle })
     }
 
     // MARK: Rail
 
-    private var rail: some View {
+    private func rail(stats: DashboardStats) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("PROTOKOLLE")
                 .kicker(Theme.Palette.text3)
                 .padding(.horizontal, 2)
-            railStatsCard
-            akteCard
+            railStatsCard(stats: stats)
+            akteCard(stats: stats)
         }
     }
 
-    private var railStatsCard: some View {
-        let records = app.history.records
-        return VStack(alignment: .leading, spacing: 0) {
-            Text(StatsCalculator.compactCount(StatsCalculator.totalWords(records)))
+    private func railStatsCard(stats: DashboardStats) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text(stats.totalWordsText)
                 .font(Theme.Typo.railNumber())
                 .monospacedDigit()
                 .tracking(-0.5)
@@ -368,9 +369,9 @@ struct DashboardView: View {
                 .padding(.vertical, 12)
 
             railRow(label: "Wörter / Minute",
-                    value: wpmText)
+                    value: stats.wpmText)
             railRow(label: "Serie",
-                    value: streakText)
+                    value: stats.streakText)
         }
         .secondaryCard(padding: 18)
     }
@@ -389,22 +390,8 @@ struct DashboardView: View {
         .padding(.top, 6)
     }
 
-    private var wpmText: String {
-        guard let wpm = StatsCalculator.wordsPerMinute(app.history.records) else { return "—" }
-        return "\(Int(wpm.rounded()))"
-    }
-
-    private var streakText: String {
-        "\(StatsCalculator.currentStreak(app.history.records, calendar: calendar)) Tage"
-    }
-
-    private var akteCard: some View {
-        let milestone = 10_000
-        let total = StatsCalculator.totalWords(app.history.records)
-        let remainder = total % milestone
-        let progress = Double(remainder) / Double(milestone)
-
-        return VStack(alignment: .leading, spacing: 0) {
+    private func akteCard(stats: DashboardStats) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
             Text("Deine Akte")
                 .font(Theme.Typo.kartentitel())
                 .foregroundColor(Theme.Palette.ink)
@@ -418,13 +405,13 @@ struct DashboardView: View {
                 ZStack(alignment: .leading) {
                     RoundedRectangle(cornerRadius: 3).fill(Theme.Palette.linieInnen)
                     RoundedRectangle(cornerRadius: 3).fill(Theme.Palette.stempelrot)
-                        .frame(width: max(4, geo.size.width * progress))
+                        .frame(width: max(4, geo.size.width * stats.milestoneProgress))
                 }
             }
             .frame(height: 6)
             .padding(.top, 12)
 
-            Text("NOCH \(StatsCalculator.compactCount(milestone - remainder)) BIS ZUM \(Copy.akteMilestone.uppercased())")
+            Text("NOCH \(stats.wordsUntilMilestoneText) BIS ZUM \(Copy.akteMilestone.uppercased())")
                 .font(Theme.Typo.counter(10))
                 .tracking(0.8)
                 .textCase(.uppercase)
@@ -434,46 +421,26 @@ struct DashboardView: View {
         .secondaryCard(padding: 18)
     }
 
-    // MARK: Aktionen
+}
 
-    private func togglePlay(_ record: TranscriptionRecord) {
-        if playingId == record.id {
-            player.stop()
-            playingId = nil
-        } else if let path = record.audioPath {
-            player.play(url: URL(fileURLWithPath: path)) {
-                Task { @MainActor in self.playingId = nil }
-            }
-            playingId = record.id
-        }
-    }
+private struct DashboardStats {
+    private static let milestone = 10_000
 
-    private func extractAudio(_ record: TranscriptionRecord) {
-        guard let path = record.audioPath else { return }
-        let panel = NSSavePanel()
-        panel.allowedContentTypes = [UTType(filenameExtension: "wav") ?? .audio]
-        panel.nameFieldStringValue = "stasi-audio.wav"
-        if panel.runModal() == .OK, let url = panel.url {
-            try? FileManager.default.copyItem(atPath: path, toPath: url.path)
-        }
-    }
+    let totalWordsText: String
+    let wpmText: String
+    let streakText: String
+    let milestoneProgress: Double
+    let wordsUntilMilestoneText: String
 
-    private func copyRawText(_ record: TranscriptionRecord) {
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(record.rawText, forType: .string)
-    }
-
-    private func export(_ record: TranscriptionRecord, asMarkdown: Bool) {
-        let panel = NSSavePanel()
-        panel.allowedContentTypes = [.plainText]
-        let base = record.date.formatted(.iso8601.year().month().day().dateSeparator(.dash))
-        panel.nameFieldStringValue = "protokoll-\(base).\(asMarkdown ? "md" : "txt")"
-        if panel.runModal() == .OK, let url = panel.url {
-            let content = asMarkdown
-                ? "# Protokoll · \(record.date.formatted(.dateTime.day().month().year().hour().minute()))\n\n\(record.correctedText)\n"
-                : record.correctedText
-            try? content.write(to: url, atomically: true, encoding: .utf8)
-        }
+    init(records: [TranscriptionRecord], calendar: Calendar) {
+        let totalWords = StatsCalculator.totalWords(records)
+        let remainder = totalWords % Self.milestone
+        totalWordsText = StatsCalculator.compactCount(totalWords)
+        wpmText = StatsCalculator.wordsPerMinute(records)
+            .map { "\(Int($0.rounded()))" } ?? "—"
+        streakText = "\(StatsCalculator.currentStreak(records, calendar: calendar)) Tage"
+        milestoneProgress = Double(remainder) / Double(Self.milestone)
+        wordsUntilMilestoneText = StatsCalculator.compactCount(Self.milestone - remainder)
     }
 }
 

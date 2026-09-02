@@ -260,20 +260,23 @@ struct DictionaryView: View {
                     .frame(maxWidth: .infinity)
                     .card()
             } else {
-                VStack(spacing: 0) {
-                    ForEach(Array(filtered.enumerated()), id: \.element.id) { index, entry in
+                LazyVStack(spacing: 0) {
+                    ForEach(filtered.indices, id: \.self) { index in
+                        let entry = filtered[index]
                         HStack(alignment: .center, spacing: 0) {
                             Text(String(format: "%02d", index + 1))
                                 .font(Theme.Typo.counter(10))
                                 .monospacedDigit()
-                                .foregroundColor(Theme.Palette.text3.opacity(0.75))
+                                .foregroundColor(Theme.Palette.text3)
                                 .frame(width: 26)
                                 .padding(.leading, 16)
                             row(entry)
                         }
-                        if index < filtered.count - 1 {
-                            Divider().overlay(Theme.Palette.linieInnen)
-                                .padding(.leading, 42)
+                        .overlay(alignment: .bottom) {
+                            if index < filtered.index(before: filtered.endIndex) {
+                                Divider().overlay(Theme.Palette.linieInnen)
+                                    .padding(.leading, 42)
+                            }
                         }
                     }
                 }

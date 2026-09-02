@@ -36,14 +36,8 @@ enum PillChrome {
         }
     }
 
-    /// ✕ und ✓ immer klickbar (auch gelockt – Wispr-Stil).
-    static func showsButtons(for source: RecordingSource) -> Bool {
-        true
-    }
-
     /// Panel-Breite: Buttons sind immer da.
-    static func pillWidth(for source: RecordingSource, hasPartialText: Bool = false,
-                          modelReady: Bool = true) -> CGFloat {
+    static func pillWidth(hasPartialText: Bool = false, modelReady: Bool = true) -> CGFloat {
         if hasPartialText { return 320 }
         return modelReady ? 140 : 190
     }

@@ -100,6 +100,7 @@ enum Theme {
         static let linieSidebar = line
         static let chip = hover
         static let zeileHover = hover
+        // Bewusst identisch, bis ein neuer Design-Handoff eine dritte Textstufe definiert.
         static let text2 = sub
         static let text3 = sub
     }
@@ -385,25 +386,12 @@ struct StasiInputStyle: ViewModifier {
 }
 
 extension View {
-    func stasiInput(border: Color = Theme.Palette.line) -> some View {
+    func stasiInput() -> some View {
         modifier(StasiInputStyle())
     }
 }
 
 // MARK: - Mikrointeraktionen (v3: dezent, respektieren reduced motion)
-
-struct LiftOnHover: ViewModifier {
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var hovered = false
-    func body(content: Content) -> some View {
-        content
-            .offset(y: hovered && !reduceMotion ? -3 : 0)
-            .shadow(color: Theme.shadow(Theme.accent),
-                    radius: hovered ? 12 : 8, x: 0, y: hovered ? 6 : 2)
-            .onHover { hovered = $0 }
-            .animation(reduceMotion ? nil : Theme.Motion.micro, value: hovered)
-    }
-}
 
 struct SlideOnHover: ViewModifier {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -428,7 +416,6 @@ struct ScaleOnHover: ViewModifier {
 }
 
 extension View {
-    func liftOnHover() -> some View { modifier(LiftOnHover()) }
     func slideOnHover() -> some View { modifier(SlideOnHover()) }
     func scaleOnHover() -> some View { modifier(ScaleOnHover()) }
 }

@@ -64,7 +64,9 @@ enum CorrectionEngine {
                 matchSource: entry.matchSource.precomposedStringWithCanonicalMapping,
                 replacementTarget: entry.replacementTarget.precomposedStringWithCanonicalMapping
             )
-        }.sorted { $0.matchSource.count > $1.matchSource.count }
+        }.sorted { lhs, rhs in
+            DictionaryEntryOrdering.precedes(lhs.entry, rhs.entry)
+        }
 
         for item in sorted where !item.matchSource.isEmpty && item.entry.type != .learned {
             guard let regex = regex(for: item.matchSource) else { continue }

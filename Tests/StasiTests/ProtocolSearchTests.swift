@@ -143,15 +143,6 @@ final class ProtocolSearchTests: XCTestCase {
         XCTAssertEqual(hits.map(\.correctedText), ["Meeting Notiz"])
     }
 
-    // MARK: Trefferzähler
-
-    func testHitCountEqualsFilteredCount() {
-        let records = [record("eins zwei"), record("zwei drei"), record("vier")]
-        let hits = ProtocolSearch.filter(records, query: "zwei", filter: .all,
-                                         calendar: calendar)
-        XCTAssertEqual(ProtocolSearch.hitCount(in: hits), 2)
-    }
-
     // MARK: Tagesgruppierung
 
     func testGroupByDaySortsDescendingAndGroups() {

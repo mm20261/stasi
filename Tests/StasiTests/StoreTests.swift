@@ -37,6 +37,21 @@ final class DictionaryStoreTests: XCTestCase {
         XCTAssertTrue(reloaded.entries.contains { $0.value == "Supabase" && $0.note == "Datenbank" })
     }
 
+    func testGleichlangeEintraegeBleibenDeterministischSortiert() {
+        store.add(DictionaryEntry(type: .word, value: "Zulu"))
+        store.add(DictionaryEntry(type: .correction, from: "Bravo", to: "B"))
+        store.add(DictionaryEntry(type: .correction, from: "Alpha", to: "A"))
+
+        let erwarteteReihenfolge = ["Alpha", "Bravo", "Zulu"]
+        for _ in 0..<5 {
+            store.load()
+            let gleichlange = store.entries
+                .filter { ["Alpha", "Bravo", "Zulu"].contains($0.matchSource) }
+                .map(\.matchSource)
+            XCTAssertEqual(gleichlange, erwarteteReihenfolge)
+        }
+    }
+
     func testDelete() {
         let entry = DictionaryEntry(type: .word, value: "Testwort")
         store.add(entry)

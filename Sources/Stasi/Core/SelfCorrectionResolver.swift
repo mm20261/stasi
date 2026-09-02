@@ -5,16 +5,6 @@ enum SelfCorrectionResolver {
     private static let tokenExpression = try! NSRegularExpression(
         pattern: "[\\p{L}\\p{N}\\p{M}]+"
     )
-    private static let whitespaceExpression = try! NSRegularExpression(pattern: "\\s+")
-    private static let punctuationWhitespaceExpression = try! NSRegularExpression(
-        pattern: "[ \\t]+([,.;:!?])"
-    )
-    private static let repeatedCommaExpression = try! NSRegularExpression(
-        pattern: ",\\s*,(?:\\s*,)*"
-    )
-    private static let leadingCommaExpression = try! NSRegularExpression(
-        pattern: "^\\s*,(?:\\s*,)*\\s*"
-    )
     struct Edit: Equatable, Sendable {
         let removed: String
         let kept: String
@@ -833,28 +823,7 @@ enum SelfCorrectionResolver {
     }
 
     private static func compactAfterRemoval(_ input: String) -> String {
-        var text = replace(input, expression: whitespaceExpression, with: " ")
-        text = replace(text, expression: punctuationWhitespaceExpression, with: "$1")
-        text = replace(text, expression: repeatedCommaExpression, with: ",")
-        text = replace(text, expression: leadingCommaExpression, with: "")
-        return text.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
-    private static func replace(_ input: String,
-                                expression regex: NSRegularExpression,
-                                with template: String) -> String {
-        let matches = regex.matches(in: input,
-                                    range: NSRange(input.startIndex..., in: input))
-        let replacements = matches.compactMap { match -> (Range<String.Index>, String)? in
-            guard let range = Range(match.range, in: input) else { return nil }
-            return (range, regex.replacementString(for: match, in: input,
-                                                   offset: 0, template: template))
-        }
-        var output = input
-        for (range, replacement) in replacements.reversed() {
-            output.replaceSubrange(range, with: replacement)
-        }
-        return output
+        TextNormalizer.tightenPunctuation(TextNormalizer.collapseWhitespace(input))
     }
 }
 

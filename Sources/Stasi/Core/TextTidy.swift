@@ -1,11 +1,7 @@
 import Foundation
 
-/// Abschließende, sprachneutrale Text-Hygiene. Fügt bewusst keinen Punkt an.
-enum TextTidy {
-    private static let abkuerzungenOhneSatzende: Set<String> = [
-        "z.b.", "z. b.", "usw.", "ca.", "bzw.", "dr.", "nr.", "vgl.", "s.",
-        "abs.", "etc.", "e.g.", "i.e.", "mr.", "mrs.",
-    ]
+/// Gemeinsame, sprachneutrale Normalisierung für alle Textregel-Pässe.
+enum TextNormalizer {
     private static let whitespaceExpression = try! NSRegularExpression(pattern: "\\s+")
     private static let repeatedCommaExpression = try! NSRegularExpression(
         pattern: ",\\s*,(?:\\s*,)*"
@@ -16,34 +12,37 @@ enum TextTidy {
     private static let punctuationWhitespaceExpression = try! NSRegularExpression(
         pattern: "[ \\t]+([,.;:!?])"
     )
-    private static let sentenceStartExpression = try! NSRegularExpression(
-        pattern: "(?:^|[.!?]\\s+)(\\p{L})"
-    )
 
-    static func tidy(_ input: String) -> String {
-        var text = input.trimmingCharacters(in: .whitespacesAndNewlines)
-        text = replacingAll(in: text, expression: whitespaceExpression, template: " ")
-        text = replacingAll(in: text, expression: repeatedCommaExpression, template: ",")
+    static func collapseWhitespace(_ input: String) -> String {
+        replacingAll(in: input, expression: whitespaceExpression, template: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    static func tightenPunctuation(_ input: String) -> String {
+        var text = replacingAll(in: input, expression: repeatedCommaExpression, template: ",")
         text = replacingAll(in: text, expression: leadingCommaExpression, template: "")
         text = replacingAll(
             in: text,
             expression: punctuationWhitespaceExpression,
             template: "$1"
         )
-        text = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        return capitalizingSentenceStarts(text)
+        return text.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    /// Alle Treffer werden einmal auf dem unveränderten Stand gesammelt und
-    /// anschließend rückwärts angewandt (Regel 4).
-    private static func replacingAll(in input: String,
-                                     expression regex: NSRegularExpression,
-                                     template: String) -> String {
+    /// Alle Treffer werden einmal gesammelt und anschließend rückwärts angewandt.
+    static func replacingAll(in input: String,
+                             expression regex: NSRegularExpression,
+                             template: String) -> String {
         let fullRange = NSRange(input.startIndex..., in: input)
-        let replacements = regex.matches(in: input, range: fullRange).compactMap { match -> (Range<String.Index>, String)? in
+        let replacements = regex.matches(in: input, range: fullRange).compactMap {
+            match -> (Range<String.Index>, String)? in
             guard let range = Range(match.range, in: input) else { return nil }
-            let replacement = regex.replacementString(for: match, in: input,
-                                                      offset: 0, template: template)
+            let replacement = regex.replacementString(
+                for: match,
+                in: input,
+                offset: 0,
+                template: template
+            )
             return (range, replacement)
         }
         var output = input
@@ -51,6 +50,24 @@ enum TextTidy {
             output.replaceSubrange(range, with: replacement)
         }
         return output
+    }
+}
+
+/// Abschließende, sprachneutrale Text-Hygiene. Fügt bewusst keinen Punkt an.
+enum TextTidy {
+    private static let abkuerzungenOhneSatzende: Set<String> = [
+        "z.b.", "z. b.", "usw.", "ca.", "bzw.", "dr.", "nr.", "vgl.", "s.",
+        "abs.", "etc.", "e.g.", "i.e.", "mr.", "mrs.",
+    ]
+    private static let sentenceStartExpression = try! NSRegularExpression(
+        pattern: "(?:^|[.!?]\\s+)(\\p{L})"
+    )
+
+    static func tidy(_ input: String) -> String {
+        let text = TextNormalizer.tightenPunctuation(
+            TextNormalizer.collapseWhitespace(input)
+        )
+        return capitalizingSentenceStarts(text)
     }
 
     private static func capitalizingSentenceStarts(_ input: String) -> String {

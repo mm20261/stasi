@@ -23,31 +23,26 @@ struct ProtocolsView: View {
     @State private var player = AudioPlayerHelper()
     private var calendar: Calendar { .current }
 
-    // MARK: Gefilterte Daten
-
-    private var filteredRecords: [TranscriptionRecord] {
-        ProtocolSearch.filter(app.history.records,
-                              query: selection.searchQuery,
-                              filter: selection.searchFilter,
-                              calendar: calendar)
-    }
-
-    private var dayGroups: [ProtocolSearch.DayGroup] {
-        ProtocolSearch.groupByDay(filteredRecords, calendar: calendar)
-    }
-
     private var isSearching: Bool {
         !selection.searchQuery.trimmingCharacters(in: .whitespaces).isEmpty
             || selection.searchFilter != .all
     }
 
     var body: some View {
+        let filteredRecords = ProtocolSearch.filter(
+            app.history.records,
+            query: selection.searchQuery,
+            filter: selection.searchFilter,
+            calendar: calendar
+        )
+        let groups = ProtocolSearch.groupByDay(filteredRecords, calendar: calendar)
+
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
-                topbar
+                topbar(hitCount: filteredRecords.count)
                 header
                     .padding(.top, 22)
-                listSection
+                listSection(filteredRecords: filteredRecords, groups: groups)
                     .padding(.top, 18)
             }
             .padding(.horizontal, Theme.Metrics.contentPaddingH)
@@ -61,17 +56,17 @@ struct ProtocolsView: View {
         }
         .onAppear { app.refreshPermissionState() }
         .sheet(item: $rawTextRecord) { record in
-            RawTranscriptView(record: record, onCopy: { copyRawText(record) })
+            RawTranscriptView(record: record, onCopy: { RecordActions.copyRawText(record) })
         }
     }
 
     // MARK: Topbar (Suche)
 
-    private var topbar: some View {
+    private func topbar(hitCount: Int) -> some View {
         HStack(spacing: 12) {
             searchBar
             if isSearching {
-                Text("\(Copy.formatGermanNumber(filteredRecords.count)) TREFFER")
+                Text("\(Copy.formatGermanNumber(hitCount)) TREFFER")
                     .font(Theme.Typo.counter(10))
                     .foregroundColor(Theme.Palette.text3)
                     .monospacedDigit()
@@ -183,7 +178,10 @@ struct ProtocolsView: View {
     // MARK: Liste (nach Tag gruppiert)
 
     @ViewBuilder
-    private var listSection: some View {
+    private func listSection(
+        filteredRecords: [TranscriptionRecord],
+        groups: [ProtocolSearch.DayGroup]
+    ) -> some View {
         if app.history.records.isEmpty {
             emptyState
         } else if filteredRecords.isEmpty {
@@ -206,8 +204,8 @@ struct ProtocolsView: View {
             .secondaryCard()
             .padding(.vertical, 24)
         } else {
-            VStack(alignment: .leading, spacing: 14) {
-                ForEach(dayGroups, id: \.day) { group in
+            LazyVStack(alignment: .leading, spacing: 14) {
+                ForEach(groups, id: \.day) { group in
                     dayCard(group)
                 }
             }
@@ -218,12 +216,15 @@ struct ProtocolsView: View {
         VStack(alignment: .leading, spacing: 8) {
             Text(Copy.dateLine(group.day, calendar: calendar))
                 .kicker(Theme.Palette.text3, tracking: 1)
-            VStack(spacing: 0) {
-                ForEach(Array(group.records.enumerated()), id: \.element.id) { index, record in
+            LazyVStack(spacing: 0) {
+                ForEach(group.records) { record in
                     row(for: record)
-                    if index < group.records.count - 1 {
-                        Divider().overlay(Theme.Palette.linieInnen).padding(.leading, 16)
-                    }
+                        .overlay(alignment: .bottom) {
+                            if record.id != group.records.last?.id {
+                                Divider().overlay(Theme.Palette.linieInnen)
+                                    .padding(.leading, 16)
+                            }
+                        }
                 }
             }
             .card(padding: 0)
@@ -259,7 +260,7 @@ struct ProtocolsView: View {
                     .foregroundColor(Theme.Palette.text3)
                 Text(FileNumber.forRecord(id: record.id))
                     .font(Theme.Typo.counter(9.5))
-                    .foregroundColor(Theme.Palette.text3.opacity(0.75))
+                    .foregroundColor(Theme.Palette.text3)
             }
             .frame(width: 84, alignment: .leading)
             .padding(.top, 3)
@@ -300,7 +301,13 @@ struct ProtocolsView: View {
             HStack(spacing: 4) {
                 if record.audioPath != nil {
                     iconButton(isPlaying ? "stop.fill" : "play.fill", active: isPlaying) {
-                        Task { @MainActor in togglePlay(record) }
+                        Task { @MainActor in
+                            RecordActions.togglePlay(
+                                record,
+                                player: player,
+                                playingId: $playingId
+                            )
+                        }
                     }
                 }
                 iconButton(copiedId == record.id ? "checkmark" : "doc.on.doc",
@@ -361,32 +368,14 @@ struct ProtocolsView: View {
     }
 
     private func rowMenu(for record: TranscriptionRecord) -> some View {
-        Menu {
-            Button("Rohtext anzeigen") { rawTextRecord = record }
-            Button("Rohtext kopieren") { copyRawText(record) }
-            Divider()
-            Button("Audio extrahieren (.wav)") { extractAudio(record) }
-            Button("Export als .txt") { export(record, asMarkdown: false) }
-            Button("Export als .md") { export(record, asMarkdown: true) }
-            Divider()
-            Button("Löschen", role: .destructive) {
-                Task { @MainActor in
-                    if playingId == record.id { player.stop(); playingId = nil }
-                    app.deleteHistoryRecord(record)
-                }
-            }
-        } label: {
-            Image(systemName: "ellipsis")
-                .font(.system(size: 12))
-                .foregroundStyle(Theme.Palette.text3)
-                .frame(width: 27, height: 27)
-                .contentShape(Rectangle())
-                .scaleOnHover()
-        }
-        .menuStyle(.borderlessButton)
-        .menuIndicator(.hidden)
+        RecordActionsMenu(
+            record: record,
+            rawTextRecord: $rawTextRecord,
+            playingId: $playingId,
+            player: player,
+            onDelete: { app.deleteHistoryRecord(record) }
+        )
         .frame(width: 27, height: 27)
-        .accessibilityLabel("Weitere Aktionen für Protokoll")
     }
 
     private func iconButton(_ symbol: String, active: Bool = false,
@@ -427,23 +416,6 @@ struct ProtocolsView: View {
         }
     }
 
-    private func copyRawText(_ record: TranscriptionRecord) {
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(record.rawText, forType: .string)
-    }
-
-    private func togglePlay(_ record: TranscriptionRecord) {
-        if playingId == record.id {
-            player.stop()
-            playingId = nil
-        } else if let path = record.audioPath {
-            player.play(url: URL(fileURLWithPath: path)) {
-                Task { @MainActor in self.playingId = nil }
-            }
-            playingId = record.id
-        }
-    }
-
     private func exportAll() {
         let panel = NSSavePanel()
         panel.allowedContentTypes = [.plainText]
@@ -453,7 +425,32 @@ struct ProtocolsView: View {
         try? md.write(to: url, atomically: true, encoding: .utf8)
     }
 
-    private func export(_ record: TranscriptionRecord, asMarkdown: Bool) {
+}
+
+@MainActor
+enum RecordActions {
+    static func togglePlay(
+        _ record: TranscriptionRecord,
+        player: AudioPlayerHelper,
+        playingId: Binding<UUID?>
+    ) {
+        if playingId.wrappedValue == record.id {
+            player.stop()
+            playingId.wrappedValue = nil
+        } else if let path = record.audioPath {
+            player.play(url: URL(fileURLWithPath: path)) {
+                playingId.wrappedValue = nil
+            }
+            playingId.wrappedValue = record.id
+        }
+    }
+
+    static func copyRawText(_ record: TranscriptionRecord) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(record.rawText, forType: .string)
+    }
+
+    static func export(_ record: TranscriptionRecord, asMarkdown: Bool) {
         let panel = NSSavePanel()
         panel.allowedContentTypes = [.plainText]
         let base = record.date.formatted(.iso8601.year().month().day().dateSeparator(.dash))
@@ -466,7 +463,7 @@ struct ProtocolsView: View {
         }
     }
 
-    private func extractAudio(_ record: TranscriptionRecord) {
+    static func extractAudio(_ record: TranscriptionRecord) {
         guard let path = record.audioPath else { return }
         let panel = NSSavePanel()
         panel.allowedContentTypes = [UTType(filenameExtension: "wav") ?? .audio]
@@ -474,6 +471,43 @@ struct ProtocolsView: View {
         if panel.runModal() == .OK, let url = panel.url {
             try? FileManager.default.copyItem(atPath: path, toPath: url.path)
         }
+    }
+}
+
+struct RecordActionsMenu: View {
+    let record: TranscriptionRecord
+    @Binding var rawTextRecord: TranscriptionRecord?
+    @Binding var playingId: UUID?
+    let player: AudioPlayerHelper
+    let onDelete: () -> Void
+
+    var body: some View {
+        Menu {
+            Button("Rohtext anzeigen") { rawTextRecord = record }
+            Button("Rohtext kopieren") { RecordActions.copyRawText(record) }
+            Divider()
+            Button("Audio extrahieren (.wav)") { RecordActions.extractAudio(record) }
+            Button("Export als .txt") { RecordActions.export(record, asMarkdown: false) }
+            Button("Export als .md") { RecordActions.export(record, asMarkdown: true) }
+            Divider()
+            Button("Löschen", role: .destructive) {
+                if playingId == record.id {
+                    player.stop()
+                    playingId = nil
+                }
+                onDelete()
+            }
+        } label: {
+            Image(systemName: "ellipsis")
+                .font(.system(size: 12))
+                .foregroundStyle(Theme.Palette.text3)
+                .frame(width: 27, height: 27)
+                .contentShape(Rectangle())
+                .scaleOnHover()
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .accessibilityLabel("Weitere Aktionen für Protokoll")
     }
 }
 

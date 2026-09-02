@@ -200,7 +200,9 @@ final class StatusBarController {
     // MARK: Icons
 
     static func icon(forPhase phase: AppState.Phase) -> NSImage {
-        iconCache[phase] ?? NSImage(systemSymbolName: "waveform", accessibilityDescription: "Stasi")!
+        iconCache[phase]
+            ?? NSImage(systemSymbolName: "waveform", accessibilityDescription: "Stasi")
+            ?? NSImage(size: NSSize(width: 18, height: 18))
     }
 }
 

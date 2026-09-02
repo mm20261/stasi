@@ -6,14 +6,16 @@ import AppKit
 
 typealias SettingsHotkeyCaptureState = HotkeyCaptureState
 
+private enum SettingsRecorder: Equatable {
+    case pushToTalk
+    case handsFree
+}
+
 struct SettingsWindowView: View {
     @Environment(AppState.self) private var app
     @Environment(SettingsStore.self) private var settings
 
-    /// Während der Aufnahme erfasste Kombination (Vorschau bis „Übernehmen").
-    @State private var hotkeyCaptureState = SettingsHotkeyCaptureState()
-    @State private var recordingHandsFreeKey = false
-    @State private var draftHandsFreeKeyCode: UInt64?
+    @State private var activeRecorder: SettingsRecorder?
 
     // Mikrofon-Popover
     @State private var micPopoverOpen = false
@@ -54,8 +56,7 @@ struct SettingsWindowView: View {
             availableMics = MicrophoneScanner.devices()
         }
         .onDisappear {
-            cancelHotkeyRecording()
-            cancelHandsFreeKeyRecording()
+            activeRecorder = nil
         }
     }
 
@@ -103,107 +104,46 @@ struct SettingsWindowView: View {
                         .foregroundColor(Theme.Palette.text2)
                 }
                 Spacer()
-                KeyBadge(hotkeyCaptureState.isRecording ? "…" : VirtualKey.display(app.currentCombo))
-                    .opacity(hotkeyCaptureState.isRecording ? 0.4 : 1)
+                KeyBadge(activeRecorder == .pushToTalk ? "…" : VirtualKey.display(app.currentCombo))
+                    .opacity(activeRecorder == .pushToTalk ? 0.4 : 1)
                 Button("ÄNDERN") {
-                    if !hotkeyCaptureState.isRecording { beginHotkeyRecording() }
+                    activeRecorder = .pushToTalk
                 }
                 .font(Theme.Typo.kicker(size: 10.5))
                 .tracking(0.8)
                 .foregroundColor(Theme.Palette.stempelrot)
                 .buttonStyle(.plain)
+                .accessibilityLabel("Push-to-talk-Kürzel ändern")
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 13)
 
-            if hotkeyCaptureState.isRecording {
-                recorderField
+            if activeRecorder == .pushToTalk {
+                HotkeyRecorderField(
+                    initialDraft: HotkeyCaptureDraft(combo: app.currentCombo),
+                    prompt: "JETZT DRÜCKEN",
+                    guidance: ["Mindestens ein Modifier. Esc bricht ab."],
+                    symbols: { draft in
+                        guard let combo = draft.combo else { return [] }
+                        return VirtualKey.display(combo).split(separator: " ").map(String.init)
+                    },
+                    canCommit: { $0.isValidSelection },
+                    policy: { draft, event in
+                        if case .cancel = event { return .cancel }
+                        draft.process(event)
+                        return .keep
+                    },
+                    onCancel: { activeRecorder = nil },
+                    onCommit: { draft in
+                        guard draft.isValidSelection, let combo = draft.combo else { return }
+                        app.applyHotkey(combo)
+                        activeRecorder = nil
+                    }
+                )
                     .padding(.horizontal, 10)
                     .padding(.bottom, 12)
             }
         }
-    }
-
-    /// Aufnahmefeld (recorderFlaeche, 1px dashed stempelrot).
-    private var recorderField: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("JETZT DRÜCKEN")
-                .kicker(Theme.Palette.stempelrot, tracking: 1.6)
-
-            HStack(spacing: 6) {
-                ForEach(currentDraftSymbols, id: \.self) { symbol in
-                    KeyBadge(symbol)
-                        .font(Theme.Typo.keycap(14))
-                }
-                BlinkingCursor()
-            }
-
-            Text("Mindestens ein Modifier. Esc bricht ab.")
-                .font(Theme.Typo.secondary(size: 11))
-                .foregroundColor(Theme.Palette.text3)
-
-            HStack {
-                Spacer()
-                Button("Abbrechen") { cancelHotkeyRecording() }
-                    .buttonStyle(GhostButtonStyle())
-                Button("Übernehmen") { commitHotkeyRecording() }
-                    .buttonStyle(AccentButtonStyle())
-                    .disabled(!canCommitHotkeyDraft)
-            }
-        }
-        .padding(14)
-        .background(
-            RoundedRectangle(cornerRadius: 8)
-                .fill(Theme.Palette.recorderFlaeche)
-                .overlay(RoundedRectangle(cornerRadius: 8)
-                    .strokeBorder(Theme.Palette.stempelrot,
-                                  style: StrokeStyle(lineWidth: 1, dash: [4, 3])))
-        )
-    }
-
-    /// Keycap-Vorschau der aktuell gedrückten Kombination.
-    private var currentDraftSymbols: [String] {
-        guard let combo = hotkeyCaptureState.draft.combo else { return [] }
-        return VirtualKey.display(combo).split(separator: " ").map(String.init)
-    }
-
-    private var canCommitHotkeyDraft: Bool {
-        hotkeyCaptureState.draft.isValidSelection
-    }
-
-    @State private var hotkeyCaptureMonitor: Any?
-    @State private var hotkeyCaptureTarget: HotkeyCaptureMonitorTarget?
-
-    private func beginHotkeyRecording() {
-        guard hotkeyCaptureMonitor == nil else { return }
-        cancelHandsFreeKeyRecording()
-        hotkeyCaptureState.begin(with: app.currentCombo)
-        let target = HotkeyCaptureMonitorTarget { action in
-            if hotkeyCaptureState.process(action) == .removeMonitor {
-                cancelHotkeyRecording()
-            }
-        }
-        hotkeyCaptureTarget = target
-        hotkeyCaptureMonitor = NSEvent.addLocalMonitorForEvents(
-            matching: [.keyDown, .flagsChanged]
-        ) { [weak target] event in
-            guard let action = HotkeyCaptureEvent.parse(event) else { return event }
-            target?.send(action)
-            return nil
-        }
-    }
-
-    private func cancelHotkeyRecording() {
-        if let monitor = hotkeyCaptureMonitor { NSEvent.removeMonitor(monitor) }
-        hotkeyCaptureMonitor = nil
-        hotkeyCaptureTarget = nil
-        hotkeyCaptureState.stop()
-    }
-
-    private func commitHotkeyRecording() {
-        guard canCommitHotkeyDraft, let combo = hotkeyCaptureState.draft.combo else { return }
-        app.applyHotkey(combo)
-        cancelHotkeyRecording()
     }
 
     private var handsFreeRow: some View {
@@ -219,14 +159,15 @@ struct SettingsWindowView: View {
                 }
                 Spacer()
                 KeyBadge("\(VirtualKey.keySymbol(Int(settings.handsFreeKeyCode))) ×2")
-                    .opacity(recordingHandsFreeKey ? 0.4 : 1)
+                    .opacity(activeRecorder == .handsFree ? 0.4 : 1)
                 Button("ÄNDERN") {
-                    if !recordingHandsFreeKey { beginHandsFreeKeyRecording() }
+                    activeRecorder = .handsFree
                 }
                 .font(Theme.Typo.kicker(size: 10.5))
                 .tracking(0.8)
                 .foregroundColor(Theme.Palette.stempelrot)
                 .buttonStyle(.plain)
+                .accessibilityLabel("Hands-free-Taste ändern")
                 toggleControl(isOn: Binding(
                     get: { settings.handsFreeOn },
                     set: { app.setHandsFreeEnabled($0) }
@@ -235,97 +176,48 @@ struct SettingsWindowView: View {
             .padding(.horizontal, 16)
             .padding(.vertical, 13)
 
-            if recordingHandsFreeKey {
-                handsFreeRecorderField
+            if activeRecorder == .handsFree {
+                HotkeyRecorderField(
+                    initialDraft: Optional(HotkeyEngine.Combo(
+                        keyCode: settings.handsFreeKeyCode,
+                        flags: 0
+                    )),
+                    prompt: "MODIFIER DRÜCKEN",
+                    guidance: [
+                        "Nur Modifier-Tasten. Esc bricht ab.",
+                        "Normale Tasten sind gesperrt, damit der Doppeltipp kein Zeichen eingibt.",
+                    ],
+                    symbols: { draft in
+                        draft.map { [VirtualKey.keySymbol(Int($0.keyCode))] } ?? []
+                    },
+                    canCommit: { draft in
+                        draft.map { VirtualKey.isHandsFreeModifier($0.keyCode) } ?? false
+                    },
+                    policy: { draft, event in
+                        switch event {
+                        case .cancel:
+                            return .cancel
+                        case .modifier(let combo):
+                            if VirtualKey.isHandsFreeModifier(combo.keyCode) { draft = combo }
+                        case .modifierReleased:
+                            break
+                        case .key:
+                            draft = nil
+                        }
+                        return .keep
+                    },
+                    onCancel: { activeRecorder = nil },
+                    onCommit: { draft in
+                        guard let combo = draft,
+                              VirtualKey.isHandsFreeModifier(combo.keyCode) else { return }
+                        app.applyHandsFreeKeyCode(combo.keyCode)
+                        activeRecorder = nil
+                    }
+                )
                     .padding(.horizontal, 10)
                     .padding(.bottom, 12)
             }
         }
-    }
-
-    private var handsFreeRecorderField: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("MODIFIER DRÜCKEN")
-                .kicker(Theme.Palette.stempelrot, tracking: 1.6)
-
-            HStack(spacing: 6) {
-                if let keyCode = draftHandsFreeKeyCode {
-                    KeyBadge(VirtualKey.keySymbol(Int(keyCode)))
-                        .font(Theme.Typo.keycap(14))
-                }
-                BlinkingCursor()
-            }
-
-            Text("Nur Modifier-Tasten. Esc bricht ab.")
-                .font(Theme.Typo.secondary(size: 11))
-                .foregroundColor(Theme.Palette.text3)
-            Text("Normale Tasten sind gesperrt, damit der Doppeltipp kein Zeichen eingibt.")
-                .font(Theme.Typo.secondary(size: 11))
-                .foregroundColor(Theme.Palette.text3)
-
-            HStack {
-                Spacer()
-                Button("Abbrechen") { cancelHandsFreeKeyRecording() }
-                    .buttonStyle(GhostButtonStyle())
-                Button("Übernehmen") { commitHandsFreeKeyRecording() }
-                    .buttonStyle(AccentButtonStyle())
-                    .disabled(draftHandsFreeKeyCode == nil)
-            }
-        }
-        .padding(14)
-        .background(
-            RoundedRectangle(cornerRadius: 8)
-                .fill(Theme.Palette.recorderFlaeche)
-                .overlay(RoundedRectangle(cornerRadius: 8)
-                    .strokeBorder(Theme.Palette.stempelrot,
-                                  style: StrokeStyle(lineWidth: 1, dash: [4, 3])))
-        )
-    }
-
-    @State private var handsFreeCaptureMonitor: Any?
-    @State private var handsFreeCaptureTarget: HotkeyCaptureMonitorTarget?
-
-    private func beginHandsFreeKeyRecording() {
-        guard handsFreeCaptureMonitor == nil else { return }
-        cancelHotkeyRecording()
-        recordingHandsFreeKey = true
-        draftHandsFreeKeyCode = settings.handsFreeKeyCode
-        let target = HotkeyCaptureMonitorTarget { action in
-            switch action {
-            case .cancel:
-                cancelHandsFreeKeyRecording()
-            case .modifier(let combo):
-                guard VirtualKey.isHandsFreeModifier(combo.keyCode) else { return }
-                draftHandsFreeKeyCode = combo.keyCode
-            case .modifierReleased:
-                break
-            case .key:
-                draftHandsFreeKeyCode = nil
-            }
-        }
-        handsFreeCaptureTarget = target
-        handsFreeCaptureMonitor = NSEvent.addLocalMonitorForEvents(
-            matching: [.keyDown, .flagsChanged]
-        ) { [weak target] event in
-            guard let action = HotkeyCaptureEvent.parse(event) else { return event }
-            target?.send(action)
-            return nil
-        }
-    }
-
-    private func cancelHandsFreeKeyRecording() {
-        if let monitor = handsFreeCaptureMonitor { NSEvent.removeMonitor(monitor) }
-        handsFreeCaptureMonitor = nil
-        handsFreeCaptureTarget = nil
-        recordingHandsFreeKey = false
-        draftHandsFreeKeyCode = nil
-    }
-
-    private func commitHandsFreeKeyRecording() {
-        guard let keyCode = draftHandsFreeKeyCode,
-              VirtualKey.isHandsFreeModifier(keyCode) else { return }
-        app.applyHandsFreeKeyCode(keyCode)
-        cancelHandsFreeKeyRecording()
     }
 
     private var shortcutActionsRow: some View {
@@ -376,40 +268,6 @@ struct SettingsWindowView: View {
             .pickerStyle(.segmented)
             .labelsHidden()
             .frame(width: 240)
-        }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 13)
-    }
-
-    /// Erteilte Berechtigung: Badge „ERTEILT ✓" mit grünem Rand.
-    private func permissionBadgeRow(title: String, granted: Bool) -> some View {
-        HStack {
-            Text(title)
-                .font(Theme.Typo.zeilenTitel())
-                .foregroundColor(Theme.Palette.ink)
-            Spacer()
-            if granted {
-                Text("ERTEILT ✓")
-                    .font(Theme.Typo.kicker(size: 10))
-                    .tracking(0.8)
-                    .foregroundColor(Theme.Palette.successText)
-                    .padding(.horizontal, 9)
-                    .padding(.vertical, 5)
-                    .overlay(RoundedRectangle(cornerRadius: 5)
-                        .strokeBorder(Theme.Palette.archivgruen, lineWidth: Theme.Metrics.hairline))
-            } else {
-                Button("FREIGEBEN") {
-                    Task { @MainActor in app.requestMissingPermissions() }
-                }
-                .font(Theme.Typo.kicker(size: 10.5))
-                .tracking(0.8)
-                .foregroundColor(Theme.Palette.papier)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 6)
-                .background(RoundedRectangle(cornerRadius: Theme.Metrics.radiusControl)
-                    .fill(Theme.Palette.stempelrot))
-                .buttonStyle(.plain)
-            }
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 13)
@@ -497,6 +355,7 @@ struct SettingsWindowView: View {
                                       lineWidth: Theme.Metrics.hairline)))
             }
             .buttonStyle(.plain)
+            .accessibilityLabel("Mikrofon auswählen")
             .popover(isPresented: $micPopoverOpen, arrowEdge: .bottom) {
                 MicPickerPopover(selection: Binding(
                     get: { settings.preferredMicUID },
@@ -843,6 +702,120 @@ struct SettingsWindowView: View {
         case .warning:
             Theme.Palette.warning
         }
+    }
+}
+
+private enum HotkeyRecorderPolicyResult {
+    case keep
+    case cancel
+}
+
+/// Gemeinsames Aufnahmefeld; nur Ereignis-Policy und Commit unterscheiden die Kürzelarten.
+private struct HotkeyRecorderField<Draft>: View {
+    @State private var draft: Draft
+    @State private var monitor: Any?
+    @State private var monitorTarget: HotkeyCaptureMonitorTarget?
+
+    let prompt: String
+    let guidance: [String]
+    let symbols: (Draft) -> [String]
+    let canCommit: (Draft) -> Bool
+    let policy: (inout Draft, HotkeyCaptureEvent) -> HotkeyRecorderPolicyResult
+    let onCancel: () -> Void
+    let onCommit: (Draft) -> Void
+
+    init(
+        initialDraft: Draft,
+        prompt: String,
+        guidance: [String],
+        symbols: @escaping (Draft) -> [String],
+        canCommit: @escaping (Draft) -> Bool,
+        policy: @escaping (inout Draft, HotkeyCaptureEvent) -> HotkeyRecorderPolicyResult,
+        onCancel: @escaping () -> Void,
+        onCommit: @escaping (Draft) -> Void
+    ) {
+        _draft = State(initialValue: initialDraft)
+        self.prompt = prompt
+        self.guidance = guidance
+        self.symbols = symbols
+        self.canCommit = canCommit
+        self.policy = policy
+        self.onCancel = onCancel
+        self.onCommit = onCommit
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(prompt)
+                .kicker(Theme.Palette.stempelrot, tracking: 1.6)
+
+            HStack(spacing: 6) {
+                ForEach(symbols(draft), id: \.self) { symbol in
+                    KeyBadge(symbol)
+                        .font(Theme.Typo.keycap(14))
+                }
+                BlinkingCursor()
+            }
+
+            ForEach(guidance, id: \.self) { line in
+                Text(line)
+                    .font(Theme.Typo.secondary(size: 11))
+                    .foregroundColor(Theme.Palette.text3)
+            }
+
+            HStack {
+                Spacer()
+                Button("Abbrechen") { cancel() }
+                    .buttonStyle(GhostButtonStyle())
+                Button("Übernehmen") { commit() }
+                    .buttonStyle(AccentButtonStyle())
+                    .disabled(!canCommit(draft))
+            }
+        }
+        .padding(14)
+        .background(
+            RoundedRectangle(cornerRadius: 8)
+                .fill(Theme.Palette.recorderFlaeche)
+                .overlay(RoundedRectangle(cornerRadius: 8)
+                    .strokeBorder(Theme.Palette.stempelrot,
+                                  style: StrokeStyle(lineWidth: 1, dash: [4, 3])))
+        )
+        .onAppear { installMonitor() }
+        .onDisappear { removeMonitor() }
+    }
+
+    private func installMonitor() {
+        guard monitor == nil else { return }
+        let target = HotkeyCaptureMonitorTarget { event in
+            if policy(&draft, event) == .cancel {
+                cancel()
+            }
+        }
+        monitorTarget = target
+        monitor = NSEvent.addLocalMonitorForEvents(
+            matching: [.keyDown, .flagsChanged]
+        ) { [weak target] event in
+            guard let action = HotkeyCaptureEvent.parse(event) else { return event }
+            target?.send(action)
+            return nil
+        }
+    }
+
+    private func removeMonitor() {
+        if let monitor { NSEvent.removeMonitor(monitor) }
+        monitor = nil
+        monitorTarget = nil
+    }
+
+    private func cancel() {
+        removeMonitor()
+        onCancel()
+    }
+
+    private func commit() {
+        guard canCommit(draft) else { return }
+        removeMonitor()
+        onCommit(draft)
     }
 }
 

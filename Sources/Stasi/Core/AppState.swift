@@ -97,6 +97,10 @@ final class AppState {
         case targetOrFocusChanged
         case injectionFailed
     }
+    private enum InjectionResultContext {
+        case completedDictation
+        case insertLast
+    }
     private var didPresentUnreadableHistory = false
     private(set) var recordStart: Date?
     private let now: @MainActor () -> Date
@@ -1104,20 +1108,11 @@ final class AppState {
             try? await Task.sleep(nanoseconds: 100_000_000)
             await MainActor.run { [weak self] in
                 guard let self, self.activeInjectionID == injectionID else { return }
-                switch result {
-                case .injected:
-                    break
-                case .injectionFailed:
-                    self.onToast?(
-                        "Einfügen in \(targetApplicationSnapshot.localizedName) ist fehlgeschlagen. Der vollständige Text bleibt in Verlauf und Zwischenablage.",
-                        false
-                    )
-                case .targetOrFocusChanged:
-                    self.onToast?(
-                        "Nicht in \(targetApplicationSnapshot.localizedName) eingefügt: Ziel-App oder Textfokus hat sich geändert. Der Text liegt in der Zwischenablage.",
-                        false
-                    )
-                }
+                self.presentInjectionResult(
+                    result,
+                    target: targetApplicationSnapshot,
+                    context: .completedDictation
+                )
                 self.resetSessionPresentationToIdle()
             }
         }
@@ -1147,6 +1142,27 @@ final class AppState {
         return await injectText(text, capturedTarget.processIdentifier)
             ? .injected
             : .injectionFailed
+    }
+
+    private func presentInjectionResult(
+        _ result: InjectionGateResult,
+        target: TargetApplication,
+        context: InjectionResultContext
+    ) {
+        switch result {
+        case .injected:
+            break
+        case .injectionFailed:
+            let suffix = context == .completedDictation
+                ? "Der vollständige Text bleibt in Verlauf und Zwischenablage."
+                : "Der Text bleibt in der Zwischenablage."
+            onToast?("Einfügen in \(target.localizedName) ist fehlgeschlagen. \(suffix)", false)
+        case .targetOrFocusChanged:
+            onToast?(
+                "Nicht in \(target.localizedName) eingefügt: Ziel-App oder Textfokus hat sich geändert. Der Text liegt in der Zwischenablage.",
+                false
+            )
+        }
     }
 
     private func teardown(_ session: DictationSession) async {
@@ -1193,6 +1209,9 @@ final class AppState {
         let key = "\(language):\(word.lowercased())"
         if let cached = knownWordCache[key] { return cached }
         let known = spellChecker(word, language)
+        if knownWordCache.count >= 5_000 {
+            knownWordCache.removeAll(keepingCapacity: true)
+        }
         knownWordCache[key] = known
         return known
     }
@@ -1209,6 +1228,7 @@ final class AppState {
     }
 
     private func insertLast() {
+        guard phase == .idle else { return }
         guard let record = history.records.first else { return }
         let text = record.correctedText
         copy(record)
@@ -1229,20 +1249,7 @@ final class AppState {
             )
             await MainActor.run { [weak self] in
                 guard let self else { return }
-                switch result {
-                case .injected:
-                    break
-                case .injectionFailed:
-                    self.onToast?(
-                        "Einfügen in \(capturedTarget.localizedName) ist fehlgeschlagen. Der Text bleibt in der Zwischenablage.",
-                        false
-                    )
-                case .targetOrFocusChanged:
-                    self.onToast?(
-                        "Nicht in \(capturedTarget.localizedName) eingefügt: Ziel-App oder Textfokus hat sich geändert. Der Text liegt in der Zwischenablage.",
-                        false
-                    )
-                }
+                self.presentInjectionResult(result, target: capturedTarget, context: .insertLast)
             }
         }
     }

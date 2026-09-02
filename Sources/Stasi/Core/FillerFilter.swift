@@ -22,7 +22,6 @@ enum FillerFilter {
     private static let enDiscourseRules = makeDiscourseRules(
         PolishLocale.en.discourseFillers
     )
-    private static let whitespaceExpression = try! NSRegularExpression(pattern: "\\s+")
 
     struct Edit: Equatable, Sendable {
         let removed: String
@@ -64,7 +63,7 @@ enum FillerFilter {
         for (range, replacement, _, _) in replacements.reversed() {
             output.replaceSubrange(range, with: replacement)
         }
-        return Result(text: compactWhitespace(output),
+        return Result(text: TextNormalizer.collapseWhitespace(output),
                       removedWords: replacements.reduce(0) { $0 + $1.2 },
                       edits: replacements.map { Edit(removed: $0.3, kept: $0.1) })
     }
@@ -106,7 +105,7 @@ enum FillerFilter {
         for item in merged.reversed() {
             output.replaceSubrange(item.range, with: item.replacement)
         }
-        return Result(text: compactWhitespace(output),
+        return Result(text: TextNormalizer.collapseWhitespace(output),
                       removedWords: merged.reduce(0) { $0 + $1.words },
                       edits: merged.flatMap { item in
                           item.phrases.map { Edit(removed: $0, kept: nil) }
@@ -148,17 +147,7 @@ enum FillerFilter {
         for range in ranges.reversed() {
             output.replaceSubrange(range, with: "")
         }
-        return compactWhitespace(output)
-    }
-
-    private static func compactWhitespace(_ input: String) -> String {
-        let matches = matches(whitespaceExpression, in: input)
-            .compactMap { Range($0.range, in: input) }
-        var output = input
-        for range in matches.reversed() {
-            output.replaceSubrange(range, with: " ")
-        }
-        return output.trimmingCharacters(in: .whitespacesAndNewlines)
+        return TextNormalizer.collapseWhitespace(output)
     }
 
     private static func makeHesitationExpression(_ values: Set<String>) -> NSRegularExpression {

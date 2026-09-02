@@ -49,7 +49,7 @@ final class DictionaryStore {
         do {
             let data = try Data(contentsOf: fileURL)
             let file = try JSONDecoder().decode(DictionaryFile.self, from: data)
-            entries = file.entries.sorted { $0.matchSource.count > $1.matchSource.count }
+            entries = file.entries.sorted(by: DictionaryEntryOrdering.precedes)
             ignoredLearned = stableUnique(file.ignoredLearned ?? [])
             state = .loaded
             lastError = nil
@@ -181,11 +181,7 @@ final class DictionaryStore {
 
     /// Längste Quellen zuerst (Match-Priorität).
     private func resort() {
-        entries.sort {
-            ($0.type == .correction ? 1 : 0, $0.matchSource) >
-            ($1.type == .correction ? 1 : 0, $1.matchSource)
-        }
-        entries.sort { $0.matchSource.count > $1.matchSource.count }
+        entries.sort(by: DictionaryEntryOrdering.precedes)
     }
 
     private func stableUnique(_ values: [String]) -> [String] {
@@ -262,5 +258,19 @@ final class DictionaryStore {
 
     deinit {
         watcher?.cancel()
+    }
+}
+
+enum DictionaryEntryOrdering {
+    static func precedes(_ lhs: DictionaryEntry, _ rhs: DictionaryEntry) -> Bool {
+        let lhsSource = lhs.matchSource.precomposedStringWithCanonicalMapping
+        let rhsSource = rhs.matchSource.precomposedStringWithCanonicalMapping
+        if lhsSource.count != rhsSource.count { return lhsSource.count > rhsSource.count }
+
+        let lhsIsCorrection = lhs.type == .correction
+        let rhsIsCorrection = rhs.type == .correction
+        if lhsIsCorrection != rhsIsCorrection { return lhsIsCorrection }
+        if lhsSource != rhsSource { return lhsSource < rhsSource }
+        return lhs.id.uuidString < rhs.id.uuidString
     }
 }

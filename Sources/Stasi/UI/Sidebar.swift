@@ -297,6 +297,7 @@ struct SidebarView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .accessibilityLabel(section.label)
         .onHover { hovering in
             hoveredTile = hovering ? section : nil
         }

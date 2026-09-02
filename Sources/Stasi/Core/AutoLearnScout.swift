@@ -94,7 +94,7 @@ enum AutoLearnScout {
             .prefix(max(0, options.historyLimit))
         var result: [DictionaryEntry] = []
         for candidate in possible {
-            let expression = wholeWordExpression(for: candidate.spelling)
+            guard let expression = wholeWordExpression(for: candidate.spelling) else { continue }
             var protocolCount = 1
             var spellings: [(value: String, count: Int, firstSeen: Int)] = []
             collectSpellings(in: newRecord.correctedText,
@@ -166,9 +166,9 @@ enum AutoLearnScout {
         }
     }
 
-    private static func wholeWordExpression(for word: String) -> NSRegularExpression {
+    private static func wholeWordExpression(for word: String) -> NSRegularExpression? {
         let escaped = NSRegularExpression.escapedPattern(for: word)
-        return try! NSRegularExpression(
+        return try? NSRegularExpression(
             pattern: "(?<![\\p{L}\\p{M}\\p{N}])\(escaped)(?![\\p{L}\\p{M}\\p{N}])",
             options: [.caseInsensitive]
         )

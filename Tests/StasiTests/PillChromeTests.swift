@@ -8,29 +8,18 @@ import XCTest
 
 final class PillChromeTests: XCTestCase {
 
-    func testPushToTalkShowsDiscardAndCommit() {
-        XCTAssertTrue(PillChrome.showsButtons(for: .pushToTalk))
-    }
-
-    func testLockedModeAlsoShowsDiscardAndCommit() {
-        // Wispr-Stil: Auch hands-free (gelockt) lässt sich per Pill
-        // bestätigen (✓) oder verwerfen (✕).
-        XCTAssertTrue(PillChrome.showsButtons(for: .handsFree))
-    }
-
-    func testPillWidthIdenticalForBothSources() {
-        XCTAssertEqual(PillChrome.pillWidth(for: .pushToTalk), 140)
-        XCTAssertEqual(PillChrome.pillWidth(for: .handsFree), 140)
+    func testPillUsesCompactBaseWidth() {
+        XCTAssertEqual(PillChrome.pillWidth(), 140)
         XCTAssertEqual(PillChrome.pillHeight(hasPartialText: false), 24)
     }
 
     func testPillGrowsForLiveTranscript() {
-        XCTAssertEqual(PillChrome.pillWidth(for: .pushToTalk, hasPartialText: true), 320)
+        XCTAssertEqual(PillChrome.pillWidth(hasPartialText: true), 320)
         XCTAssertEqual(PillChrome.pillHeight(hasPartialText: true), 52)
     }
 
     func testModelLoadingWidthIsCompact() {
-        XCTAssertEqual(PillChrome.pillWidth(for: .pushToTalk, modelReady: false), 190)
+        XCTAssertEqual(PillChrome.pillWidth(modelReady: false), 190)
     }
 
     func testShortPushToTalkStaysHidden() {
@@ -171,10 +160,10 @@ final class PillChromeTests: XCTestCase {
         settings.accentHex = 0x2D6A4F
         let view = RecordingPillView(onDiscard: {}, onCommit: {})
 
-        view.applyChrome(for: .pushToTalk)
+        view.applyChrome()
         let first = try XCTUnwrap(view.layer?.backgroundColor)
         settings.accentHex = 0x315EA8
-        view.applyChrome(for: .pushToTalk)
+        view.applyChrome()
         let second = try XCTUnwrap(view.layer?.backgroundColor)
         let expected = NSColor(Theme.Palette.ink).cgColor
 

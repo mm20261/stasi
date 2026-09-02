@@ -1055,6 +1055,42 @@ final class DictationSessionTests: XCTestCase {
         XCTAssertEqual(injector.targetPIDs, [slack.processIdentifier])
     }
 
+    func testInsertLastIsBlockedDuringRecordingButCopyLastStillWorks() async {
+        let history = FakeHistoryStore()
+        history.records = [TranscriptionRecord(
+            date: Date(),
+            localeID: "de_DE",
+            rawText: "Alter Text",
+            correctedText: "Alter Text",
+            corrections: []
+        )]
+        let audio = FakeAudioCapture()
+        let injector = TextInjectorSpy()
+        let clipboard = ClipboardSpy()
+        let app = makeApp(
+            audio: audio,
+            engines: [FakeSpeechEngine()],
+            history: history,
+            isTextFieldEditable: { true },
+            injectText: { text, pid in injector.inject(text, targetPID: pid) },
+            copyToClipboard: { clipboard.copy($0) }
+        )
+
+        app.startDictation()
+        await waitUntil { app.phase == .recording }
+        app.enqueue(.copyLast)
+        await waitUntil { clipboard.strings == ["Alter Text"] }
+
+        app.enqueue(.insertLast)
+        try? await Task.sleep(nanoseconds: 50_000_000)
+
+        XCTAssertEqual(app.phase, .recording)
+        XCTAssertEqual(clipboard.strings, ["Alter Text"])
+        XCTAssertEqual(injector.callCount, 0)
+        app.requestDiscard()
+        await waitUntil { app.phase == .idle }
+    }
+
     func testInsertLastFocusSwitchBetweenEditabilityAndFinalGateSkipsInjection() async {
         let slack = makeTargetApplication(named: "Slack", processIdentifier: 42)
         let notes = makeTargetApplication(named: "Notes", processIdentifier: 84)
