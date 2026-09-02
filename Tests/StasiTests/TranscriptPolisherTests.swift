@@ -129,6 +129,38 @@ final class TranscriptPolisherTests: XCTestCase {
         XCTAssertEqual(outcome.text, "Hallo welt")
     }
 
+    func testNormalisiertNFDUndKollabiertWiederholteGruesse() {
+        let outcome = TranscriptPolisher.polishSync(
+            "Gru\u{0308}ße Gru\u{0308}ße",
+            locale: Locale(identifier: "de_DE"),
+            entries: [],
+            level: .standard
+        )
+
+        XCTAssertEqual(outcome.text, "Grüße")
+        XCTAssertEqual(outcome.text, outcome.text.precomposedStringWithCanonicalMapping)
+    }
+
+    func testNFDWoerterbucheintragTrifftNFCKlartext() {
+        let entries = [
+            DictionaryEntry(
+                type: .correction,
+                from: "cafe\u{0301}",
+                to: "Cafe\u{0301}Plus"
+            ),
+        ]
+        let outcome = TranscriptPolisher.polishSync(
+            "Ein café bitte",
+            locale: Locale(identifier: "de_DE"),
+            entries: entries,
+            level: .standard
+        )
+
+        XCTAssertEqual(outcome.text, "Ein CaféPlus bitte")
+        XCTAssertEqual(outcome.corrections.count, 1)
+        XCTAssertEqual(outcome.corrections.first?.target, "CaféPlus")
+    }
+
     func testOtherLocaleOnlyTidiesAndCorrects() {
         let outcome = TranscriptPolisher.polishSync(
             "  um cloud code  ", locale: Locale(identifier: "fr_FR"),

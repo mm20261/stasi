@@ -8,10 +8,22 @@ final class FillerFilterTests: XCTestCase {
         XCTAssertEqual(result.removedWords, 1)
     }
 
-    func testRemovesAllListedGermanHesitations() {
-        let result = FillerFilter.removeHesitations("äh ähh eh öhm hm mhm fertig", locale: .de)
+    func testEntferntAlleVerbleibendenDeutschenZoegerlaute() {
+        let result = FillerFilter.removeHesitations("äh ähh öhm hm fertig", locale: .de)
         XCTAssertEqual(result.text, "fertig")
-        XCTAssertEqual(result.removedWords, 6)
+        XCTAssertEqual(result.removedWords, 4)
+    }
+
+    func testBewahrtEhAlsDeutschesAdverb() {
+        let input = "Das ist eh klar"
+
+        XCTAssertEqual(FillerFilter.removeHesitations(input, locale: .de).text, input)
+    }
+
+    func testBewahrtMhmAlsBestaetigung() {
+        let input = "Mhm, genau."
+
+        XCTAssertEqual(FillerFilter.removeHesitations(input, locale: .de).text, input)
     }
 
     func testRemovesAllListedEnglishHesitations() {
@@ -76,13 +88,24 @@ final class FillerFilterTests: XCTestCase {
                        "so so far")
     }
 
+    func testBewahrtDoppeltesDasImDeutschen() {
+        let input = "Sie sagte, dass das das Problem ist."
+
+        XCTAssertEqual(FillerFilter.collapseStutters(input, locale: .de).text, input)
+    }
+
+    func testBewahrtDoppeltesDieImDeutschen() {
+        XCTAssertEqual(FillerFilter.collapseStutters("die die bleiben", locale: .de).text,
+                       "die die bleiben")
+    }
+
     func testHyphenatedWordsAreNotStutters() {
         XCTAssertEqual(FillerFilter.collapseStutters("test-test bleibt", locale: .de).text,
                        "test-test bleibt")
     }
 
-    func testRemovesGermanDiscourseFillerAtSentenceStart() {
-        let result = FillerFilter.removeDiscourseFillers("Also, wir gehen", locale: .de)
+    func testEntferntQuasiAmSatzanfang() {
+        let result = FillerFilter.removeDiscourseFillers("Quasi, wir gehen", locale: .de)
         XCTAssertEqual(result.text, "wir gehen")
         XCTAssertEqual(result.removedWords, 1)
     }
@@ -118,15 +141,43 @@ final class FillerFilterTests: XCTestCase {
                        "So far so good")
     }
 
-    func testActuallyAtSentenceStartIsDiscourseFiller() {
-        XCTAssertEqual(FillerFilter.removeDiscourseFillers("Actually, we agree", locale: .en).text,
+    func testEntferntLikeAmSatzanfang() {
+        XCTAssertEqual(FillerFilter.removeDiscourseFillers("Like, we agree", locale: .en).text,
                        "we agree")
     }
 
-    func testAdjacentDiscourseFillersAreRemovedWithoutOverlap() {
+    func testBewahrtActuallyAmSatzanfang() {
+        let input = "Actually, I disagree."
+
+        XCTAssertEqual(FillerFilter.removeDiscourseFillers(input, locale: .en).text, input)
+    }
+
+    func testBewahrtAlsoAmSatzanfang() {
+        let input = "Also, daraus folgt B."
+
+        XCTAssertEqual(FillerFilter.removeDiscourseFillers(input, locale: .de).text, input)
+    }
+
+    func testBewahrtSoAmEnglischenSatzanfang() {
+        let input = "So, we continue."
+
+        XCTAssertEqual(FillerFilter.removeDiscourseFillers(input, locale: .en).text, input)
+    }
+
+    func testEntferntAlsoZwischenKommas() {
+        XCTAssertEqual(
+            FillerFilter.removeDiscourseFillers(
+                "Ich habe das, also, gestern gemacht",
+                locale: .de
+            ).text,
+            "Ich habe das gestern gemacht"
+        )
+    }
+
+    func testBewahrtAlsoUndEntferntDanebenQuasi() {
         let result = FillerFilter.removeDiscourseFillers("Also, quasi, gehen wir", locale: .de)
-        XCTAssertEqual(result.text, "gehen wir")
-        XCTAssertEqual(result.removedWords, 2)
+        XCTAssertEqual(result.text, "Also gehen wir")
+        XCTAssertEqual(result.removedWords, 1)
     }
 
     func testDoYouKnowItRemains() {

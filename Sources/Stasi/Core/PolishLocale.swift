@@ -19,7 +19,7 @@ enum PolishLocale: String, Codable, Sendable {
 
     var hesitations: Set<String> {
         switch self {
-        case .de: ["ähm", "äh", "ähh", "eh", "öhm", "hm", "mhm"]
+        case .de: ["ähm", "äh", "ähh", "öhm", "hm"]
         case .en: ["um", "uh", "erm", "hm"]
         case .other: []
         }
@@ -29,6 +29,22 @@ enum PolishLocale: String, Codable, Sendable {
         switch self {
         case .de: [["also"], ["quasi"], ["sozusagen"], ["halt"]]
         case .en: [["so"], ["like"], ["you", "know"], ["basically"], ["actually"]]
+        case .other: []
+        }
+    }
+
+    var stutterExceptions: Set<String> {
+        switch self {
+        case .de: ["das", "die", "der", "sie", "wie", "so", "nur", "ganz"]
+        case .en: ["had", "that", "very", "so"]
+        case .other: []
+        }
+    }
+
+    var sentenceInitialProtectedFillers: Set<String> {
+        switch self {
+        case .de: ["also"]
+        case .en: ["actually", "so"]
         case .other: []
         }
     }

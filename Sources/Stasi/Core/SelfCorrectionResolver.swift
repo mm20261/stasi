@@ -283,6 +283,14 @@ enum SelfCorrectionResolver {
                     locale: locale
                 ) else { continue }
 
+                let leftAttempt = leftStart..<rightStart
+                guard !hasProtectedDifference(
+                    tokens: tokens,
+                    left: leftAttempt,
+                    right: rightAttempt,
+                    locale: locale
+                ) else { continue }
+
                 let prefix = commonPrefixLength(
                     tokens: tokens,
                     leftStart: leftStart,
@@ -707,15 +715,12 @@ enum SelfCorrectionResolver {
                 guard after.count > leftCount else { continue }
             } else {
                 guard after.count > prefix else { continue }
-                let comparedRemainder = min(leftCount, after.count)
-                let hasProtectedDifference = (prefix..<comparedRemainder).contains { offset in
-                    let left = tokens[leftStart + offset].normalized
-                    let right = tokens[after.lowerBound + offset].normalized
-                    return left != right
-                        && (locale.protectedFrameWords.contains(left)
-                            || locale.protectedFrameWords.contains(right))
-                }
-                guard !hasProtectedDifference else { continue }
+                guard !hasProtectedDifference(
+                    tokens: tokens,
+                    left: leftStart..<before.upperBound,
+                    right: after,
+                    locale: locale
+                ) else { continue }
             }
 
             let candidate = AttemptMatch(
@@ -736,6 +741,22 @@ enum SelfCorrectionResolver {
         }
 
         return best
+    }
+
+    private static func hasProtectedDifference(
+        tokens: [Token],
+        left: Range<Int>,
+        right: Range<Int>,
+        locale: PolishLocale
+    ) -> Bool {
+        let comparable = min(left.count, right.count)
+        return (0..<comparable).contains { offset in
+            let leftWord = tokens[left.lowerBound + offset].normalized
+            let rightWord = tokens[right.lowerBound + offset].normalized
+            return leftWord != rightWord
+                && (locale.protectedFrameWords.contains(leftWord)
+                    || locale.protectedFrameWords.contains(rightWord))
+        }
     }
 
     private static func matchingFrame(tokens: [Token], before: Range<Int>,

@@ -284,6 +284,12 @@ final class SelfCorrectionResolverTests: XCTestCase {
         XCTAssertEqual(result.edits.first?.kept, "Hallo, mein Name ist Philipp")
     }
 
+    func testBewahrtMarkerloseWiederholungMitNegationsunterschied() {
+        let input = "Wir liefern das Paket nicht am Montag, wir liefern das Paket am Dienstag."
+
+        XCTAssertEqual(SelfCorrectionResolver.resolve(input, locale: .de).text, input)
+    }
+
     func testMarkerlessExactPrefixRequiresIncompleteFirstAttempt() {
         XCTAssertEqual(
             resolve("Hallo, mein Name ist, Hallo, mein Name ist Philipp"),

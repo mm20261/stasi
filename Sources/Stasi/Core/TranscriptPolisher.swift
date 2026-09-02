@@ -129,8 +129,9 @@ enum TranscriptPolisher {
 
     static func polishSync(_ rawText: String, locale: Locale,
                            entries: [DictionaryEntry], level: PolishLevel) -> PolishOutcome {
+        let normalizedRaw = rawText.precomposedStringWithCanonicalMapping
         guard level == .standard else {
-            let trimmedRaw = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
+            let trimmedRaw = normalizedRaw.trimmingCharacters(in: .whitespacesAndNewlines)
             let corrected = CorrectionEngine.correct(trimmedRaw, entries: entries)
             return PolishOutcome(
                 text: corrected.text.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -140,7 +141,7 @@ enum TranscriptPolisher {
         }
 
         let polishLocale = PolishLocale(locale: locale)
-        var text = rawText
+        var text = normalizedRaw
         var changes: [PolishChange] = []
 
         let hesitation = FillerFilter.removeHesitations(text, locale: polishLocale)

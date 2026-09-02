@@ -31,17 +31,16 @@ enum FillerFilter {
 
     static func collapseStutters(_ input: String, locale: PolishLocale) -> Result {
         guard let regex = try? NSRegularExpression(
-            pattern: "(?<![\\p{L}\\p{N}\\p{M}\\-_])(\\p{L}{2,12})(?:[ \\t]+\\1){1,3}(?![\\p{L}\\p{N}\\p{M}\\-_])",
+            pattern: "(?<![\\p{L}\\p{N}\\p{M}\\-_])((?:\\p{L}\\p{M}*){2,12})(?:[ \\t]+\\1){1,3}(?![\\p{L}\\p{N}\\p{M}\\-_])",
             options: [.caseInsensitive]
         ) else { return Result(text: input, removedWords: 0, edits: []) }
 
-        let englishExceptions: Set<String> = ["had", "that", "very", "so"]
         let replacements = matches(regex, in: input).compactMap {
             match -> (Range<String.Index>, String, Int, String)? in
             guard let range = Range(match.range, in: input),
                   let wordRange = Range(match.range(at: 1), in: input) else { return nil }
             let word = String(input[wordRange])
-            if locale == .en && englishExceptions.contains(word.lowercased()) { return nil }
+            if locale.stutterExceptions.contains(word.lowercased()) { return nil }
             let tokenCount = input[range].split(whereSeparator: { $0 == " " || $0 == "\t" }).count
             return (range, word, max(0, tokenCount - 1), String(input[range]))
         }
@@ -69,7 +68,12 @@ enum FillerFilter {
 
             for match in matches(regex, in: input) {
                 guard let phraseRange = Range(match.range, in: input),
-                      let context = fillerContext(for: phraseRange, in: input) else { continue }
+                      let context = fillerContext(
+                        for: phraseRange,
+                        filler: phrase,
+                        locale: locale,
+                        in: input
+                      ) else { continue }
                 removals.append((context.range, context.replacement, phrase.count,
                                  [String(input[phraseRange])]))
             }
@@ -142,7 +146,12 @@ enum FillerFilter {
         return output.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    private static func fillerContext(for phrase: Range<String.Index>, in input: String)
+    private static func fillerContext(
+        for phrase: Range<String.Index>,
+        filler: [String],
+        locale: PolishLocale,
+        in input: String
+    )
         -> (range: Range<String.Index>, replacement: String)? {
         var before = phrase.lowerBound
         while before > input.startIndex {
@@ -167,6 +176,9 @@ enum FillerFilter {
         let startsSentence = leftCharacter == nil || leftCharacter == "."
             || leftCharacter == "!" || leftCharacter == "?"
         if startsSentence {
+            guard filler.count != 1
+                    || !locale.sentenceInitialProtectedFillers.contains(filler[0].lowercased())
+            else { return nil }
             return (phrase.lowerBound..<afterComma, "")
         }
 

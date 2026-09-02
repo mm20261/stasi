@@ -26,10 +26,16 @@ enum CorrectionEngine {
         var applied: [AppliedCorrection] = []
 
         // Längste Quelle zuerst – spezifische Einträge gewinnen.
-        let sorted = entries.sorted { $0.matchSource.count > $1.matchSource.count }
+        let sorted = entries.map { entry in
+            (
+                entry: entry,
+                matchSource: entry.matchSource.precomposedStringWithCanonicalMapping,
+                replacementTarget: entry.replacementTarget.precomposedStringWithCanonicalMapping
+            )
+        }.sorted { $0.matchSource.count > $1.matchSource.count }
 
-        for entry in sorted where !entry.matchSource.isEmpty && entry.type != .learned {
-            guard let regex = regex(for: entry.matchSource) else { continue }
+        for item in sorted where !item.matchSource.isEmpty && item.entry.type != .learned {
+            guard let regex = regex(for: item.matchSource) else { continue }
             let range = NSRange(text.startIndex..., in: text)
 
             // ALLE Matches EINMAL sammeln, dann von hinten ersetzen.
@@ -42,17 +48,17 @@ enum CorrectionEngine {
             for match in matches.reversed() {
                 guard let r = Range(match.range(at: 0), in: text) else { continue }
                 let matched = String(text[r])
-                guard matched != entry.replacementTarget else { continue }
+                guard matched != item.replacementTarget else { continue }
                 matchedStrings.append(matched)
-                text.replaceSubrange(r, with: entry.replacementTarget)
+                text.replaceSubrange(r, with: item.replacementTarget)
             }
             matchedStrings.reverse()
             guard !matchedStrings.isEmpty else { continue }
 
             applied.append(AppliedCorrection(
-                entryID: entry.id,
-                pattern: entry.matchSource,
-                target: entry.replacementTarget,
+                entryID: item.entry.id,
+                pattern: item.matchSource,
+                target: item.replacementTarget,
                 matched: matchedStrings.joined(separator: ", ")
             ))
         }
