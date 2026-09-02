@@ -31,7 +31,7 @@ struct PolishBadge: View {
                                       lineWidth: Theme.Metrics.hairline))
             }
             .buttonStyle(.plain)
-            .accessibilityLabel("Details zur Nachbearbeitung anzeigen")
+            .accessibilityLabel(L10n.text("polish.details.showAccessibility"))
             .popover(isPresented: $showingDetails, arrowEdge: .bottom) {
                 PolishDetailsPopover(record: record)
             }
@@ -48,12 +48,12 @@ private struct PolishDetailsPopover: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("Nachbearbeitung")
+            Text(L10n.text("polish.title"))
                 .font(Theme.Typo.sectionTitle())
                 .foregroundColor(Theme.Palette.ink)
 
             if sections.isEmpty {
-                Text("Für dieses ältere Protokoll wurden keine Einzeldetails gespeichert.")
+                Text(L10n.text("polish.details.legacyEmpty"))
                     .font(Theme.Typo.secondary(size: 12))
                     .foregroundColor(Theme.Palette.text2)
             } else {
@@ -79,7 +79,7 @@ private struct PolishDetailsPopover: View {
 
             VStack(alignment: .leading, spacing: 7) {
                 HStack {
-                    Text("ROHTEXT")
+                    Text(L10n.text("rawText.title.uppercase"))
                         .font(Theme.Typo.kicker(size: 9.5))
                         .tracking(0.6)
                         .foregroundColor(Theme.Palette.text3)
@@ -88,12 +88,12 @@ private struct PolishDetailsPopover: View {
                         NSPasteboard.general.clearContents()
                         NSPasteboard.general.setString(record.rawText, forType: .string)
                     } label: {
-                        Label("Kopieren", systemImage: "doc.on.doc")
+                        Label(L10n.text("action.copy"), systemImage: "doc.on.doc")
                             .font(Theme.Typo.secondary(size: 11.5).weight(.medium))
                     }
                     .buttonStyle(.plain)
                     .foregroundColor(Theme.accent)
-                    .accessibilityLabel("Rohtext kopieren")
+                    .accessibilityLabel(L10n.text("rawText.copy"))
                 }
                 ScrollView {
                     Text(record.rawText)

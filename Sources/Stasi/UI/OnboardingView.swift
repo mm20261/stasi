@@ -81,14 +81,14 @@ struct OnboardingView: View {
     // Schritt 1 – Willkommen
     private var welcomeStep: some View {
         VStack(alignment: .leading, spacing: 0) {
-            Text("Guten Tag. Wir legen eine Akte für dich an.")
+            Text(L10n.text("onboarding.welcome.title"))
                 .font(Theme.Typo.onboardingTitle())
                 .tracking(-0.5)
                 .foregroundColor(Theme.Palette.ink)
                 .lineSpacing(2)
                 .fixedSize(horizontal: false, vertical: true)
                 .padding(.top, 34)
-            Text("Stasi diktiert on-device auf diesem Mac. Nichts verlässt das Gerät — kein Konto, keine Cloud, kein Mithören. Halte eine Taste gedrückt, warte den Startton ab, sprich und lass los: Der Text steht in dem Feld, in dem dein Cursor blinkt.")
+            Text(L10n.text("onboarding.welcome.body"))
                 .font(Theme.Typo.body())
                 .lineHeight()
                 .foregroundColor(Theme.Palette.text2)
@@ -98,7 +98,7 @@ struct OnboardingView: View {
                     model.next()
                     Task { microphoneGranted = await Permissions.requestMicrophone() }
                 } label: {
-                    Text("Akte anlegen")
+                    Text(L10n.text("onboarding.welcome.start"))
                         .font(.custom("Geist", size: 13).weight(.semibold))
                         .foregroundColor(Theme.Palette.papier)
                         .padding(.horizontal, 16)
@@ -107,7 +107,7 @@ struct OnboardingView: View {
                             .fill(Theme.Palette.stempelrot))
                 }
                 .buttonStyle(.plain)
-                Text("DAUERT 40 SEKUNDEN")
+                Text(L10n.text("onboarding.welcome.duration"))
                     .font(Theme.Typo.counter(9.5))
                     .tracking(1)
                     .textCase(.uppercase)
@@ -121,7 +121,7 @@ struct OnboardingView: View {
     // Schritt 2 – Befugnisse
     private var permissionsStep: some View {
         VStack(alignment: .leading, spacing: 0) {
-            Text("Zwei Freigaben, dann hören wir zu.")
+            Text(L10n.text("onboarding.permissions.title"))
                 .font(Theme.Typo.sectionTitle())
                 .tracking(-0.4)
                 .foregroundColor(Theme.Palette.ink)
@@ -129,13 +129,13 @@ struct OnboardingView: View {
 
             VStack(spacing: 10) {
                 permissionRow(
-                    title: "Bedienungshilfen",
-                    note: "Damit Stasi in andere Apps tippen darf.",
+                    title: L10n.text("permission.accessibility"),
+                    note: L10n.text("onboarding.permissions.accessibilityNote"),
                     granted: app.accessibilityGranted,
                     action: { Task { @MainActor in app.requestMissingPermissions() } })
                 permissionRow(
-                    title: "Mikrofon",
-                    note: "Für die Aufnahme – bleibt auf diesem Mac.",
+                    title: L10n.text("microphone.title"),
+                    note: L10n.text("onboarding.permissions.microphoneNote"),
                     granted: microphoneGranted,
                     action: {
                         Task { microphoneGranted = await Permissions.requestMicrophone() }
@@ -149,23 +149,23 @@ struct OnboardingView: View {
                           ? Theme.Palette.archivgruen : Theme.Palette.text3)
                     .frame(width: 7, height: 7)
                 Text(app.modelReady(for: settings.transcriptionLocale)
-                     ? "Sprachmodell bereit ✓"
-                     : "Sprachmodell wird vorbereitet…")
+                     ? L10n.text("onboarding.model.ready")
+                     : L10n.text("onboarding.model.preparing"))
                     .font(Theme.Typo.secondary(size: 11.5))
                     .foregroundColor(Theme.Palette.text2)
             }
             .padding(.top, 12)
 
             if showPermissionWarning {
-                Text("Ohne Mikrofon und Bedienungshilfen kann Stasi noch nicht diktieren und einfügen.")
+                Text(L10n.text("onboarding.permissions.warning"))
                     .font(Theme.Typo.note())
                     .foregroundColor(Theme.Palette.destructive)
                     .padding(.top, 12)
             }
 
-            navButtons(backTitle: "Zurück", backAction: { model.back() },
-                       secondaryTitle: "Später", secondaryAction: { model.next() },
-                       primaryTitle: "Weiter", primaryAction: { continueFromPermissions() },
+            navButtons(backTitle: L10n.text("action.back"), backAction: { model.back() },
+                       secondaryTitle: L10n.text("action.later"), secondaryAction: { model.next() },
+                       primaryTitle: L10n.text("action.continue"), primaryAction: { continueFromPermissions() },
                        primaryDisabled: false)
             Spacer()
         }
@@ -187,12 +187,12 @@ struct OnboardingView: View {
             }
             Spacer()
             if granted {
-                Text("ERTEILT ✓")
+                Text(L10n.text("permission.granted.uppercase"))
                     .font(Theme.Typo.kicker(size: 10))
                     .tracking(0.8)
                     .foregroundColor(Theme.Palette.successText)
             } else {
-                Button("FREIGEBEN", action: action)
+                Button(L10n.text("permission.allow.uppercase"), action: action)
                     .font(Theme.Typo.kicker(size: 10.5))
                     .tracking(0.8)
                     .foregroundColor(Theme.Palette.papier)
@@ -216,7 +216,7 @@ struct OnboardingView: View {
 
     private var hotkeyStep: some View {
         VStack(alignment: .leading, spacing: 0) {
-            Text("Welche Taste hält das Mikrofon offen?")
+            Text(L10n.text("onboarding.hotkey.title"))
                 .font(Theme.Typo.sectionTitle())
                 .tracking(-0.4)
                 .foregroundColor(Theme.Palette.ink)
@@ -228,12 +228,12 @@ struct OnboardingView: View {
                         KeyBadge(Self.hotkeyPreviewText(for: hotkeyCaptureState.draft))
                         BlinkingCursor()
                     }
-                    Text("Taste frei belegbar – Modifier plus Taste oder ein Modifier allein.")
+                    Text(L10n.text("onboarding.hotkey.note"))
                         .font(Theme.Typo.secondary(size: 11))
                         .foregroundColor(Theme.Palette.text3)
                 }
                 Spacer()
-                Text("ODER: FN ×2")
+                Text(L10n.text("onboarding.hotkey.alternative"))
                     .font(Theme.Typo.counter(10))
                     .tracking(1)
                     .foregroundColor(Theme.Palette.text3)
@@ -251,8 +251,8 @@ struct OnboardingView: View {
             .onAppear { startCapture() }
             .onDisappear { removeMonitor() }
 
-            navButtons(backTitle: "Zurück", backAction: { removeMonitor(); model.back() },
-                       primaryTitle: "Übernehmen", primaryAction: { commitHotkey(); model.next() },
+            navButtons(backTitle: L10n.text("action.back"), backAction: { removeMonitor(); model.back() },
+                       primaryTitle: L10n.text("action.apply"), primaryAction: { commitHotkey(); model.next() },
                        primaryDisabled: !hotkeyCaptureState.draft.isValidSelection)
             Spacer()
         }
@@ -262,7 +262,7 @@ struct OnboardingView: View {
     private var trialStep: some View {
         let lastRecord = app.history.records.first
         return VStack(alignment: .leading, spacing: 0) {
-            Text("Halte \(VirtualKey.display(app.currentCombo)), warte den Startton ab und sag etwas.")
+            Text(L10n.text("onboarding.trial.title", VirtualKey.display(app.currentCombo)))
                 .font(Theme.Typo.sectionTitle())
                 .tracking(-0.4)
                 .foregroundColor(Theme.Palette.ink)
@@ -297,13 +297,13 @@ struct OnboardingView: View {
                 }
                 Spacer()
 
-                stampBadge("EINSATZBEREIT")
+                stampBadge(L10n.text("onboarding.trial.ready.uppercase"))
 
             }
             .padding(.top, 14)
 
-            navButtons(backTitle: "Zurück", backAction: { model.back() },
-                       primaryTitle: "Akte eröffnen", primaryAction: { finishOnboarding() },
+            navButtons(backTitle: L10n.text("action.back"), backAction: { model.back() },
+                       primaryTitle: L10n.text("onboarding.finish"), primaryAction: { finishOnboarding() },
                        primaryDisabled: false)
             Spacer()
         }
@@ -318,7 +318,10 @@ struct OnboardingView: View {
 
     private func trialFootnote(_ record: TranscriptionRecord) -> String {
         let duration = DurationFormatter.minutesAndSeconds(record.durationSecs)
-        return "ERFASST · \(duration) · \(record.wordCount) WÖRTER · IN ZWISCHENABLAGE"
+        let key = record.wordCount == 1
+            ? "onboarding.trial.footnote.one"
+            : "onboarding.trial.footnote.many"
+        return L10n.text(key, duration, record.wordCount)
     }
 
     private func stampBadge(_ text: String) -> some View {

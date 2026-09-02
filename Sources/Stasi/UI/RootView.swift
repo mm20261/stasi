@@ -78,8 +78,8 @@ struct RootView: View {
             .overlay(Circle().strokeBorder(Theme.Palette.line, lineWidth: Theme.Metrics.hairline))
         }
         .buttonStyle(.plain)
-        .help("Konto")
-        .accessibilityLabel("Konto öffnen")
+        .help(L10n.text("account.title"))
+        .accessibilityLabel(L10n.text("account.openAccessibility"))
     }
 
     private var initials: String {

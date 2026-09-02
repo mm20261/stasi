@@ -73,7 +73,7 @@ struct DashboardView: View {
                     Image(systemName: "magnifyingglass")
                         .font(.system(size: 13))
                         .foregroundColor(Theme.Palette.text3)
-                    Text("Aktenrecherche — Volltext, alle Protokolle")
+                    Text(L10n.text("search.placeholder"))
                         .font(Theme.Typo.counter(12))
                         .foregroundColor(Theme.Palette.text3)
                     Spacer()
@@ -103,7 +103,7 @@ struct DashboardView: View {
     // MARK: Kopf
 
     private var screenTitle: some View {
-        Text("Der Bericht")
+        Text(L10n.text("dashboard.title"))
             .font(Theme.Typo.h1())
             .tracking(-0.6)
             .foregroundColor(Theme.Palette.ink)
@@ -173,7 +173,7 @@ struct DashboardView: View {
         earlierToday: [TranscriptionRecord]
     ) -> some View {
         if app.history.state == .loading {
-            loadingState("Lade Protokolle…")
+            loadingState(L10n.text("protocols.loading"))
         } else if heroRecord == nil {
             FirstStartEmptyState(
                 onTry: { app.startDictation() },
@@ -181,7 +181,7 @@ struct DashboardView: View {
             )
         } else {
             VStack(alignment: .leading, spacing: 8) {
-                Text("ZULETZT DIKTIERT")
+                Text(L10n.text("dashboard.latest.uppercase"))
                     .kicker(Theme.Palette.text3)
                     .padding(.horizontal, 2)
                     .padding(.bottom, 2)
@@ -223,7 +223,7 @@ struct DashboardView: View {
                         }
                     }
                 } label: {
-                    Label(heroCopied ? "Kopiert" : "Kopieren",
+                    Label(L10n.text(heroCopied ? "action.copied" : "action.copy"),
                           systemImage: heroCopied ? "checkmark" : "doc.on.doc")
                         .font(.custom("Geist", size: 13).weight(.semibold))
                         .foregroundColor(heroCopied ? Theme.Palette.archivgruen : Theme.Palette.papier)
@@ -244,7 +244,7 @@ struct DashboardView: View {
                             )
                         }
                     } label: {
-                        Label(playingId == record.id ? "Stopp" : "Anhören",
+                        Label(L10n.text(playingId == record.id ? "action.stop" : "action.listen"),
                               systemImage: playingId == record.id ? "stop.fill" : "play.fill")
                             .font(.custom("Geist", size: 13).weight(.medium))
                             .foregroundColor(Theme.Palette.ink)
@@ -279,7 +279,7 @@ struct DashboardView: View {
     private func heroMeta(_ record: TranscriptionRecord) -> String {
         var parts = [record.date.formatted(.dateTime.hour().minute())]
         if !record.targetApp.isEmpty { parts.append(record.targetApp) }
-        parts.append("\(record.wordCount) Wörter")
+        parts.append(L10n.text(record.wordCount == 1 ? "words.one" : "words.many", record.wordCount))
         return parts.joined(separator: " · ")
     }
 
@@ -303,7 +303,7 @@ struct DashboardView: View {
                 Button {
                     selection.section = .protokolle
                 } label: {
-                    Text("Alle Protokolle ansehen")
+                    Text(L10n.text("dashboard.viewAllProtocols"))
                         .font(.custom("Geist", size: 12))
                         .foregroundColor(Theme.Palette.text2)
                         .padding(.bottom, 1)
@@ -354,7 +354,7 @@ struct DashboardView: View {
 
     private func rail(stats: DashboardStats) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("PROTOKOLLE")
+            Text(L10n.text("protocols.title.uppercase"))
                 .kicker(Theme.Palette.text3)
                 .padding(.horizontal, 2)
             railStatsCard(stats: stats)
@@ -369,7 +369,7 @@ struct DashboardView: View {
                 .monospacedDigit()
                 .tracking(-0.5)
                 .foregroundColor(Theme.Palette.ink)
-            Text("Wörter insgesamt diktiert")
+            Text(L10n.text("dashboard.totalWords"))
                 .font(Theme.Typo.secondary(size: 12))
                 .foregroundColor(Theme.Palette.text2)
                 .padding(.top, 2)
@@ -378,9 +378,9 @@ struct DashboardView: View {
                 .frame(height: Theme.Metrics.hairline)
                 .padding(.vertical, 12)
 
-            railRow(label: "Wörter / Minute",
+            railRow(label: L10n.text("stats.wordsPerMinute"),
                     value: stats.wpmText)
-            railRow(label: "Serie",
+            railRow(label: L10n.text("stats.streak"),
                     value: stats.streakText)
         }
         .secondaryCard(padding: 18)
@@ -402,7 +402,7 @@ struct DashboardView: View {
 
     private func akteCard(stats: DashboardStats) -> some View {
         VStack(alignment: .leading, spacing: 0) {
-            Text("Deine Akte")
+            Text(L10n.text("dashboard.yourFile"))
                 .font(Theme.Typo.kartentitel())
                 .foregroundColor(Theme.Palette.ink)
             Text(Copy.akteNote(settings))
@@ -421,7 +421,7 @@ struct DashboardView: View {
             .frame(height: 6)
             .padding(.top, 12)
 
-            Text("NOCH \(stats.wordsUntilMilestoneText) BIS ZUM \(Copy.akteMilestone.uppercased())")
+            Text(L10n.text("dashboard.untilMilestone", stats.wordsUntilMilestoneText, Copy.akteMilestone.uppercased()))
                 .font(Theme.Typo.counter(10))
                 .tracking(0.8)
                 .textCase(.uppercase)
@@ -448,7 +448,8 @@ private struct DashboardStats {
         totalWordsText = StatsCalculator.compactCount(totalWords)
         wpmText = StatsCalculator.wordsPerMinute(records)
             .map { "\(Int($0.rounded()))" } ?? "—"
-        streakText = "\(StatsCalculator.currentStreak(records, calendar: calendar)) Tage"
+        let streak = StatsCalculator.currentStreak(records, calendar: calendar)
+        streakText = L10n.text(streak == 1 ? "days.one" : "days.many", streak)
         milestoneProgress = Double(remainder) / Double(Self.milestone)
         wordsUntilMilestoneText = StatsCalculator.compactCount(Self.milestone - remainder)
     }
@@ -499,11 +500,11 @@ private struct EarlierRowView: View {
             HStack(spacing: 2) {
                 if record.audioPath != nil {
                     miniIcon(isPlaying ? "stop.fill" : "play.fill",
-                             label: isPlaying ? "Audio stoppen" : "Audio abspielen") { onPlay() }
+                             label: L10n.text(isPlaying ? "audio.stop" : "audio.play")) { onPlay() }
                 }
                 miniIcon(copied ? "checkmark" : "doc.on.doc",
                          tint: copied ? Theme.Palette.archivgruen : Theme.Palette.text3,
-                         label: copied ? "Protokoll kopiert" : "Protokoll kopieren") {
+                         label: L10n.text(copied ? "protocol.copied" : "protocol.copy")) {
                     onCopy()
                     copied = true
                     DispatchQueue.main.asyncAfter(deadline: .now() + 1.6) { copied = false }

@@ -270,10 +270,10 @@ final class RecordingPillView: NSView {
 
         discardButton.target = self
         discardButton.action = #selector(discardTapped)
-        discardButton.setAccessibilityLabel("Aufnahme verwerfen")
+        discardButton.setAccessibilityLabel(L10n.text("pill.discardAccessibility"))
         commitButton.target = self
         commitButton.action = #selector(commitTapped)
-        commitButton.setAccessibilityLabel("Aufnahme abschließen")
+        commitButton.setAccessibilityLabel(L10n.text("pill.commitAccessibility"))
 
         // Roter Pulsdot
         dotView.wantsLayer = true
@@ -448,7 +448,7 @@ final class SpinnerViewNS: NSView {
 
         setAccessibilityElement(true)
         setAccessibilityRole(.progressIndicator)
-        setAccessibilityLabel("Diktat wird verarbeitet")
+        setAccessibilityLabel(L10n.text("pill.processingAccessibility"))
 
         NSLayoutConstraint.activate([
             widthAnchor.constraint(equalToConstant: 36),

@@ -141,7 +141,7 @@ enum CommonWords {
         var warns: [String] = []
         for token in source.split(whereSeparator: { $0 == " " || $0 == "-" }) {
             if set.contains(String(token)) {
-                warns.append("Quelle „\(token)“ ist ein gebräuchliches Wort – Korrektur könnte normale Texte verändern.")
+                warns.append(L10n.text("dictionary.warning.commonWord", String(token)))
             }
         }
         return warns

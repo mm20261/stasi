@@ -9,7 +9,7 @@ enum StasiResources {
     // startet und muss nie wegen eines fehlenden Skript-Schritts crashen.
     nonisolated static let bundle = resolve(
         mainBundle: .main,
-        moduleBundle: nil
+        moduleBundle: developmentBundle()
     )
 
     nonisolated static func resolve(
@@ -23,5 +23,28 @@ enum StasiResources {
             return packagedBundle
         }
         return moduleBundle() ?? mainBundle
+    }
+
+    /// SwiftPM legt das Bundle bei `swift build` neben Test-/Executable-Artefakte.
+    /// Dieser Dateipfad-Fallback wertet bewusst NICHT `Bundle.module` aus und kann
+    /// daher im beschädigten App-Paket nie dessen fatalError auslösen.
+    nonisolated private static func developmentBundle() -> Bundle? {
+        guard ProcessInfo.processInfo.processName == "xctest" else { return nil }
+        let candidates = CommandLine.arguments.map { URL(fileURLWithPath: $0) }
+            + Bundle.allBundles.map(\.bundleURL)
+        for candidate in candidates {
+            var directory = candidate.hasDirectoryPath
+                ? candidate
+                : candidate.deletingLastPathComponent()
+            for _ in 0..<6 {
+                let url = directory.appendingPathComponent(
+                    "Stasi_Stasi.bundle",
+                    isDirectory: true
+                )
+                if let bundle = Bundle(url: url) { return bundle }
+                directory.deleteLastPathComponent()
+            }
+        }
+        return nil
     }
 }

@@ -68,6 +68,8 @@ brew uninstall --cask --zap stasi
 
 - **Echte Mac-App**: Dock-Icon, App-Menü, ⌘,-Settings, resizable Hauptfenster
 - **On-device-Transkription** via macOS-26 `SpeechTranscriber` (EN/DE)
+- **Oberfläche auf Deutsch und Englisch**, automatisch nach Systemsprache oder
+  manuell in den Einstellungen wählbar
 - **Deterministische Nachbearbeitung** mit den Stufen AUS und STANDARD:
   sprachspezifische Zögerlaute, Stotterer, konservative Selbstkorrekturen,
   Diskurs-Füller und Text-Hygiene – vollständig regelbasiert

@@ -15,9 +15,9 @@ enum ProtocolSearchFilter: String, CaseIterable, Identifiable {
     /// Chip-Label (mono, UPPERCASE im UI)
     var label: String {
         switch self {
-        case .all: "ALLE"
-        case .last7Days: "7 TAGE"
-        case .last30Days: "30 TAGE"
+        case .all: L10n.text("filter.all.uppercase")
+        case .last7Days: L10n.text("filter.last7Days.uppercase")
+        case .last30Days: L10n.text("filter.last30Days.uppercase")
         }
     }
 
@@ -104,7 +104,7 @@ enum FileNumber {
     static func forRecord(id: UUID) -> String {
         let hex = id.uuidString.replacingOccurrences(of: "-", with: "")
             .prefix(4).uppercased()
-        return "AZ \(hex)"
+        return L10n.text("protocol.fileNumber", String(hex))
     }
 }
 
@@ -117,9 +117,13 @@ enum ProtocolExporter {
                             calendar: Calendar = .current,
                             exportedAt: Date = Date()) -> String {
         var lines: [String] = []
-        lines.append("# Protokolle")
+        lines.append(L10n.text("export.protocols.heading"))
         lines.append("")
-        lines.append("Exportiert am \(exportedAt.formatted(.dateTime.day().month().year().hour().minute())) · \(records.count) Protokolle")
+        lines.append(L10n.text(
+            records.count == 1 ? "export.protocols.meta.one" : "export.protocols.meta.many",
+            exportedAt.formatted(.dateTime.day().month().year().hour().minute()),
+            records.count
+        ))
         lines.append("")
         for group in ProtocolSearch.groupByDay(records, calendar: calendar) {
             lines.append("## \(group.day.formatted(.dateTime.weekday(.wide).day().month(.wide)))")
@@ -131,7 +135,7 @@ enum ProtocolExporter {
                 if record.durationSecs > 0 {
                     meta.append(DurationFormatter.minutesAndSeconds(record.durationSecs))
                 }
-                meta.append("\(record.wordCount) Wörter")
+                meta.append(L10n.text(record.wordCount == 1 ? "words.one" : "words.many", record.wordCount))
                 meta.append(FileNumber.forRecord(id: record.id))
                 lines.append("### \(time) · \(meta.joined(separator: " · "))")
                 lines.append("")

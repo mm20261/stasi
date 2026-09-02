@@ -6,6 +6,11 @@ und das Projekt verwendet [Semantic Versioning](https://semver.org/lang/de/).
 
 ## [Unreleased]
 
+### Hinzugefügt
+
+- Deutsche und englische Oberfläche mit Systemsprachen-Automatik und manueller
+  Auswahl in den Einstellungen.
+
 ### Behoben
 
 - Satzanfang-Großschreibung überschrieb Wörterbuch-Ziele (macOS → MacOS) und

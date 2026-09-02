@@ -3,6 +3,7 @@ import PackageDescription
 
 let package = Package(
     name: "Stasi",
+    defaultLocalization: "de",
     platforms: [.macOS(.v26)],
     targets: [
         .executableTarget(

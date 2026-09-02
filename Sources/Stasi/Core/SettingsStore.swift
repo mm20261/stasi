@@ -26,11 +26,11 @@ enum Retention: String, CaseIterable, Identifiable {
 
     var label: String {
         switch self {
-        case .forever: "Nie löschen"
-        case .oneDay: "1 Tag"
-        case .oneWeek: "1 Woche"
-        case .twoWeeks: "2 Wochen"
-        case .oneMonth: "1 Monat"
+        case .forever: L10n.text("settings.retention.forever")
+        case .oneDay: L10n.text("settings.retention.oneDay")
+        case .oneWeek: L10n.text("settings.retention.oneWeek")
+        case .twoWeeks: L10n.text("settings.retention.twoWeeks")
+        case .oneMonth: L10n.text("settings.retention.oneMonth")
         }
     }
 }
@@ -41,14 +41,21 @@ final class SettingsStore {
     enum HotkeyMode: String, CaseIterable, Identifiable {
         case pushToTalk, toggle
         var id: String { rawValue }
-        var label: String { self == .pushToTalk ? "Push-to-talk" : "Umschalten" }
+        var label: String {
+            L10n.text(self == .pushToTalk
+                ? "settings.hotkeyMode.pushToTalk"
+                : "settings.hotkeyMode.toggle")
+        }
     }
 
     /// v3: fünf Akzent-Presets (Standard Anthrazit), nutzer-wählbar.
-    nonisolated static let accentPresets: [(String, UInt32)] = [
-        ("Anthrazit", 0x1A1917), ("Blau", 0x1D4E89), ("Orange", 0xD64500),
-        ("Grün", 0x2D6A4F), ("Violett", 0x5B4A8A),
-    ]
+    nonisolated static var accentPresets: [(String, UInt32)] { [
+        (L10n.text("settings.accent.charcoal"), 0x1A1917),
+        (L10n.text("settings.accent.blue"), 0x1D4E89),
+        (L10n.text("settings.accent.orange"), 0xD64500),
+        (L10n.text("settings.accent.green"), 0x2D6A4F),
+        (L10n.text("settings.accent.violet"), 0x5B4A8A),
+    ] }
 
     private static let hotkeyDefaultsKey = "stasi.hotkey.combo"
 
@@ -82,6 +89,7 @@ final class SettingsStore {
             handsFreeKeyCode = number.uint64Value
         }
         language = defaults.string(forKey: "stasi.langChoice") ?? "auto"
+        uiLanguage = defaults.string(forKey: "stasi.uiLanguage") ?? "auto"
         soundOn = defaults.object(forKey: "stasi.soundOn") as? Bool ?? true
         if let raw = defaults.string(forKey: "stasi.postProcess"),
            let level = PolishLevel(rawValue: raw) { postProcessing = level }
@@ -93,6 +101,9 @@ final class SettingsStore {
         preferredMicUID = defaults.string(forKey: "stasi.micUID")
         onboardingDone = defaults.object(forKey: "stasi.onboardingDone") as? Bool ?? false
 
+        // Bei „auto“ ist `nil` bereits der Produktionsstandard. Ein vorhandener
+        // expliziter Override (z. B. der globale XCTest-Vertrag) bleibt intakt.
+        if uiLanguage != "auto" { L10n.languageOverride = uiLanguage }
         Theme.sharedSettings = self
     }
 
@@ -149,6 +160,14 @@ final class SettingsStore {
 
     var language: String = "auto" {   // "auto" | "de_DE" | "en_US"
         didSet { d.set(language, forKey: "stasi.langChoice") }
+    }
+
+    /// Oberflächensprache; Änderungen werden beim nächsten App-Start vollständig sichtbar.
+    var uiLanguage: String = "auto" { // "auto" | "de" | "en"
+        didSet {
+            d.set(uiLanguage, forKey: "stasi.uiLanguage")
+            L10n.languageOverride = uiLanguage == "auto" ? nil : uiLanguage
+        }
     }
 
     var soundOn: Bool = true {
@@ -224,100 +243,98 @@ final class SettingsStore {
 
 enum Copy {
     @MainActor
-    static func tagline(_ s: SettingsStore) -> String { s.ironyOn ? "Wir hören zu." : "Lokales Diktat." }
+    static func tagline(_ s: SettingsStore) -> String {
+        L10n.text(s.ironyOn ? "sidebar.tagline.ironic" : "sidebar.tagline.standard")
+    }
 
     @MainActor
     static func protocolsSubtitle(_ s: SettingsStore, count: Int) -> String {
-        let n = formatGermanNumber(count) + " Protokolle"
-        return s.ironyOn ? "\(n) · alles dokumentiert, nichts vergessen."
-                         : "\(n)"
+        let key = count == 1 ? "protocols.count.one" : "protocols.count.many"
+        let countText = L10n.text(key, formatGermanNumber(count))
+        return s.ironyOn
+            ? L10n.text("protocols.subtitle.ironic", countText)
+            : countText
     }
 
     @MainActor
     static func emptyProtocols(_ s: SettingsStore) -> String {
-        s.ironyOn ? "Die Akte ist leer. Das kommt selten vor." : "Noch keine Protokolle."
+        L10n.text(s.ironyOn ? "protocols.empty.ironic" : "protocols.empty.standard")
     }
 
     @MainActor
     static func privacyFootnote(_ s: SettingsStore) -> String {
-        s.ironyOn
-            ? "Alle Aufnahmen werden ausschließlich lokal auf diesem Mac verarbeitet. Niemand hört mit. Ehrlich. Das wäre ja auch ironisch."
-            : "Alle Aufnahmen werden ausschließlich lokal auf diesem Mac verarbeitet."
+        L10n.text(s.ironyOn ? "settings.privacy.ironic" : "settings.privacy.standard")
     }
 
     /// Hinweis auf der Rail-Karte „Deine Akte".
     @MainActor
     static func akteNote(_ s: SettingsStore) -> String {
-        s.ironyOn ? "Lebenslang geführt. Alle 10.000 Wörter ein neuer Meilenstein."
-                  : "Alle diktierten Wörter seit deinem ersten Protokoll."
+        L10n.text(s.ironyOn ? "dashboard.fileNote.ironic" : "dashboard.fileNote.standard")
     }
 
-    static let akteMilestone = "10.000-Wörter-Meilenstein"
+    static var akteMilestone: String { L10n.text("dashboard.milestone") }
 
     @MainActor
     static func insightsSubtitle(_ s: SettingsStore) -> String {
-        s.ironyOn ? "Der Überwachungsbericht. Lückenlos, versteht sich."
-                  : "Deine Diktier-Statistik."
+        L10n.text(s.ironyOn ? "insights.subtitle.ironic" : "insights.subtitle.standard")
     }
 
     @MainActor
     static func accountSubtitle(_ s: SettingsStore) -> String {
-        s.ironyOn ? "Deine Akte. Ausnahmsweise führst du sie selbst."
-                  : "Dein Profil — lokal gespeichert."
+        L10n.text(s.ironyOn ? "account.subtitle.ironic" : "account.subtitle.standard")
     }
 
     // MARK: Feste Texte (nicht ironie-abhängig)
 
     // Fehler-Toasts; erfolgreiche/verworfene Aktionen bleiben bewusst still.
-    static let toastNothingHeard = "Nichts gehört"
-    static let toastTranscriptionAborted = "Transkription abgebrochen – bitte erneut versuchen"
+    static var toastNothingHeard: String { L10n.text("toast.nothingHeard") }
+    static var toastTranscriptionAborted: String { L10n.text("toast.transcriptionAborted") }
 
     // Aufnahme-Pill
-    static let pillModelLoading = "Modell lädt…"
+    static var pillModelLoading: String { L10n.text("pill.modelLoading") }
 
     // Deterministische Nachbearbeitung
-    static let postProcessingTitle = "Nachbearbeitung"
-    static let postProcessingOffLabel = "AUS"
-    static let postProcessingStandardLabel = "STANDARD"
+    static var postProcessingTitle: String { L10n.text("polish.title") }
+    static var postProcessingOffLabel: String { L10n.text("polish.level.off") }
+    static var postProcessingStandardLabel: String { L10n.text("polish.level.standard") }
     static func postProcessingDescription(for level: PolishLevel) -> String {
         switch level {
-        case .off: "Nur Wörterbuch-Korrekturen; das Transkript bleibt ansonsten unverändert."
-        case .standard: "Entfernt Füllwörter und löst nur eindeutige Selbstkorrekturen."
+        case .off: L10n.text("polish.description.off")
+        case .standard: L10n.text("polish.description.standard")
         }
     }
 
     // Anleitungsleiste im Bericht
-    static let anleitungText = "halten, Startton abwarten, dann sprechen."
-    static let anleitungStatusReady = "Bereit"
-    static let anleitungStatusBlocked = "Hotkey inaktiv"
-    static let hotkeyRestartRequired = "Neustart nötig"
+    static var anleitungText: String { L10n.text("dashboard.instruction") }
+    static var anleitungStatusReady: String { L10n.text("status.ready") }
+    static var anleitungStatusBlocked: String { L10n.text("status.hotkeyInactive") }
+    static var hotkeyRestartRequired: String { L10n.text("status.restartRequired") }
 
     // Leerzustand erster Start
-    static let firstStartTitle = "Noch nichts protokolliert."
+    static var firstStartTitle: String { L10n.text("dashboard.firstStart.title") }
     static func firstStartBody(combo: HotkeyEngine.Combo) -> String {
-        "Setz den Cursor in ein Textfeld, halte \(VirtualKey.display(combo)), warte den Startton ab und sprich einen Satz. Beim Loslassen steht er da."
+        L10n.text("dashboard.firstStart.body", VirtualKey.display(combo))
     }
-    static let onboardingTrialEmpty =
-        "Noch nichts erfasst – halte die Taste, warte den Startton ab und sprich einen Satz."
-    static let firstStartTryButton = "Jetzt ausprobieren"
-    static let firstStartChangeKeyButton = "Taste ändern"
+    static var onboardingTrialEmpty: String { L10n.text("onboarding.trial.empty") }
+    static var firstStartTryButton: String { L10n.text("dashboard.firstStart.try") }
+    static var firstStartChangeKeyButton: String { L10n.text("dashboard.firstStart.changeKey") }
 
-    static let insightsEmpty = "Noch nichts zu zählen – diktiere dein erstes Protokoll."
-    static let resetProtocolSearch = "Suche & Filter zurücksetzen"
+    static var insightsEmpty: String { L10n.text("insights.empty") }
+    static var resetProtocolSearch: String { L10n.text("protocols.resetSearch") }
 
     // Warnkarte „Berechtigung fehlt"
-    static let permissionWarningTitle = "Der Hotkey funktioniert noch nicht."
-    static let permissionWarningBody = "macOS muss Stasi erlauben, in Textfelder zu schreiben. Ein Klick, dann läuft es."
-    static let permissionWarningButton = "Erlauben"
+    static var permissionWarningTitle: String { L10n.text("permission.warning.title") }
+    static var permissionWarningBody: String { L10n.text("permission.warning.body") }
+    static var permissionWarningButton: String { L10n.text("permission.allow") }
 
     // MARK: Begrüßung
 
     static func greeting(for date: Date, calendar: Calendar = .current) -> String {
         switch calendar.component(.hour, from: date) {
-        case 5..<11: return "Guten Morgen"
-        case 11..<14: return "Guten Tag"
-        case 14..<18: return "Guten Nachmittag"
-        default: return "Guten Abend"
+        case 5..<11: return L10n.text("greeting.morning")
+        case 11..<14: return L10n.text("greeting.midday")
+        case 14..<18: return L10n.text("greeting.afternoon")
+        default: return L10n.text("greeting.evening")
         }
     }
 
@@ -325,15 +342,17 @@ enum Copy {
     static func greetingLine(for date: Date, name: String,
                              calendar: Calendar = .current) -> String {
         let base = greeting(for: date, calendar: calendar)
-        return name.isEmpty ? "\(base)." : "\(base), \(name)."
+        return name.isEmpty
+            ? L10n.text("greeting.line.anonymous", base)
+            : L10n.text("greeting.line.named", base, name)
     }
 
-    /// Datumszeile mono: „MONTAG, 24. AUGUST" (fest de_DE – UI ist deutsch).
+    /// Datumszeile mono; Deutsch nutzt de_DE, Englisch en_US.
     static func dateLine(_ date: Date, calendar: Calendar = .current) -> String {
         // FormatStyle ist ein Wertetyp: thread-sicher und nimmt Zeitzone + Kalender
         // des Aufrufers mit (ein geteilter DateFormatter ignorierte die Zeitzone).
         let style = Date.FormatStyle(
-            locale: Locale(identifier: "de_DE"),
+            locale: Locale(identifier: L10n.activeLanguageCode == "en" ? "en_US" : "de_DE"),
             calendar: calendar,
             timeZone: calendar.timeZone
         )
@@ -342,15 +361,10 @@ enum Copy {
         return "\(weekday), \(dayMonth)"
     }
 
-    /// Deutsche Tausenderpunkte (1284 → „1.284").
+    /// Lokalisierte Tausendertrennzeichen; der Name bleibt als API-Kompatibilität erhalten.
     static func formatGermanNumber(_ n: Int) -> String {
-        germanNumberFormatter.string(from: NSNumber(value: n)) ?? "\(n)"
+        n.formatted(.number.locale(Locale(
+            identifier: L10n.activeLanguageCode == "en" ? "en_US" : "de_DE"
+        )))
     }
-
-    private static let germanNumberFormatter: NumberFormatter = {
-        let formatter = NumberFormatter()
-        formatter.numberStyle = .decimal
-        formatter.locale = Locale(identifier: "de_DE")
-        return formatter
-    }()
 }

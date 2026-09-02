@@ -1,0 +1,2 @@
+"NSMicrophoneUsageDescription" = "Stasi records speech to turn it into text locally.";
+"NSSpeechRecognitionUsageDescription" = "Stasi transcribes your speech entirely on this device.";

@@ -40,21 +40,23 @@ enum AudioCaptureError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .alreadyRunning:
-            return "Die Audioaufnahme läuft bereits."
+            return L10n.text("audio.error.alreadyRunning")
         case .componentUnavailable:
-            return "Die input-only AUHAL ist nicht verfuegbar."
+            return L10n.text("audio.error.componentUnavailable")
         case .noInputDevice:
-            return "Kein Audio-Eingabegeraet verfuegbar."
+            return L10n.text("audio.error.inputDeviceUnavailable")
         case .invalidInputFormat:
-            return "Das Eingabeformat des Mikrofons ist ungueltig."
+            return L10n.text("audio.error.invalidHardwareFormat")
         case .invalidMaximumFrames:
-            return "Die AUHAL meldet keine gueltige maximale Slice-Groesse."
+            return L10n.text("audio.error.invalidMaximumFramesPerSlice")
         case let .converterUnavailable(input, output):
-            return "Audiokonvertierung nicht verfuegbar (\(input.sampleRate) Hz/"
-                + "\(input.channelCount) ch -> \(output.sampleRate) Hz/"
-                + "\(output.channelCount) ch)."
+            return L10n.text(
+                "audio.error.converterUnavailable",
+                input.sampleRate, input.channelCount,
+                output.sampleRate, output.channelCount
+            )
         case let .audioUnit(operation, status):
-            return "AudioUnit-Fehler bei \(operation) (OSStatus \(status))."
+            return L10n.text("audio.error.audioUnit", operation, status)
         }
     }
 }

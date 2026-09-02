@@ -29,6 +29,6 @@ final class OnboardingModel {
 
     /// Kopfzeile rechts: „AKTE WIRD ANGELEGT · n/4"
     static func progressLabel(step: Int) -> String {
-        "AKTE WIRD ANGELEGT · \(step)/\(totalSteps)"
+        L10n.text("onboarding.progress", step, totalSteps)
     }
 }

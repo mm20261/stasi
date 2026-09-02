@@ -131,7 +131,7 @@ final class DictionaryStore {
             let data = try Data(contentsOf: fileURL)
             return decodeDictionary(data)
         } catch {
-            return .unreadable("dictionary.json unlesbar: \(error.localizedDescription)")
+            return .unreadable(L10n.text("dictionary.error.unreadable", error.localizedDescription))
         }
     }
 
@@ -143,7 +143,7 @@ final class DictionaryStore {
                 ignoredLearned: file.ignoredLearned ?? []
             )
         } catch {
-            return .unreadable("dictionary.json unlesbar: \(error.localizedDescription)")
+            return .unreadable(L10n.text("dictionary.error.unreadable", error.localizedDescription))
         }
     }
 
@@ -213,7 +213,7 @@ final class DictionaryStore {
             lastError = nil
         } catch {
             lastWrittenData = nil
-            lastError = "Schreiben fehlgeschlagen: \(error.localizedDescription)"
+            lastError = L10n.text("dictionary.error.write", error.localizedDescription)
         }
         restartWatcher()
     }
@@ -221,9 +221,9 @@ final class DictionaryStore {
     /// Beispiel-Einträge für den ersten Start.
     private func seedEntries() -> [DictionaryEntry] {
         [
-            DictionaryEntry(type: .word, value: "Anthropic", note: "Firmenname"),
+            DictionaryEntry(type: .word, value: "Anthropic", note: L10n.text("dictionary.seed.companyName")),
             DictionaryEntry(type: .correction, from: "cloud code", to: "Claude Code",
-                            note: "CLI-Tool von Anthropic"),
+                            note: L10n.text("dictionary.seed.cliTool")),
         ]
     }
 

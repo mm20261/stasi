@@ -289,9 +289,9 @@ struct UpdateStatusPresentation: Equatable {
     init(status: UpdateCheckStatus, now: Date = Date(), calendar: Calendar = .current) {
         switch status {
         case .neverChecked:
-            self.init(text: "NOCH NIE GEPRÜFT", colorRole: .neutral, showsProgress: false)
+            self.init(text: L10n.text("update.neverChecked.uppercase"), colorRole: .neutral, showsProgress: false)
         case .checking:
-            self.init(text: "PRÜFUNG LÄUFT …", colorRole: .neutral, showsProgress: true)
+            self.init(text: L10n.text("update.running.uppercase"), colorRole: .neutral, showsProgress: true)
         case let .upToDate(checkedAt):
             self.init(
                 text: UpdateStatusFormatter.statusText(
@@ -327,41 +327,38 @@ private enum UpdateStatusFormatter {
         now: Date,
         calendar: Calendar
     ) -> String {
-        guard let lastChecked else { return "NOCH NIE GEPRÜFT" }
+        guard let lastChecked else { return L10n.text("update.neverChecked.uppercase") }
 
         var text: String
         if calendar.isDate(lastChecked, inSameDayAs: now) {
-            text = "ZULETZT GEPRÜFT: HEUTE, \(timeText(lastChecked, timeZone: calendar.timeZone))"
+            text = L10n.text("update.lastChecked.today", timeText(lastChecked, timeZone: calendar.timeZone))
         } else if let yesterday = calendar.date(byAdding: .day, value: -1, to: now),
                   calendar.isDate(lastChecked, inSameDayAs: yesterday) {
-            text = "ZULETZT GEPRÜFT: GESTERN"
+            text = L10n.text("update.lastChecked.yesterday")
         } else {
-            dateFormatter.timeZone = calendar.timeZone
-            text = "ZULETZT GEPRÜFT: \(dateFormatter.string(from: lastChecked).uppercased())"
+            text = L10n.text("update.lastChecked.date", dateText(lastChecked, timeZone: calendar.timeZone).uppercased())
         }
         if let available {
-            text += " · V \(available) LIEGT BEREIT"
+            text += L10n.text("update.available.suffix", available)
         }
         return text
     }
 
     private static func timeText(_ date: Date, timeZone: TimeZone) -> String {
-        timeFormatter.timeZone = timeZone
-        return timeFormatter.string(from: date)
+        let formatter = DateFormatter()
+        formatter.locale = L10n.activeLocale
+        formatter.timeZone = timeZone
+        formatter.dateFormat = L10n.activeLanguageCode == "en" ? "h:mm a" : "HH:mm"
+        return formatter.string(from: date)
     }
 
-    private static let dateFormatter: DateFormatter = {
+    private static func dateText(_ date: Date, timeZone: TimeZone) -> String {
         let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "de_DE")
+        formatter.locale = L10n.activeLocale
+        formatter.timeZone = timeZone
         formatter.setLocalizedDateFormatFromTemplate("dd. MMMM")
-        return formatter
-    }()
-    private static let timeFormatter: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "de_DE")
-        formatter.dateFormat = "HH:mm"
-        return formatter
-    }()
+        return formatter.string(from: date)
+    }
 }
 
 // MARK: - Checker
@@ -458,7 +455,7 @@ final class UpdateChecker {
         status = .checking
 
         guard let repositoryURL else {
-            status = .failed(message: "Update-Prüfung nicht konfiguriert.")
+            status = .failed(message: L10n.text("update.error.notConfigured"))
             return
         }
 
@@ -503,17 +500,17 @@ final class UpdateChecker {
                .notConnectedToInternet, .networkConnectionLost, .cannotFindHost,
                .cannotConnectToHost, .dnsLookupFailed, .timedOut,
            ].contains(urlError.code) {
-            return "Keine Internetverbindung. Update-Prüfung nicht möglich."
+            return L10n.text("update.error.offline")
         }
         if let fetchError = error as? GitHubReleaseFetcher.FetchError,
            case .rateLimited = fetchError {
-            return "GitHub-Limit erreicht. Bitte später erneut prüfen."
+            return L10n.text("update.error.rateLimited")
         }
         if let checkError = error as? CheckError,
            case .invalidVersion = checkError {
-            return "Ungültige Versionsangabe in der Update-Antwort."
+            return L10n.text("update.error.invalidVersion")
         }
-        return "Ungültige Antwort vom Update-Server."
+        return L10n.text("update.error.invalidResponse")
     }
 
     private func persistSuccessfulCheck(sourceURL: URL) {

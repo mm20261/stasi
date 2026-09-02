@@ -33,12 +33,12 @@ final class AppSelection {
 
         var label: String {
             switch self {
-            case .bericht: "Der Bericht"
-            case .insights: "Insights"
-            case .protokolle: "Protokolle"
-            case .woerterbuch: "Wörterbuch"
-            case .einstellungen: "Einstellungen"
-            case .konto: "Konto"
+            case .bericht: L10n.text("dashboard.title")
+            case .insights: L10n.text("insights.title")
+            case .protokolle: L10n.text("protocols.title")
+            case .woerterbuch: L10n.text("dictionary.title")
+            case .einstellungen: L10n.text("settings.title")
+            case .konto: L10n.text("account.title")
             }
         }
 
@@ -116,8 +116,8 @@ struct SidebarView: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .help(collapsed ? "Seitenleiste ausklappen" : "Seitenleiste einklappen")
-        .accessibilityLabel(collapsed ? "Seitenleiste ausklappen" : "Seitenleiste einklappen")
+        .help(L10n.text(collapsed ? "sidebar.expand" : "sidebar.collapse"))
+        .accessibilityLabel(L10n.text(collapsed ? "sidebar.expand" : "sidebar.collapse"))
     }
 
     // MARK: Wortmarke
@@ -212,7 +212,7 @@ struct SidebarView: View {
         Button {
             selection.section = .protokolle
         } label: {
-            Text("Alle Protokolle")
+            Text(L10n.text("sidebar.allProtocols"))
                 .font(Theme.Typo.secondary(size: 12.5).weight(.semibold))
                 .foregroundColor(Theme.Palette.stempelrotDunkel)
                 .padding(.top, 6)
@@ -254,7 +254,7 @@ struct SidebarView: View {
                     .padding(.vertical, 10)
             } else {
                 VStack(alignment: .leading, spacing: 0) {
-                    Text("v \(AppVersion.display) · AKTE \(AppVersion.akte)")
+                    Text(L10n.text("sidebar.version", AppVersion.display, AppVersion.akte))
                     Text("© meder.dev")
                 }
                 .font(Theme.Typo.counter(10))

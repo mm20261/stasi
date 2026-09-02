@@ -30,6 +30,18 @@ final class AppState {
         case transcribing = "TRANSKRIBIERE"
         case polishing = "POLIERE"
         case injecting = "EINFÜGEN"
+
+        var localizedLabel: String {
+            switch self {
+            case .idle: L10n.text("phase.idle")
+            case .preparing: L10n.text("phase.preparing")
+            case .setupTimedOut: L10n.text("phase.setupTimedOut")
+            case .recording: L10n.text("phase.recording")
+            case .transcribing: L10n.text("phase.transcribing")
+            case .polishing: L10n.text("phase.polishing")
+            case .injecting: L10n.text("phase.injecting")
+            }
+        }
     }
 
     private(set) var phase: Phase = .idle {
@@ -84,7 +96,7 @@ final class AppState {
 
     /// Warum der Hotkey (noch) nicht scharf ist – für die UI.
     var hotkeyBlocker: String? {
-        if !accessibilityGranted { return "Bedienungshilfen" }
+        if !accessibilityGranted { return L10n.text("permission.accessibility") }
         if hotkey?.gaveUp == true { return Copy.hotkeyRestartRequired }
         return nil
     }
@@ -100,8 +112,9 @@ final class AppState {
         didSet { presentUnreadableHistoryIfNeeded() }
     }
 
-    private static let unreadableHistoryMessage =
-        "Verlauf konnte nicht geladen werden. Die vorhandene Datei ist beschädigt und bleibt schreibgeschützt."
+    private static var unreadableHistoryMessage: String {
+        L10n.text("toast.historyUnreadable")
+    }
 
     private enum InjectionGateResult {
         case injected
@@ -188,7 +201,7 @@ final class AppState {
                     await handleAudioRuntimeErrorCommand(error, sessionID: sessionID)
                 case .recordingLimitReached:
                     guard phase == .recording else { break }
-                    onToast?("Maximaldauer erreicht – Aufnahme wird beendet.", false)
+                    onToast?(L10n.text("toast.maximumDuration"), false)
                     requestCommit()
                 case .phaseWatchdog: await recoverFromPhaseWatchdog()
                 case .deleteHistory(let record): await performDeleteHistoryRecord(record)
@@ -272,7 +285,7 @@ final class AppState {
          frontmostApplication: @escaping @MainActor () -> TargetApplication? = {
              guard let application = NSWorkspace.shared.frontmostApplication else { return nil }
              return TargetApplication(
-                 localizedName: application.localizedName ?? "Unbekannte App",
+                 localizedName: application.localizedName ?? L10n.text("app.unknown"),
                  bundleIdentifier: application.bundleIdentifier,
                  processIdentifier: application.processIdentifier
              )
@@ -569,7 +582,7 @@ final class AppState {
 
     private func captureTargetApplication() -> TargetApplication {
         frontmostApplication() ?? TargetApplication(
-            localizedName: "Unbekannte App",
+            localizedName: L10n.text("app.unknown"),
             bundleIdentifier: nil,
             processIdentifier: 0
         )
@@ -599,7 +612,7 @@ final class AppState {
         }
         guard phase == .idle, currentSession == nil, !teardownInProgress else {
             if currentSession != nil || teardownInProgress {
-                onToast?("Vorherige Aufnahme wird noch beendet.", false)
+                onToast?(L10n.text("toast.previousRecordingFinishing"), false)
             }
             return
         }
@@ -642,7 +655,7 @@ final class AppState {
                 guard await self.setupShouldContinue(session) else { return }
                 guard microphoneGranted else {
                     DebugLog.log("STASI-APP: startDictation abgebrochen – Mikrofon-Recht fehlt")
-                    self.onToast?("Mikrofon-Zugriff fehlt – in Systemeinstellungen erlauben", false)
+                    self.onToast?(L10n.text("toast.microphonePermission"), false)
                     Task {
                         try? await Task.sleep(nanoseconds: 1_500_000_000)
                         if !Permissions.microphoneGranted {
@@ -817,7 +830,7 @@ final class AppState {
                 await session.waitForStopCue()
                 await self.completeTerminalFailure(
                     session,
-                    fallbackMessage: "Die Audioaufnahme ist fehlgeschlagen und wurde verworfen."
+                    fallbackMessage: L10n.text("toast.audioFailedDiscarded")
                 )
                 return
             }
@@ -854,7 +867,7 @@ final class AppState {
                 DebugLog.log("STASI-APP: Session terminal unvollständig – gemeinsamer Abschluss")
                 await self.completeTerminalFailure(
                     session,
-                    fallbackMessage: "Die Aufnahme ist unvollständig und wurde verworfen."
+                    fallbackMessage: L10n.text("toast.incompleteDiscarded")
                 )
                 return
             }
@@ -872,7 +885,7 @@ final class AppState {
         DebugLog.log("STASI-AUDIO: Capture-Aktivierung von Runtimefehler überholt")
         await completeTerminalFailure(
             session,
-            fallbackMessage: "Die Audioaufnahme ist fehlgeschlagen und wurde verworfen."
+            fallbackMessage: L10n.text("toast.audioFailedDiscarded")
         )
     }
 
@@ -881,7 +894,7 @@ final class AppState {
         DebugLog.log("STASI-AUDIO: Runtimefehler – \(String(describing: error))")
         await completeTerminalFailure(
             session,
-            fallbackMessage: "Die Audioaufnahme ist fehlgeschlagen und wurde verworfen."
+            fallbackMessage: L10n.text("toast.audioFailedDiscarded")
         )
     }
 
@@ -919,7 +932,7 @@ final class AppState {
             self.finishAbortedSession(session)
             if resolvedRecoveryURL != nil {
                 self.onToast?(
-                    "Die Aufnahme ist unvollständig. Die Wiederherstellungsdatei wurde im Finder geöffnet.",
+                    L10n.text("toast.recoveryOpened"),
                     false
                 )
             } else {
@@ -1013,13 +1026,13 @@ final class AppState {
             }
             await teardown(session)
             finishAbortedSession(session)
-            onToast?("Die Aufnahmevorbereitung hat zu lange gedauert. Bitte erneut versuchen.", false)
+            onToast?(L10n.text("toast.setupTimedOut"), false)
             DebugLog.log("STASI-WATCH: Setup abgeräumt, neuer Start ist möglich")
             return
         }
         if phase == .injecting {
             resetSessionPresentationToIdle()
-            onToast?("Einfügen fehlgeschlagen, Text liegt in der Zwischenablage", false)
+            onToast?(L10n.text("toast.injectionFailedClipboard"), false)
             DebugLog.log("STASI-WATCH: Hängendes Einfügen auf BEREIT zurückgesetzt")
             return
         }
@@ -1052,7 +1065,7 @@ final class AppState {
         let configuredLevel = settings.postProcessing
         let levelSnapshot = TranscriptPolisher.effectiveLevel(configured: configuredLevel)
         guard let targetApplicationSnapshot = session.targetApplication else {
-            await completeTerminalFailure(session, fallbackMessage: "Die Ziel-App konnte nicht erfasst werden.")
+            await completeTerminalFailure(session, fallbackMessage: L10n.text("toast.targetAppMissing"))
             return
         }
         let audioURLSnapshot = audioURL
@@ -1102,7 +1115,7 @@ final class AppState {
             await teardown(session)
             await playSound(.failed, for: session)
             resetSessionPresentationToIdle()
-            onToast?("Verlauf konnte nicht gespeichert werden. Die Audiodatei bleibt erhalten.", false)
+            onToast?(L10n.text("toast.historySaveFailed"), false)
             return
         }
         guard session === currentSession, phase == .polishing else { return }
@@ -1211,12 +1224,12 @@ final class AppState {
             break
         case .injectionFailed:
             let suffix = context == .completedDictation
-                ? "Der vollständige Text bleibt in Verlauf und Zwischenablage."
-                : "Der Text bleibt in der Zwischenablage."
-            onToast?("Einfügen in \(target.localizedName) ist fehlgeschlagen. \(suffix)", false)
+                ? L10n.text("toast.injectionSuffix.historyAndClipboard")
+                : L10n.text("toast.injectionSuffix.clipboard")
+            onToast?(L10n.text("toast.injectionIntoAppFailed", target.localizedName, suffix), false)
         case .targetOrFocusChanged:
             onToast?(
-                "Nicht in \(target.localizedName) eingefügt: Ziel-App oder Textfokus hat sich geändert. Der Text liegt in der Zwischenablage.",
+                L10n.text("toast.targetOrFocusChanged", target.localizedName),
                 false
             )
         }
@@ -1290,7 +1303,7 @@ final class AppState {
         let text = record.correctedText
         copy(record)
         guard let capturedTarget = frontmostApplication() else {
-            onToast?("Nicht eingefügt: Keine Ziel-App erkannt. Der Text liegt in der Zwischenablage.", false)
+            onToast?(L10n.text("toast.noTargetAppClipboard"), false)
             return
         }
         let frontmostApplication = frontmostApplication
@@ -1331,7 +1344,7 @@ final class AppState {
             try await history.delete(record)
         } catch {
             DebugLog.log("STASI-APP: Verlauf löschen fehlgeschlagen: \(error.localizedDescription)")
-            onToast?("Protokoll konnte nicht gelöscht werden.", false)
+            onToast?(L10n.text("toast.protocolDeleteFailed"), false)
         }
     }
 
@@ -1344,7 +1357,7 @@ final class AppState {
             try await history.deleteAll()
         } catch {
             DebugLog.log("STASI-APP: Verlauf vollständig löschen fehlgeschlagen: \(error.localizedDescription)")
-            onToast?("Verlauf konnte nicht gelöscht werden.", false)
+            onToast?(L10n.text("toast.historyDeleteFailed"), false)
         }
     }
 
@@ -1373,7 +1386,7 @@ final class AppState {
             if case .unreadable = history.state {
                 message = Self.unreadableHistoryMessage
             } else {
-                message = "Aufbewahrungsdauer konnte nicht angewendet werden."
+                message = L10n.text("toast.retentionFailed")
             }
             onToast?(message, false)
         }

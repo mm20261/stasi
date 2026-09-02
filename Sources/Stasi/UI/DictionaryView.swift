@@ -15,9 +15,9 @@ struct DictionaryView: View {
         var id: String { rawValue }
         var label: String {
             switch self {
-            case .begriffe: "BEGRIFFE"
-            case .ersetzungen: "ERSETZUNGEN"
-            case .autoGelernt: "AUTO-GELERNT"
+            case .begriffe: L10n.text("dictionary.tab.terms.uppercase")
+            case .ersetzungen: L10n.text("dictionary.tab.replacements.uppercase")
+            case .autoGelernt: L10n.text("dictionary.tab.learned.uppercase")
             }
         }
     }
@@ -26,13 +26,13 @@ struct DictionaryView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
                 VStack(alignment: .leading, spacing: 5) {
-                    Text("SPRACHREGISTER")
+                    Text(L10n.text("dictionary.kicker"))
                         .kicker(Theme.Palette.text3)
-                    Text("Wörterbuch")
+                    Text(L10n.text("dictionary.title"))
                         .font(Theme.Typo.h1())
                         .tracking(-0.6)
                         .foregroundColor(Theme.Palette.ink)
-                    Text("Eigene Begriffe, damit Stasi sie korrekt protokolliert.")
+                    Text(L10n.text("dictionary.subtitle"))
                         .font(Theme.Typo.body())
                         .foregroundColor(Theme.Palette.text2)
                 }
@@ -56,7 +56,7 @@ struct DictionaryView: View {
     }
 
     private var loadingState: some View {
-        Text("Lade Wörterbuch…")
+        Text(L10n.text("dictionary.loading"))
             .font(Theme.Typo.secondary())
             .foregroundColor(Theme.Palette.text2)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -120,11 +120,11 @@ struct DictionaryView: View {
     private var begriffeTab: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(spacing: 8) {
-                TextField("Begriff hinzufügen — z. B. OnePage, Meta CAPI …", text: $newTerm)
+                TextField(L10n.text("dictionary.term.placeholder"), text: $newTerm)
                     .stasiInput()
                     .onSubmit { addTerm() }
                     .frame(maxWidth: 380)
-                Button("Hinzufügen") { Task { @MainActor in addTerm() } }
+                Button(L10n.text("action.add")) { Task { @MainActor in addTerm() } }
                     .buttonStyle(AccentButtonStyle())
                     .disabled(newTerm.trimmingCharacters(in: .whitespaces).isEmpty)
             }
@@ -153,16 +153,16 @@ struct DictionaryView: View {
     private var ersetzungenTab: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(spacing: 8) {
-                TextField("Kürzel (gehört)", text: $newFrom)
+                TextField(L10n.text("dictionary.replacement.fromPlaceholder"), text: $newFrom)
                     .stasiInput()
                     .onSubmit { addReplacement() }
                 Image(systemName: "arrow.right")
                     .font(.system(size: 11))
                     .foregroundColor(Theme.Palette.text3)
-                TextField("Langform (geschrieben)", text: $newTo)
+                TextField(L10n.text("dictionary.replacement.toPlaceholder"), text: $newTo)
                     .stasiInput()
                     .onSubmit { addReplacement() }
-                Button("Hinzufügen") { Task { @MainActor in addReplacement() } }
+                Button(L10n.text("action.add")) { Task { @MainActor in addReplacement() } }
                     .buttonStyle(AccentButtonStyle())
                     .disabled(newFrom.trimmingCharacters(in: .whitespaces).isEmpty
                               || newTo.trimmingCharacters(in: .whitespaces).isEmpty)
@@ -193,13 +193,13 @@ struct DictionaryView: View {
     private var autoTab: some View {
         let learned = app.dictionary.entries.filter { $0.type == .learned }
         return VStack(alignment: .leading, spacing: 12) {
-            Text("Begriffe, die Stasi beim Diktieren selbst entdeckt hat. Übernehmen oder ignorieren.")
+            Text(L10n.text("dictionary.learned.description"))
                 .font(Theme.Typo.secondary())
                 .foregroundColor(Theme.Palette.text2)
 
             if learned.isEmpty {
                 // Leerzustand als Fußzeile: „ALLES GESICHTET"
-                Text("ALLES GESICHTET")
+                Text(L10n.text("dictionary.learned.empty.uppercase"))
                     .font(Theme.Typo.kicker(size: 10))
                     .tracking(1.2)
                     .foregroundColor(Theme.Palette.text3)
@@ -226,7 +226,7 @@ struct DictionaryView: View {
                                     .foregroundColor(Theme.Palette.text3)
                             }
                             Spacer()
-                            Button("ÜBERNEHMEN") {
+                            Button(L10n.text("action.accept.uppercase")) {
                                 Task { @MainActor in app.dictionary.promote(entry) }
                             }
                             .font(Theme.Typo.kicker(size: 10.5))
@@ -237,7 +237,7 @@ struct DictionaryView: View {
                             .overlay(RoundedRectangle(cornerRadius: 5)
                                 .strokeBorder(Theme.Palette.archivgruen, lineWidth: Theme.Metrics.hairline))
                             .buttonStyle(.plain)
-                            Button("IGNORIEREN") {
+                            Button(L10n.text("action.ignore.uppercase")) {
                                 Task { @MainActor in app.dictionary.ignoreLearned(entry) }
                             }
                             .font(Theme.Typo.kicker(size: 10.5))
@@ -302,12 +302,12 @@ struct DictionaryView: View {
     private var emptyForCurrentTab: some View {
         switch tab {
         case .begriffe:
-            Text("Noch keine Begriffe. Füge Namen, Jargon, Produktnamen hinzu.")
+            Text(L10n.text("dictionary.terms.empty"))
                 .font(Theme.Typo.secondary())
                 .foregroundColor(Theme.Palette.text2)
                 .padding(.vertical, 22)
         default:
-            Text("Noch keine Ersetzungen. Beispiel: „cloud code“ → „Claude Code“.")
+            Text(L10n.text("dictionary.replacements.empty"))
                 .font(Theme.Typo.secondary())
                 .foregroundColor(Theme.Palette.text2)
                 .padding(.vertical, 22)
@@ -348,9 +348,9 @@ struct RowIconButton: View {
 
     private var accessibilityName: String {
         switch symbol {
-        case "pencil": "Bearbeiten"
-        case "trash": "Löschen"
-        case "checkmark": "Änderung übernehmen"
+        case "pencil": L10n.text("action.edit")
+        case "trash": L10n.text("action.delete")
+        case "checkmark": L10n.text("action.applyChange")
         default: symbol
         }
     }
@@ -380,7 +380,7 @@ struct EditableTermRow: View {
                         .strokeBorder(Theme.Palette.line, lineWidth: Theme.Metrics.hairline))
                     .onSubmit { commit() }
                     .frame(maxWidth: 320)
-                Button("SPEICHERN") { Task { @MainActor in commit() } }
+                Button(L10n.text("action.save.uppercase")) { Task { @MainActor in commit() } }
                     .font(Theme.Typo.kicker(size: 11))
                     .tracking(0.8)
                     .foregroundColor(Theme.Palette.archivgruen)
@@ -459,7 +459,7 @@ struct EditableReplacementRow: View {
                         .strokeBorder(Theme.Palette.line, lineWidth: Theme.Metrics.hairline))
                     .onSubmit { commit() }
                     .frame(maxWidth: 280)
-                Button("SPEICHERN") { Task { @MainActor in commit() } }
+                Button(L10n.text("action.save.uppercase")) { Task { @MainActor in commit() } }
                     .font(Theme.Typo.kicker(size: 11))
                     .tracking(0.8)
                     .foregroundColor(Theme.Palette.archivgruen)

@@ -34,7 +34,7 @@ struct StasiApp: App {
         .windowStyle(.automatic)
         .commands {
             CommandGroup(replacing: .appSettings) {
-                Button("Einstellungen…") {
+                Button(L10n.text("menu.settings")) {
                     selection.section = .einstellungen
                     NSApplication.shared.activate(ignoringOtherApps: true)
                     for window in NSApplication.shared.windows where window.canBecomeMain {
@@ -44,7 +44,7 @@ struct StasiApp: App {
                 .keyboardShortcut(",")
             }
             CommandGroup(after: .textEditing) {
-                Button("Protokolle durchsuchen") {
+                Button(L10n.text("menu.searchProtocols")) {
                     selection.beginSearchFromBericht()
                 }
                 .keyboardShortcut("f", modifiers: .command)
@@ -92,22 +92,22 @@ final class StatusBarController {
                     .flatMap(NSImage.init(contentsOf:))
             case .preparing:
                 image = NSImage(systemSymbolName: "hourglass",
-                                accessibilityDescription: "Vorbereitung")
+                                accessibilityDescription: L10n.text("phase.preparing"))
             case .setupTimedOut:
                 image = NSImage(systemSymbolName: "exclamationmark.arrow.trianglehead.2.clockwise.rotate.90",
-                                accessibilityDescription: "Neustart nötig")
+                                accessibilityDescription: L10n.text("status.restartRequired"))
             case .recording:
                 image = StasiResources.bundle.url(forResource: "menubar-recording", withExtension: "png")
                     .flatMap(NSImage.init(contentsOf:))
             case .transcribing:
                 image = NSImage(systemSymbolName: "ellipsis",
-                                accessibilityDescription: "Transkription")
+                                accessibilityDescription: L10n.text("phase.transcribing"))
             case .polishing:
                 image = NSImage(systemSymbolName: "sparkles",
-                                accessibilityDescription: "Nachbearbeitung")
+                                accessibilityDescription: L10n.text("polish.title"))
             case .injecting:
                 image = NSImage(systemSymbolName: "text.insert",
-                                accessibilityDescription: "Text einfügen")
+                                accessibilityDescription: L10n.text("phase.injecting"))
             }
             if let image {
                 image.isTemplate = phase != .recording
@@ -124,7 +124,7 @@ final class StatusBarController {
         if app.phase != lastPhase {
             lastPhase = app.phase
             statusItem?.button?.image = Self.iconCache[app.phase]
-            statusMenuItem?.title = "  \(app.phase.rawValue)"
+            statusMenuItem?.title = "  \(app.phase.localizedLabel)"
             syncLanguageChecks()
         }
     }
@@ -135,17 +135,21 @@ final class StatusBarController {
         let menu = NSMenu()
         menu.autoenablesItems = false
 
-        let status = NSMenuItem(title: "  BEREIT", action: nil, keyEquivalent: "")
+        let status = NSMenuItem(title: "  \(L10n.text("phase.idle"))", action: nil, keyEquivalent: "")
         status.isEnabled = false
         statusMenuItem = status
         menu.addItem(status)
         menu.addItem(.separator())
 
-        let langHeader = NSMenuItem(title: "Sprache", action: nil, keyEquivalent: "")
+        let langHeader = NSMenuItem(title: L10n.text("settings.transcriptionLanguage.title"), action: nil, keyEquivalent: "")
         langHeader.isEnabled = false
         menu.addItem(langHeader)
 
-        for option in [("auto", "Automatisch"), ("de_DE", "Deutsch"), ("en_US", "Englisch")] {
+        for option in [
+            ("auto", L10n.text("language.auto.long")),
+            ("de_DE", L10n.text("language.german")),
+            ("en_US", L10n.text("language.english.localized")),
+        ] {
             let langItem = NSMenuItem(title: option.1,
                                       action: #selector(changeLanguage(_:)),
                                       keyEquivalent: "")
@@ -156,11 +160,11 @@ final class StatusBarController {
         }
 
         menu.addItem(.separator())
-        let open = NSMenuItem(title: "Stasi öffnen", action: #selector(openApp), keyEquivalent: "o")
+        let open = NSMenuItem(title: L10n.text("menu.open"), action: #selector(openApp), keyEquivalent: "o")
         open.target = self
         menu.addItem(open)
 
-        let quit = NSMenuItem(title: "Stasi beenden", action: #selector(quitApp), keyEquivalent: "q")
+        let quit = NSMenuItem(title: L10n.text("menu.quit"), action: #selector(quitApp), keyEquivalent: "q")
         quit.target = self
         menu.addItem(quit)
 

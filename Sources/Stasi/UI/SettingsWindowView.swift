@@ -28,9 +28,9 @@ struct SettingsWindowView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
                 VStack(alignment: .leading, spacing: 5) {
-                    Text("DIENSTVORSCHRIFT")
+                    Text(L10n.text("settings.kicker"))
                         .kicker(Theme.Palette.text3)
-                    Text("Einstellungen")
+                    Text(L10n.text("settings.title"))
                         .font(Theme.Typo.h1())
                         .tracking(-0.6)
                         .foregroundColor(Theme.Palette.ink)
@@ -78,7 +78,7 @@ struct SettingsWindowView: View {
     // MARK: AUFNAHME
 
     private var aufnahmeSection: some View {
-        section("AUFNAHME") {
+        section(L10n.text("settings.section.recording")) {
             hotkeyRow
             rowDivider()
             handsFreeRow
@@ -87,7 +87,7 @@ struct SettingsWindowView: View {
             rowDivider()
             modeRow
             rowDivider()
-            permissionActionRow(title: "Bedienungshilfen",
+            permissionActionRow(title: L10n.text("permission.accessibility"),
                                 granted: app.accessibilityGranted)
         }
     }
@@ -96,24 +96,24 @@ struct SettingsWindowView: View {
         VStack(alignment: .leading, spacing: 0) {
             HStack {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Push-to-talk")
+                    Text(L10n.text("settings.pushToTalk.title"))
                         .font(Theme.Typo.zeilenTitel())
                         .foregroundColor(Theme.Palette.ink)
-                    Text("Halten, Startton abwarten, sprechen, dann loslassen.")
+                    Text(L10n.text("settings.pushToTalk.description"))
                         .font(Theme.Typo.secondary(size: 11.5))
                         .foregroundColor(Theme.Palette.text2)
                 }
                 Spacer()
                 KeyBadge(activeRecorder == .pushToTalk ? "…" : VirtualKey.display(app.currentCombo))
                     .opacity(activeRecorder == .pushToTalk ? 0.4 : 1)
-                Button("ÄNDERN") {
+                Button(L10n.text("action.change.uppercase")) {
                     activeRecorder = .pushToTalk
                 }
                 .font(Theme.Typo.kicker(size: 10.5))
                 .tracking(0.8)
                 .foregroundColor(Theme.Palette.stempelrot)
                 .buttonStyle(.plain)
-                .accessibilityLabel("Push-to-talk-Kürzel ändern")
+                .accessibilityLabel(L10n.text("settings.pushToTalk.changeAccessibility"))
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 13)
@@ -121,8 +121,8 @@ struct SettingsWindowView: View {
             if activeRecorder == .pushToTalk {
                 HotkeyRecorderField(
                     initialDraft: HotkeyCaptureDraft(combo: app.currentCombo),
-                    prompt: "JETZT DRÜCKEN",
-                    guidance: ["Mindestens ein Modifier. Esc bricht ab."],
+                    prompt: L10n.text("hotkeyRecorder.pressNow"),
+                    guidance: [L10n.text("hotkeyRecorder.minimumModifier")],
                     symbols: { draft in
                         guard let combo = draft.combo else { return [] }
                         return VirtualKey.display(combo).split(separator: " ").map(String.init)
@@ -150,28 +150,28 @@ struct SettingsWindowView: View {
         VStack(alignment: .leading, spacing: 0) {
             HStack {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Hands-free")
+                    Text(L10n.text("settings.handsFree.title"))
                         .font(Theme.Typo.zeilenTitel())
                         .foregroundColor(Theme.Palette.ink)
-                    Text("Doppeltipp auf \(VirtualKey.keySymbol(Int(settings.handsFreeKeyCode))) startet und stoppt die Aufnahme freihändig.")
+                    Text(L10n.text("settings.handsFree.description", VirtualKey.keySymbol(Int(settings.handsFreeKeyCode))))
                         .font(Theme.Typo.secondary(size: 11.5))
                         .foregroundColor(Theme.Palette.text2)
                 }
                 Spacer()
                 KeyBadge("\(VirtualKey.keySymbol(Int(settings.handsFreeKeyCode))) ×2")
                     .opacity(activeRecorder == .handsFree ? 0.4 : 1)
-                Button("ÄNDERN") {
+                Button(L10n.text("action.change.uppercase")) {
                     activeRecorder = .handsFree
                 }
                 .font(Theme.Typo.kicker(size: 10.5))
                 .tracking(0.8)
                 .foregroundColor(Theme.Palette.stempelrot)
                 .buttonStyle(.plain)
-                .accessibilityLabel("Hands-free-Taste ändern")
+                .accessibilityLabel(L10n.text("settings.handsFree.changeAccessibility"))
                 toggleControl(isOn: Binding(
                     get: { settings.handsFreeOn },
                     set: { app.setHandsFreeEnabled($0) }
-                ), accessibilityLabel: "Hands-free")
+                ), accessibilityLabel: L10n.text("settings.handsFree.title"))
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 13)
@@ -182,10 +182,10 @@ struct SettingsWindowView: View {
                         keyCode: settings.handsFreeKeyCode,
                         flags: 0
                     )),
-                    prompt: "MODIFIER DRÜCKEN",
+                    prompt: L10n.text("hotkeyRecorder.pressModifier"),
                     guidance: [
-                        "Nur Modifier-Tasten. Esc bricht ab.",
-                        "Normale Tasten sind gesperrt, damit der Doppeltipp kein Zeichen eingibt.",
+                        L10n.text("hotkeyRecorder.modifiersOnly"),
+                        L10n.text("hotkeyRecorder.normalKeysBlocked"),
                     ],
                     symbols: { draft in
                         draft.map { [VirtualKey.keySymbol(Int($0.keyCode))] } ?? []
@@ -223,21 +223,21 @@ struct SettingsWindowView: View {
     private var shortcutActionsRow: some View {
         HStack {
             VStack(alignment: .leading, spacing: 2) {
-                Text("Letztes Protokoll")
+                Text(L10n.text("settings.lastProtocol.title"))
                     .font(Theme.Typo.zeilenTitel())
                     .foregroundColor(Theme.Palette.ink)
-                Text("Erneut kopieren oder direkt in das aktive Textfeld einfügen.")
+                Text(L10n.text("settings.lastProtocol.description"))
                     .font(Theme.Typo.secondary(size: 11.5))
                     .foregroundColor(Theme.Palette.text2)
             }
             Spacer()
             HStack(spacing: 6) {
                 KeyBadge("⌃⌘C")
-                Text("KOPIEREN")
+                Text(L10n.text("action.copy.uppercase"))
                     .font(Theme.Typo.kicker(size: 9.5))
                     .foregroundColor(Theme.Palette.text3)
                 KeyBadge("⌃⌘V")
-                Text("EINFÜGEN")
+                Text(L10n.text("action.insert.uppercase"))
                     .font(Theme.Typo.kicker(size: 9.5))
                     .foregroundColor(Theme.Palette.text3)
             }
@@ -249,12 +249,12 @@ struct SettingsWindowView: View {
     private var modeRow: some View {
         HStack {
             VStack(alignment: .leading, spacing: 2) {
-                Text("Modus")
+                Text(L10n.text("settings.mode.title"))
                     .font(Theme.Typo.zeilenTitel())
                     .foregroundColor(Theme.Palette.ink)
                 Text(settings.hotkeyMode == .pushToTalk
-                     ? "Taste halten – klassisches Walkie-Talkie."
-                     : "Drücken zum Starten, nochmal drücken zum Stoppen.")
+                     ? L10n.text("settings.mode.pushToTalkDescription")
+                     : L10n.text("settings.mode.toggleDescription"))
                     .font(Theme.Typo.secondary(size: 11.5))
                     .foregroundColor(Theme.Palette.text2)
             }
@@ -286,12 +286,12 @@ struct SettingsWindowView: View {
             }
             Spacer()
             if granted {
-                Text("ERTEILT ✓")
+                Text(L10n.text("permission.granted.uppercase"))
                     .font(Theme.Typo.kicker(size: 10))
                     .tracking(0.8)
                     .foregroundColor(Theme.Palette.successText)
             } else {
-                Button("FREIGEBEN") {
+                Button(L10n.text("permission.allow.uppercase")) {
                     Task { @MainActor in app.requestMissingPermissions() }
                 }
                 .font(Theme.Typo.kicker(size: 10.5))
@@ -311,7 +311,7 @@ struct SettingsWindowView: View {
     // MARK: EINGABE (Mikrofon-Popover + Sprache)
 
     private var eingabeSection: some View {
-        section("EINGABE") {
+        section(L10n.text("settings.section.input")) {
             micRow
             rowDivider()
             languageRow
@@ -323,16 +323,16 @@ struct SettingsWindowView: View {
            let device = availableMics.first(where: { $0.uid == uid }) {
             return device.name
         }
-        return availableMics.first(where: \.isDefault)?.name ?? "Systemstandard"
+        return availableMics.first(where: \.isDefault)?.name ?? L10n.text("microphone.systemDefault")
     }
 
     private var micRow: some View {
         HStack {
             VStack(alignment: .leading, spacing: 2) {
-                Text("Mikrofon")
+                Text(L10n.text("microphone.title"))
                     .font(Theme.Typo.zeilenTitel())
                     .foregroundColor(Theme.Palette.ink)
-                Text("Wähle das Eingabegerät für deine Diktate.")
+                Text(L10n.text("microphone.description"))
                     .font(Theme.Typo.secondary(size: 11.5))
                     .foregroundColor(Theme.Palette.text2)
             }
@@ -355,7 +355,7 @@ struct SettingsWindowView: View {
                                       lineWidth: Theme.Metrics.hairline)))
             }
             .buttonStyle(.plain)
-            .accessibilityLabel("Mikrofon auswählen")
+            .accessibilityLabel(L10n.text("microphone.chooseAccessibility"))
             .popover(isPresented: $micPopoverOpen, arrowEdge: .bottom) {
                 MicPickerPopover(selection: Binding(
                     get: { settings.preferredMicUID },
@@ -370,10 +370,10 @@ struct SettingsWindowView: View {
     private var languageRow: some View {
         HStack {
             VStack(alignment: .leading, spacing: 2) {
-                Text("Sprache")
+                Text(L10n.text("settings.transcriptionLanguage.title"))
                     .font(Theme.Typo.zeilenTitel())
                     .foregroundColor(Theme.Palette.ink)
-                Text("„Automatisch“ nutzt die Systemsprache.")
+                Text(L10n.text("settings.transcriptionLanguage.description"))
                     .font(Theme.Typo.secondary(size: 11.5))
                     .foregroundColor(Theme.Palette.text2)
             }
@@ -387,7 +387,7 @@ struct SettingsWindowView: View {
                                                   )
                                               }
                                           })) {
-                Text("AUTO").tag("auto")
+                Text(L10n.text("language.auto.short")).tag("auto")
                 Text("DE").tag("de_DE")
                 Text("EN").tag("en_US")
             }
@@ -402,19 +402,19 @@ struct SettingsWindowView: View {
     // MARK: VERHALTEN
 
     private var verhaltenSection: some View {
-        section("VERHALTEN") {
-            toggleRow(title: "Ton-Feedback",
-                      description: "Kurzer Ton bei Start und Ende der Aufnahme.",
+        section(L10n.text("settings.section.behavior")) {
+            toggleRow(title: L10n.text("settings.sound.title"),
+                      description: L10n.text("settings.sound.description"),
                       isOn: Binding(get: { settings.soundOn }, set: { settings.soundOn = $0 }))
             rowDivider()
             postProcessingRow
             rowDivider()
-            toggleRow(title: "Autostart",
-                      description: "Stasi beim Anmelden starten.",
+            toggleRow(title: L10n.text("settings.autostart.title"),
+                      description: L10n.text("settings.autostart.description"),
                       isOn: Binding(get: { settings.autostartOn }, set: { settings.autostartOn = $0 }))
             rowDivider()
-            toggleRow(title: "Ironische Texte",
-                      description: "„Wir hören zu.“ & Co. — abschaltbar für Ernsthaftigkeit.",
+            toggleRow(title: L10n.text("settings.irony.title"),
+                      description: L10n.text("settings.irony.description"),
                       isOn: Binding(get: { settings.ironyOn }, set: { settings.ironyOn = $0 }))
         }
     }
@@ -484,7 +484,7 @@ struct SettingsWindowView: View {
         .opacity(disabled ? 0.45 : 1)
         .animation(reduceMotion ? nil : Theme.Motion.fast, value: isOn.wrappedValue)
         .accessibilityLabel(accessibilityLabel)
-        .accessibilityValue(isOn.wrappedValue ? "ein" : "aus")
+        .accessibilityValue(L10n.text(isOn.wrappedValue ? "accessibility.on" : "accessibility.off"))
         .accessibilityAddTraits(.isToggle)
     }
 
@@ -493,8 +493,9 @@ struct SettingsWindowView: View {
     // MARK: DARSTELLUNG (v3: fünf Akzent-Farbkreise)
 
     private var darstellungSection: some View {
-        section("DARSTELLUNG") {
-            HStack(spacing: 14) {
+        section(L10n.text("settings.section.appearance")) {
+            VStack(alignment: .leading, spacing: 0) {
+                HStack(spacing: 14) {
                 ForEach(SettingsStore.accentPresets, id: \.0) { name, hex in
                     let color = Color(stasiHex: hex)
                     let active = settings.accentHex == hex
@@ -516,7 +517,7 @@ struct SettingsWindowView: View {
                     }
                     .buttonStyle(.plain)
                     .help(name)
-                    .accessibilityLabel("Akzentfarbe \(name)")
+                    .accessibilityLabel(L10n.text("settings.accent.accessibility", name))
                     .accessibilityAddTraits(active ? .isSelected : [])
                 }
                 Spacer()
@@ -524,14 +525,42 @@ struct SettingsWindowView: View {
                     .font(Theme.Typo.counter(11))
                     .foregroundColor(Theme.Palette.text3)
             }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 13)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 13)
+                rowDivider()
+                uiLanguageRow
+            }
         }
+    }
+
+    private var uiLanguageRow: some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(L10n.text("settings.uiLanguage.title"))
+                    .font(Theme.Typo.zeilenTitel())
+                    .foregroundColor(Theme.Palette.ink)
+                Text(L10n.text("settings.uiLanguage.restartHint"))
+                    .font(Theme.Typo.secondary(size: 11.5))
+                    .foregroundColor(Theme.Palette.text2)
+            }
+            Spacer()
+            Picker("", selection: Binding(get: { settings.uiLanguage },
+                                           set: { settings.uiLanguage = $0 })) {
+                Text(L10n.text("language.auto.long")).tag("auto")
+                Text(L10n.text("language.german")).tag("de")
+                Text(L10n.text("language.english")).tag("en")
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .frame(width: 300)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 13)
     }
 
     private var activeAccentName: String {
         SettingsStore.accentPresets.first(where: { $0.1 == settings.accentHex })?.0
-            ?? "Anthrazit"
+            ?? L10n.text("settings.accent.charcoal")
     }
 
     // MARK: SPEICHER
@@ -539,18 +568,18 @@ struct SettingsWindowView: View {
     @State private var showDeleteConfirm = false
 
     private var speicherSection: some View {
-        section("SPEICHER") {
+        section(L10n.text("settings.section.storage")) {
             retentionRow
             rowDivider()
             deleteAllRow
         }
-        .alert("Alles löschen?", isPresented: $showDeleteConfirm) {
-            Button("Alles löschen", role: .destructive) {
+        .alert(L10n.text("settings.deleteAll.confirmTitle"), isPresented: $showDeleteConfirm) {
+            Button(L10n.text("settings.deleteAll.title"), role: .destructive) {
                 app.deleteAllHistory()
             }
-            Button("Abbrechen", role: .cancel) {}
+            Button(L10n.text("action.cancel"), role: .cancel) {}
         } message: {
-            Text("Alle Protokolle und Audio-Aufnahmen werden unwiderruflich von diesem Mac entfernt.")
+            Text(L10n.text("settings.deleteAll.confirmBody"))
         }
         .onChange(of: settings.retention) { _, _ in
             app.applyRetention()
@@ -560,10 +589,10 @@ struct SettingsWindowView: View {
     private var retentionRow: some View {
         HStack {
             VStack(alignment: .leading, spacing: 2) {
-                Text("Aufnahmen aufbewahren")
+                Text(L10n.text("settings.retention.title"))
                     .font(Theme.Typo.zeilenTitel())
                     .foregroundColor(Theme.Palette.ink)
-                Text("Ältere Protokolle und ihre Audio-Aufnahmen werden automatisch gelöscht.")
+                Text(L10n.text("settings.retention.description"))
                     .font(Theme.Typo.secondary(size: 11.5))
                     .foregroundColor(Theme.Palette.text2)
             }
@@ -585,15 +614,15 @@ struct SettingsWindowView: View {
     private var deleteAllRow: some View {
         HStack {
             VStack(alignment: .leading, spacing: 2) {
-                Text("Alles löschen")
+                Text(L10n.text("settings.deleteAll.title"))
                     .font(Theme.Typo.zeilenTitel())
                     .foregroundColor(Theme.Palette.ink)
-                Text("Entfernt alle Protokolle und Aufnahmen von diesem Mac.")
+                Text(L10n.text("settings.deleteAll.description"))
                     .font(Theme.Typo.secondary(size: 11.5))
                     .foregroundColor(Theme.Palette.text2)
             }
             Spacer()
-            Button("ALLES LÖSCHEN") {
+            Button(L10n.text("settings.deleteAll.uppercase")) {
                 showDeleteConfirm = true
             }
             .font(Theme.Typo.kicker(size: 10.5))
@@ -617,9 +646,9 @@ struct SettingsWindowView: View {
     private var ueberSection: some View {
         let presentation = UpdateStatusPresentation(status: updater.status)
 
-        return section("ÜBER") {
+        return section(L10n.text("settings.section.about")) {
             HStack(spacing: 10) {
-                Text("V \(AppVersion.display) · AKTE \(AppVersion.akte)")
+                Text(L10n.text("settings.about.version", AppVersion.display, AppVersion.akte))
                     .font(Theme.Typo.counter(12).weight(.bold))
                     .tracking(1.2)
                     .textCase(.uppercase)
@@ -628,7 +657,7 @@ struct SettingsWindowView: View {
                 Button {
                     Task { await updater.check() }
                 } label: {
-                    Text(updater.isChecking ? "PRÜFE …" : "AKTUELLE VERSION PRÜFEN")
+                    Text(L10n.text(updater.isChecking ? "update.checking.uppercase" : "update.check.uppercase"))
                         .font(Theme.Typo.kicker(size: 10.5))
                         .tracking(0.8)
                         .textCase(.uppercase)
@@ -642,7 +671,7 @@ struct SettingsWindowView: View {
                 .disabled(updater.isChecking)
 
                 if case let .updateAvailable(version, url, _) = updater.status {
-                    Button("UPDATE AUF V \(version)") {
+                    Button(L10n.text("update.install.uppercase", version)) {
                         NSWorkspace.shared.open(url)
                     }
                         .font(Theme.Typo.kicker(size: 10.5))
@@ -765,9 +794,9 @@ private struct HotkeyRecorderField<Draft>: View {
 
             HStack {
                 Spacer()
-                Button("Abbrechen") { cancel() }
+                Button(L10n.text("action.cancel")) { cancel() }
                     .buttonStyle(GhostButtonStyle())
-                Button("Übernehmen") { commit() }
+                Button(L10n.text("action.apply")) { commit() }
                     .buttonStyle(AccentButtonStyle())
                     .disabled(!canCommit(draft))
             }
@@ -850,7 +879,7 @@ struct MicPickerPopover: View {
         VStack(alignment: .leading, spacing: 0) {
             let list = devices
             if list.isEmpty {
-                Text("Keine Eingabegeräte gefunden.")
+                Text(L10n.text("microphone.noneFound"))
                     .font(Theme.Typo.secondary(size: 11.5))
                     .foregroundColor(Theme.Palette.text2)
                     .padding(14)
@@ -871,7 +900,7 @@ struct MicPickerPopover: View {
                 Circle()
                     .fill(Theme.Palette.successColor)
                     .frame(width: 6, height: 6)
-                Text("AUSGEWÄHLT ✓")
+                Text(L10n.text("microphone.selected.uppercase"))
                     .font(Theme.Typo.kicker(size: 9.5))
                     .tracking(1)
                     .foregroundColor(Theme.Palette.successText)
@@ -903,7 +932,7 @@ struct MicPickerPopover: View {
                     .foregroundColor(isSelected ? Theme.Palette.ink : Theme.Palette.text2)
                     .lineLimit(1)
                 if isStandard {
-                    Text("STANDARD")
+                    Text(L10n.text("microphone.default.uppercase"))
                         .font(Theme.Typo.kicker(size: 9))
                         .tracking(0.8)
                         .foregroundColor(Theme.Palette.text3)

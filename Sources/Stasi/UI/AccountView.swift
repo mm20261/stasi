@@ -11,9 +11,9 @@ struct AccountView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
                 VStack(alignment: .leading, spacing: 5) {
-                    Text("PERSONALAKTE")
+                    Text(L10n.text("account.kicker"))
                         .kicker(Theme.Palette.text3)
-                    Text("Konto")
+                    Text(L10n.text("account.title"))
                         .font(Theme.Typo.h1())
                         .tracking(-0.6)
                         .foregroundColor(Theme.Palette.ink)
@@ -78,13 +78,13 @@ struct AccountView: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .help(settings.avatarPath != nil ? "Bild ändern" : "Bild wählen")
-            .accessibilityLabel(settings.avatarPath != nil ? "Profilbild ändern" : "Profilbild wählen")
+            .help(L10n.text(settings.avatarPath != nil ? "account.avatar.change" : "account.avatar.choose"))
+            .accessibilityLabel(L10n.text(settings.avatarPath != nil ? "account.avatar.changeProfile" : "account.avatar.chooseProfile"))
 
             VStack(alignment: .leading, spacing: 0) {
-                Text("NAME")
+                Text(L10n.text("account.name.label"))
                     .kicker(Theme.Palette.text3)
-                TextField("Wie sollen wir dich nennen?", text: $nameDraft)
+                TextField(L10n.text("account.name.placeholder"), text: $nameDraft)
                     .stasiInput()
                     .padding(.top, 6)
                     .onSubmit { commitName() }
@@ -92,7 +92,7 @@ struct AccountView: View {
                         settings.userName = newValue.trimmingCharacters(in: .whitespaces)
                     }
                 if settings.avatarPath != nil {
-                    Button("Bild entfernen") {
+                    Button(L10n.text("account.avatar.remove")) {
                         settings.avatarPath = nil
                     }
                     .font(Theme.Typo.secondary())
@@ -100,7 +100,7 @@ struct AccountView: View {
                     .foregroundColor(Theme.Palette.stempelrot)
                     .padding(.top, 8)
                 }
-                Text("Kein Login, keine E-Mail — alles bleibt auf diesem Mac.")
+                Text(L10n.text("account.localNote"))
                     .font(Theme.Typo.note())
                     .foregroundColor(Theme.Palette.text2)
                     .padding(.top, 8)
@@ -114,7 +114,7 @@ struct AccountView: View {
 
     private var signatureCard: some View {
         VStack(alignment: .leading, spacing: 0) {
-            Text("STASI · V \(AppVersion.display) · AKTE \(AppVersion.akte)")
+            Text(L10n.text("account.version", AppVersion.display, AppVersion.akte))
                 .font(Theme.Typo.counter(12).weight(.bold))
                 .tracking(1.7)
                 .textCase(.uppercase)
@@ -145,7 +145,7 @@ struct AccountView: View {
     }
 
     private var signatureNote: String {
-        "Gebaut von meder.dev in Köln. Lokal, offline, ohne Konto."
+        L10n.text("account.signature")
     }
 
     private func commitName() {

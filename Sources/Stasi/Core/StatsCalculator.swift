@@ -88,7 +88,7 @@ enum StatsCalculator {
             }
         }
         if restWords > 0 {
-            result.append(AppUsageShare(app: "Andere", words: restWords,
+            result.append(AppUsageShare(app: L10n.text("stats.other"), words: restWords,
                                         percent: Double(restWords) / Double(total) * 100))
         }
         return result
@@ -111,7 +111,9 @@ enum StatsCalculator {
         let totalMinutes = Int(interval.rounded(.down)) / 60
         let h = totalMinutes / 60
         let m = totalMinutes % 60
-        return h > 0 ? "\(h):\(String(format: "%02d", m)) Std" : "\(m) Min"
+        return h > 0
+            ? L10n.text("stats.duration.hours", h, String(format: "%02d", m))
+            : L10n.text("stats.duration.minutes", m)
     }
 
     /// Wochenvergleich: diese Woche vs. Vorwoche (Wörter). Delta in Prozent
@@ -169,8 +171,7 @@ enum StatsCalculator {
             let rounded = (value * 10).rounded() / 10
             if rounded >= 1000 { return "\(Int(rounded.rounded()))\(suffix)" }
             if rounded.rounded() == rounded { return "\(Int(rounded))\(suffix)" }
-            return String(format: "%.1f%@", rounded, suffix)
-                .replacingOccurrences(of: ".", with: ",")
+            return String(format: "%.1f%@", locale: L10n.activeLocale, rounded, suffix)
         }
         switch abs(n) {
         case ..<1000:
@@ -194,25 +195,21 @@ enum StatsCalculator {
         let end = calendar.date(byAdding: .day, value: 6, to: start)!
         let startDay = calendar.component(.day, from: start)
         let endDay = calendar.component(.day, from: end)
-        monthFormatter.calendar = calendar
-        let startMonth = monthFormatter.string(from: start).uppercased()
-        let endMonth = monthFormatter.string(from: end).uppercased()
+        let formatter = DateFormatter()
+        formatter.locale = L10n.activeLocale
+        formatter.calendar = calendar
+        formatter.setLocalizedDateFormatFromTemplate("MMMM")
+        let startMonth = formatter.string(from: start).uppercased()
+        let endMonth = formatter.string(from: end).uppercased()
 
         let range: String
         if startMonth == endMonth {
-            range = "\(startDay).–\(endDay). \(endMonth)"
+            range = L10n.text("stats.weekRange.sameMonth", startDay, endDay, endMonth)
         } else {
-            range = "\(startDay). \(startMonth) – \(endDay). \(endMonth)"
+            range = L10n.text("stats.weekRange.twoMonths", startDay, startMonth, endDay, endMonth)
         }
-        return "KALENDERWOCHE \(week) · \(range)"
+        return L10n.text("stats.calendarWeek", week, range)
     }
-
-    private static let monthFormatter: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "de_DE")
-        formatter.setLocalizedDateFormatFromTemplate("MMMM")
-        return formatter
-    }()
 
     /// Reine Tipzeit-Estimate für die Wörter dieser Woche (40 WPM-Referenz):
     /// „Getippt hättest du dafür etwa 2:14 Stunden gebraucht.“

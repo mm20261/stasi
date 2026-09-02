@@ -15,7 +15,7 @@ struct InsightsView: View {
             VStack(alignment: .leading, spacing: 0) {
                 Text(StatsCalculator.weekKickerLabel(for: Date(), calendar: calendar))
                     .kicker(Theme.Palette.text3)
-                Text("Insights")
+                Text(L10n.text("insights.title"))
                     .font(Theme.Typo.h1())
                     .tracking(-0.6)
                     .foregroundColor(Theme.Palette.ink)
@@ -75,18 +75,18 @@ struct InsightsView: View {
                     .foregroundColor(Theme.Palette.ink)
                     .lineLimit(1)
                     .minimumScaleFactor(0.5)
-                Text("Wörter diese Woche\(deltaSuffix(comparison.deltaPercent)).")
+                Text(L10n.text("insights.wordsThisWeek", deltaSuffix(comparison.deltaPercent)))
                     .font(Theme.Typo.input())
                     .foregroundColor(Theme.Palette.text2)
-                Text("Getippt hättest du dafür etwa \(typing) gebraucht.")
+                Text(L10n.text("insights.typingTime", typing))
                     .font(Theme.Typo.caption())
                     .foregroundColor(Theme.Palette.text3)
             }
             Spacer()
             sideValue(value: wpmText,
-                      label: "WÖRTER / MINUTE")
+                      label: L10n.text("stats.wordsPerMinute.uppercase"))
             sideValue(value: "\(StatsCalculator.currentStreak(records, calendar: calendar))",
-                      label: "SERIE · TAGE")
+                      label: L10n.text("stats.streakDays.uppercase"))
         }
         .card(insets: EdgeInsets(top: 22, leading: 24, bottom: 22, trailing: 24))
     }
@@ -94,10 +94,11 @@ struct InsightsView: View {
     private func deltaSuffix(_ delta: Double?) -> String {
         guard let delta else { return "" }
         let rounded = Int(delta.rounded())
-        if rounded == 0 { return " – wie letzte Woche" }
+        if rounded == 0 { return L10n.text("insights.delta.same") }
         let sign = rounded > 0 ? "+" : ""
-        return sign == "+" ? " — \(sign)\(rounded) % mehr als letzte Woche"
-                           : " — \(abs(rounded)) % weniger als letzte Woche"
+        return sign == "+"
+            ? L10n.text("insights.delta.more", rounded)
+            : L10n.text("insights.delta.less", abs(rounded))
     }
 
     private func sideValue(value: String, label: String) -> some View {
@@ -120,13 +121,13 @@ struct InsightsView: View {
 
     private var appUsageCard: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("Wohin diktiert wird")
+            Text(L10n.text("insights.appUsage.title"))
                 .font(Theme.Typo.kartentitel())
                 .foregroundColor(Theme.Palette.ink)
 
             let usage = StatsCalculator.appUsage(app.history.records)
             if usage.isEmpty {
-                Text("Noch keine Daten.")
+                Text(L10n.text("insights.noData"))
                     .font(Theme.Typo.secondary())
                     .foregroundColor(Theme.Palette.text2)
             } else {
@@ -170,11 +171,11 @@ struct InsightsView: View {
 
         return VStack(alignment: .leading, spacing: 14) {
             HStack(alignment: .top) {
-                Text("\(streak) Tage Serie")
+                Text(L10n.text(streak == 1 ? "insights.streak.one" : "insights.streak.many", streak))
                     .font(Theme.Typo.kartentitel())
                     .foregroundColor(Theme.Palette.ink)
                 Spacer()
-                stampBadge("REKORD · \(record) TAGE")
+                stampBadge(L10n.text(record == 1 ? "insights.record.one" : "insights.record.many", record))
             }
 
             let columns = Array(repeating: GridItem(.flexible(), spacing: 3.5), count: 16)
@@ -215,8 +216,9 @@ struct InsightsView: View {
     }
 
     private func streakNote(streak: Int) -> String {
-        settings.ironyOn
-            ? "\(streak) Tage ohne eine einzige Lücke. Vorbildliche Aktenführung."
-            : "\(streak) Tage in Folge diktiert."
+        let plurality = streak == 1 ? "one" : "many"
+        return L10n.text(settings.ironyOn
+            ? "insights.streakNote.ironic.\(plurality)"
+            : "insights.streakNote.standard.\(plurality)", streak)
     }
 }

@@ -60,22 +60,24 @@ struct PolishSummary: Codable, Equatable, Sendable {
     func badgeText(correctionCount: Int = 0) -> String? {
         guard level == .standard, !changes.isEmpty else { return nil }
         if fillerWordsRemoved > 0 {
-            return "POLIERT · −\(fillerWordsRemoved) FÜLLWÖRTER"
+            return L10n.text("polish.badge.fillers", fillerWordsRemoved)
         }
         if stutterWordsRemoved > 0 || selfCorrectionsResolved > 0 {
-            return "POLIERT · VERSPRECHER"
+            return L10n.text("polish.badge.slip")
         }
         let corrections = dictionaryCorrectionsApplied > 0
             ? dictionaryCorrectionsApplied : correctionCount
         if corrections > 0 {
-            let noun = corrections == 1 ? "KORREKTUR" : "KORREKTUREN"
-            return "POLIERT · \(corrections) \(noun)"
+            return L10n.text(
+                corrections == 1 ? "polish.badge.correction.one" : "polish.badge.correction.many",
+                corrections
+            )
         }
         return nil
     }
 
     var compactBadgeText: String? {
-        badgeText() == nil ? nil : "POLIERT"
+        badgeText() == nil ? nil : L10n.text("polish.badge.compact")
     }
 
     /// Reine Präsentationslogik für das gemeinsame Detail-Popover.
@@ -91,26 +93,26 @@ struct PolishSummary: Codable, Equatable, Sendable {
         let slips = changes.compactMap { change -> String? in
             guard change.kind == .stutter || change.kind == .selfCorrection,
                   let removed = change.removed, let kept = change.kept else { return nil }
-            return "„\(removed)“ → „\(kept)“"
+            return L10n.text("polish.change", removed, kept)
         }
         var dictionary = changes.compactMap { change -> String? in
             guard change.kind == .dictionary,
                   let removed = change.removed, let kept = change.kept else { return nil }
-            return "„\(removed)“ → „\(kept)“"
+            return L10n.text("polish.change", removed, kept)
         }
         if dictionary.isEmpty {
-            dictionary = corrections.map { "„\($0.matched)“ → „\($0.target)“" }
+            dictionary = corrections.map { L10n.text("polish.change", $0.matched, $0.target) }
         }
 
         var sections: [PolishDetailSection] = []
         if !fillers.isEmpty {
-            sections.append(PolishDetailSection(title: "Füllwörter entfernt", items: fillers))
+            sections.append(PolishDetailSection(title: L10n.text("polish.section.fillers"), items: fillers))
         }
         if !slips.isEmpty {
-            sections.append(PolishDetailSection(title: "Versprecher", items: slips))
+            sections.append(PolishDetailSection(title: L10n.text("polish.section.slips"), items: slips))
         }
         if !dictionary.isEmpty {
-            sections.append(PolishDetailSection(title: "Wörterbuch", items: dictionary))
+            sections.append(PolishDetailSection(title: L10n.text("dictionary.title"), items: dictionary))
         }
         return sections
     }

@@ -143,6 +143,22 @@ final class SettingsStoreTests: XCTestCase {
         XCTAssertEqual(settings.transcriptionLocale.identifier, Locale.current.identifier)
     }
 
+    func testUILanguagePersistsAndUpdatesLocalizationOverride() {
+        L10n.languageOverride = "de"
+        defer { L10n.languageOverride = "de" }
+        let settings = SettingsStore(defaults: defaults)
+
+        XCTAssertEqual(settings.uiLanguage, "auto")
+        settings.uiLanguage = "en"
+
+        XCTAssertEqual(defaults.string(forKey: "stasi.uiLanguage"), "en")
+        XCTAssertEqual(L10n.languageOverride, "en")
+        XCTAssertEqual(SettingsStore(defaults: defaults).uiLanguage, "en")
+
+        settings.uiLanguage = "auto"
+        XCTAssertNil(L10n.languageOverride)
+    }
+
     func testUserNamePersistence() {
         let settings = SettingsStore(defaults: defaults)
         settings.userName = "Phil"

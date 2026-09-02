@@ -77,6 +77,14 @@ test "$(
     /usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' "$INFO_PLIST"
 )" = "26.0"
 
+test "$(
+    /usr/libexec/PlistBuddy -c 'Print :CFBundleLocalizations:0' "$INFO_PLIST"
+)" = "de"
+
+test "$(
+    /usr/libexec/PlistBuddy -c 'Print :CFBundleLocalizations:1' "$INFO_PLIST"
+)" = "en"
+
 if [[ -n "${STASI_VERSION:-}" ]]; then
     test "$(
         /usr/libexec/PlistBuddy \
@@ -110,6 +118,10 @@ test -f "$RESOURCE_BUNDLE/Geist.ttf"
 test -f "$RESOURCE_BUNDLE/GeistMono.ttf"
 test -f "$RESOURCE_BUNDLE/menubar.png"
 test -f "$RESOURCE_BUNDLE/menubar-recording.png"
+test -f "$RESOURCE_BUNDLE/de.lproj/Localizable.strings"
+test -f "$RESOURCE_BUNDLE/en.lproj/Localizable.strings"
+test -f "$RESOURCE_BUNDLE/de.lproj/InfoPlist.strings"
+test -f "$RESOURCE_BUNDLE/en.lproj/InfoPlist.strings"
 test -f "$MIT_FILE"
 test -f "$OFL_FILE"
 grep -q 'MIT License' "$MIT_FILE"

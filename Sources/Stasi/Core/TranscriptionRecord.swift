@@ -151,13 +151,13 @@ enum HistoryStoreError: LocalizedError, Sendable {
     var errorDescription: String? {
         switch self {
         case .stillLoading:
-            return "Der Verlauf wird noch geladen."
+            return L10n.text("history.error.notLoaded")
         case .writeBlockedByUnreadableHistory(let url):
-            return "Die unlesbare Verlaufsdatei \(url.path) wurde nicht verändert."
+            return L10n.text("history.error.unreadable", url.path)
         case .encodingFailed(let message):
-            return "Der Verlauf konnte nicht kodiert werden: \(message)"
+            return L10n.text("history.error.encoding", message)
         case .writeFailed(let url, let message):
-            return "Der Verlauf konnte nicht nach \(url.path) geschrieben werden: \(message)"
+            return L10n.text("history.error.write", url.path, message)
         }
     }
 }
@@ -335,9 +335,10 @@ final class HistoryStore: HistoryStoring {
             records = loadedRecords
             state = .loaded
             if skipped > 0 {
-                let message = skipped == 1
-                    ? "1 beschädigtes Protokoll wurde übersprungen."
-                    : "\(skipped) beschädigte Protokolle wurden übersprungen."
+                let message = L10n.text(
+                    skipped == 1 ? "history.warning.skipped.one" : "history.warning.skipped.many",
+                    skipped
+                )
                 lastError = message
                 DebugLog.log("STASI-HISTORY: \(message)")
                 // Übersprungene Records fehlen beim nächsten Schreiben; Original sichern.

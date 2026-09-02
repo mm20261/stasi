@@ -487,13 +487,13 @@ enum TranscriptionError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .engineUnavailable:
-            return "SpeechTranscriber ist auf diesem Gerät nicht verfügbar."
+            return L10n.text("speech.error.notAvailable")
         case .noAudioFormat:
-            return "Kein kompatibles Audio-Format für die Speech-Engine."
+            return L10n.text("speech.error.noCompatibleFormat")
         case .unsupportedLocale(let identifier):
-            return "Die Sprache „\(identifier)“ wird nicht unterstützt. Wähle in den Einstellungen eine unterstützte Sprache."
+            return L10n.text("speech.error.unsupportedLocale", identifier)
         case .tooManyRetiredAnalyzers:
-            return "Zwei frühere Speech-Analyzer reagieren noch nicht. Bitte starte Stasi neu, bevor du weiter diktierst."
+            return L10n.text("speech.error.retiredAnalyzerLimit")
         }
     }
 }

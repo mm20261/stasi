@@ -66,7 +66,7 @@ struct ProtocolsView: View {
         HStack(spacing: 12) {
             searchBar
             if isSearching {
-                Text("\(Copy.formatGermanNumber(hitCount)) TREFFER")
+                Text(L10n.text(hitCount == 1 ? "search.hits.one" : "search.hits.many", Copy.formatGermanNumber(hitCount)))
                     .font(Theme.Typo.counter(10))
                     .foregroundColor(Theme.Palette.text3)
                     .monospacedDigit()
@@ -82,14 +82,14 @@ struct ProtocolsView: View {
             Image(systemName: "magnifyingglass")
                 .font(.system(size: 13))
                 .foregroundColor(Theme.Palette.text3)
-            TextField("Aktenrecherche — Volltext, alle Protokolle",
+            TextField(L10n.text("search.placeholder"),
                       text: Binding(get: { selection.searchQuery },
                                     set: { selection.searchQuery = $0 }))
                 .textFieldStyle(.plain)
                 .font(Theme.Typo.counter(12))
                 .foregroundColor(Theme.Palette.ink)
                 .focused($searchFocused)
-                .accessibilityLabel("Protokolle durchsuchen")
+                .accessibilityLabel(L10n.text("menu.searchProtocols"))
             Text("⌘F")
                 .font(Theme.Typo.counter(10))
                 .foregroundColor(Theme.Palette.text3)
@@ -147,9 +147,9 @@ struct ProtocolsView: View {
     private var header: some View {
         HStack(alignment: .top) {
             VStack(alignment: .leading, spacing: 5) {
-                Text("PROTOKOLLE · \(Copy.formatGermanNumber(app.history.records.count))")
+                Text(L10n.text("protocols.kicker", Copy.formatGermanNumber(app.history.records.count)))
                     .kicker(Theme.Palette.text3)
-                Text("Protokolle")
+                Text(L10n.text("protocols.title"))
                     .font(Theme.Typo.h1())
                     .tracking(-0.6)
                     .foregroundColor(Theme.Palette.ink)
@@ -161,7 +161,7 @@ struct ProtocolsView: View {
             Button {
                 exportAll()
             } label: {
-                Text("EXPORT ALLER PROTOKOLLE")
+                Text(L10n.text("protocols.exportAll.uppercase"))
                     .font(Theme.Typo.kicker(size: 10.5))
                     .tracking(1)
                     .textCase(.uppercase)
@@ -188,10 +188,10 @@ struct ProtocolsView: View {
             emptyState
         } else if filteredRecords.isEmpty {
             VStack(spacing: 6) {
-                Text("Keine Treffer")
+                Text(L10n.text("search.noHits.title"))
                     .font(Theme.Typo.body().weight(.medium))
                     .foregroundColor(Theme.Palette.ink)
-                Text("Keine passenden Protokolle gefunden.")
+                Text(L10n.text("search.noHits.body"))
                     .font(Theme.Typo.secondary())
                     .foregroundColor(Theme.Palette.text2)
                 Button(Copy.resetProtocolSearch) {
@@ -215,7 +215,7 @@ struct ProtocolsView: View {
     }
 
     private var loadingState: some View {
-        Text("Lade Protokolle…")
+        Text(L10n.text("protocols.loading"))
             .font(Theme.Typo.secondary())
             .foregroundColor(Theme.Palette.text2)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -244,7 +244,7 @@ struct ProtocolsView: View {
 
     private var emptyState: some View {
         VStack(spacing: 6) {
-            Text("Keine Protokolle")
+            Text(L10n.text("protocols.none.title"))
                 .font(Theme.Typo.body().weight(.medium))
                 .foregroundColor(Theme.Palette.ink)
             Text(Copy.emptyProtocols(settings))
@@ -352,12 +352,12 @@ struct ProtocolsView: View {
             if record.durationSecs > 0 {
                 Text(DurationFormatter.minutesAndSeconds(record.durationSecs))
                 if let wpm = wordsPerMinute(record) {
-                    Text("\(wpm) WPM")
+                    Text(L10n.text("stats.wpm", wpm))
                 }
             }
-            Text("\(record.wordCount) Wörter")
+            Text(L10n.text(record.wordCount == 1 ? "words.one" : "words.many", record.wordCount))
             if !record.corrections.isEmpty {
-                Text("\(record.corrections.count) KORREKTUREN")
+                Text(L10n.text(record.corrections.count == 1 ? "corrections.one.uppercase" : "corrections.many.uppercase", record.corrections.count))
                     .padding(.horizontal, 6)
                     .padding(.vertical, 1.5)
                     .background(RoundedRectangle(cornerRadius: 3)
@@ -405,10 +405,10 @@ struct ProtocolsView: View {
 
     private func accessibilityLabel(for symbol: String) -> String {
         switch symbol {
-        case "play.fill": "Audio abspielen"
-        case "stop.fill": "Audio stoppen"
-        case "doc.on.doc": "Protokoll kopieren"
-        case "checkmark": "Protokoll kopiert"
+        case "play.fill": L10n.text("audio.play")
+        case "stop.fill": L10n.text("audio.stop")
+        case "doc.on.doc": L10n.text("protocol.copy")
+        case "checkmark": L10n.text("protocol.copied")
         default: symbol
         }
     }
@@ -430,7 +430,7 @@ struct ProtocolsView: View {
     private func exportAll() {
         let panel = NSSavePanel()
         panel.allowedContentTypes = [.plainText]
-        panel.nameFieldStringValue = "stasi-protokolle.md"
+        panel.nameFieldStringValue = L10n.text("export.all.filename")
         guard panel.runModal() == .OK, let url = panel.url else { return }
         let md = ProtocolExporter.markdownAll(app.history.records, calendar: calendar)
         try? md.write(to: url, atomically: true, encoding: .utf8)
@@ -465,10 +465,18 @@ enum RecordActions {
         let panel = NSSavePanel()
         panel.allowedContentTypes = [.plainText]
         let base = record.date.formatted(.iso8601.year().month().day().dateSeparator(.dash))
-        panel.nameFieldStringValue = "protokoll-\(base).\(asMarkdown ? "md" : "txt")"
+        panel.nameFieldStringValue = L10n.text(
+            "export.single.filename",
+            base,
+            asMarkdown ? "md" : "txt"
+        )
         if panel.runModal() == .OK, let url = panel.url {
             let content = asMarkdown
-                ? "# Protokoll · \(record.date.formatted(.dateTime.day().month().year().hour().minute()))\n\n\(record.correctedText)\n"
+                ? L10n.text(
+                    "export.single.markdown",
+                    record.date.formatted(.dateTime.day().month().year().hour().minute()),
+                    record.correctedText
+                )
                 : record.correctedText
             try? content.write(to: url, atomically: true, encoding: .utf8)
         }
@@ -494,14 +502,14 @@ struct RecordActionsMenu: View {
 
     var body: some View {
         Menu {
-            Button("Rohtext anzeigen") { rawTextRecord = record }
-            Button("Rohtext kopieren") { RecordActions.copyRawText(record) }
+            Button(L10n.text("rawText.show")) { rawTextRecord = record }
+            Button(L10n.text("rawText.copy")) { RecordActions.copyRawText(record) }
             Divider()
-            Button("Audio extrahieren (.wav)") { RecordActions.extractAudio(record) }
-            Button("Export als .txt") { RecordActions.export(record, asMarkdown: false) }
-            Button("Export als .md") { RecordActions.export(record, asMarkdown: true) }
+            Button(L10n.text("audio.extract")) { RecordActions.extractAudio(record) }
+            Button(L10n.text("export.txt")) { RecordActions.export(record, asMarkdown: false) }
+            Button(L10n.text("export.markdown")) { RecordActions.export(record, asMarkdown: true) }
             Divider()
-            Button("Löschen", role: .destructive) {
+            Button(L10n.text("action.delete"), role: .destructive) {
                 if playingId == record.id {
                     player.stop()
                     playingId = nil
@@ -518,7 +526,7 @@ struct RecordActionsMenu: View {
         }
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
-        .accessibilityLabel("Weitere Aktionen für Protokoll")
+        .accessibilityLabel(L10n.text("protocol.moreActions"))
     }
 }
 
@@ -528,7 +536,7 @@ struct RawTranscriptView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("Rohtext")
+            Text(L10n.text("rawText.title"))
                 .font(Theme.Typo.sectionTitle())
                 .foregroundColor(Theme.Palette.ink)
             ScrollView {
@@ -541,7 +549,7 @@ struct RawTranscriptView: View {
             .frame(minHeight: 180)
             HStack {
                 Spacer()
-                Button("Rohtext kopieren", action: onCopy)
+                Button(L10n.text("rawText.copy"), action: onCopy)
                     .buttonStyle(AccentButtonStyle())
             }
         }
