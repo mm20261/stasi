@@ -86,6 +86,34 @@ final class ProtocolSearchTests: XCTestCase {
         XCTAssertEqual(hits.map(\.correctedText), ["woche"])
     }
 
+    func testDatumsfilterVerwendetKalendertageUeberSommerzeitwechsel() throws {
+        let now = try XCTUnwrap(calendar.date(
+            from: DateComponents(year: 2026, month: 4, day: 5, hour: 12)
+        ))
+        let erwarteteGrenze = try XCTUnwrap(calendar.date(
+            from: DateComponents(year: 2026, month: 3, day: 29)
+        ))
+        let eineSekundeDavor = erwarteteGrenze.addingTimeInterval(-1)
+        let anDerGrenze = TranscriptionRecord(
+            date: erwarteteGrenze, localeID: "de_DE", rawText: "Grenze",
+            correctedText: "Grenze", corrections: []
+        )
+        let davor = TranscriptionRecord(
+            date: eineSekundeDavor, localeID: "de_DE", rawText: "Davor",
+            correctedText: "Davor", corrections: []
+        )
+
+        XCTAssertEqual(
+            RetentionCutoff.date(daysBack: 7, calendar: calendar, now: now),
+            erwarteteGrenze
+        )
+        let hits = ProtocolSearch.filter(
+            [davor, anDerGrenze], query: "", filter: .last7Days,
+            calendar: calendar, now: now
+        )
+        XCTAssertEqual(hits.map(\.correctedText), ["Grenze"])
+    }
+
     func testFilterAllKeepsEverything() {
         let hits = ProtocolSearch.filter([record("a", daysAgo: 100)], query: "",
                                          filter: .all, calendar: calendar)

@@ -26,6 +26,33 @@ struct DictionaryEntry: Identifiable, Codable, Equatable, Hashable {
     /// Vom System berechnete Warnungen (z. B. Kollision mit gebräuchlichem Wort)
     var warns: [String]? = nil
 
+    init(id: UUID = UUID(), type: EntryType, value: String = "",
+         from: String? = nil, to: String? = nil, note: String? = nil,
+         warns: [String]? = nil) {
+        self.id = id
+        self.type = type
+        self.value = value
+        self.from = from
+        self.to = to
+        self.note = note
+        self.warns = warns
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, type, value, from, to, note, warns
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        type = try container.decode(EntryType.self, forKey: .type)
+        value = try container.decodeIfPresent(String.self, forKey: .value) ?? ""
+        from = try container.decodeIfPresent(String.self, forKey: .from)
+        to = try container.decodeIfPresent(String.self, forKey: .to)
+        note = try container.decodeIfPresent(String.self, forKey: .note)
+        warns = try container.decodeIfPresent([String].self, forKey: .warns)
+    }
+
     /// Das Muster, gegen das transkribierter Text gematcht wird.
     var matchSource: String {
         switch type {
@@ -45,9 +72,47 @@ struct DictionaryEntry: Identifiable, Codable, Equatable, Hashable {
 }
 
 struct DictionaryFile: Codable {
+    var version: Int = 1
     var entries: [DictionaryEntry] = []
     /// Optional für Rückwärtskompatibilität mit bestehenden dictionary.json-Dateien.
     var ignoredLearned: [String]? = nil
+
+    init(version: Int = 1, entries: [DictionaryEntry] = [],
+         ignoredLearned: [String]? = nil) {
+        self.version = version
+        self.entries = entries
+        self.ignoredLearned = ignoredLearned
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case version, entries, ignoredLearned
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        version = try container.decodeIfPresent(Int.self, forKey: .version) ?? 1
+        let tolerantEntries = try container.decodeIfPresent(
+            [TolerantDictionaryEntry].self,
+            forKey: .entries
+        ) ?? []
+        entries = tolerantEntries.compactMap(\.value)
+        ignoredLearned = try container.decodeIfPresent([String].self, forKey: .ignoredLearned)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(version, forKey: .version)
+        try container.encode(entries, forKey: .entries)
+        try container.encodeIfPresent(ignoredLearned, forKey: .ignoredLearned)
+    }
+}
+
+private struct TolerantDictionaryEntry: Decodable {
+    let value: DictionaryEntry?
+
+    init(from decoder: Decoder) throws {
+        value = try? DictionaryEntry(from: decoder)
+    }
 }
 
 // MARK: - Gebräuchliche Wörter (Warnungs-Heuristik)

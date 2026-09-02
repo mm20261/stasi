@@ -31,6 +31,13 @@ enum ProtocolSearchFilter: String, CaseIterable, Identifiable {
     }
 }
 
+enum RetentionCutoff {
+    static func date(daysBack: Int, calendar: Calendar, now: Date) -> Date {
+        let start = calendar.startOfDay(for: now)
+        return calendar.date(byAdding: .day, value: -daysBack, to: start) ?? start
+    }
+}
+
 enum ProtocolSearch {
 
     /// Volltext-Treffer: Groß-/Kleinschreibung egal, durchsucht korrigierten
@@ -52,10 +59,9 @@ enum ProtocolSearch {
                        now: Date = Date()) -> [TranscriptionRecord] {
         var result = records.filter { matches($0, query: query) }
         if let days = filter.days {
-            let cutoff = now.addingTimeInterval(-Double(days) * 86_400)
+            let cutoff = RetentionCutoff.date(daysBack: days, calendar: calendar, now: now)
             result = result.filter { $0.date >= cutoff }
         }
-        _ = calendar
         return result
     }
 

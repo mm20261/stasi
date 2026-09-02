@@ -15,6 +15,12 @@ struct PolishChange: Codable, Equatable, Sendable {
         case discourseFiller
         case dictionary
         case textTidy
+        case unknown
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.singleValueContainer()
+            self = Self(rawValue: try container.decode(String.self)) ?? .unknown
+        }
     }
 
     let kind: Kind

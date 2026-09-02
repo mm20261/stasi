@@ -139,6 +139,69 @@ final class DictionaryStoreTests: XCTestCase {
         XCTAssertEqual(reloaded.entries.map(\.value), ["Legacy"])
         XCTAssertTrue(reloaded.ignoredLearned.isEmpty)
     }
+
+    func testKaputteDateiWirdGesichertUndNichtUeberschrieben() throws {
+        let original = Data("{kaputt".utf8)
+        try original.write(to: store.fileURL)
+
+        store.load()
+        store.save()
+        store.add(DictionaryEntry(type: .word, value: "Darf nicht hinein"))
+
+        XCTAssertEqual(try Data(contentsOf: store.fileURL), original)
+        guard case .unreadable = store.state else {
+            return XCTFail("Die kaputte Wörterbuchdatei muss schreibgeschützt bleiben")
+        }
+        XCTAssertNotNil(store.lastError)
+        let backups = try FileManager.default.contentsOfDirectory(
+            at: tempDir,
+            includingPropertiesForKeys: nil
+        ).filter { $0.lastPathComponent.hasPrefix("dictionary.corrupt-") }
+        XCTAssertEqual(backups.count, 1)
+        XCTAssertEqual(try Data(contentsOf: try XCTUnwrap(backups.first)), original)
+    }
+
+    func testFehlendeDateiBeimNachladenBehaeltBestehendeEintraege() throws {
+        store.add(DictionaryEntry(type: .word, value: "Vercel"))
+        store.add(DictionaryEntry(type: .word, value: "Supabase"))
+        store.add(DictionaryEntry(type: .word, value: "PostHog"))
+        XCTAssertEqual(store.entries.count, 5)
+
+        try FileManager.default.removeItem(at: store.fileURL)
+        store.load()
+
+        XCTAssertEqual(store.entries.count, 5)
+        XCTAssertTrue(store.entries.contains { $0.value == "Vercel" })
+    }
+
+    func testHandeintragOhneIDWirdGeladen() throws {
+        let data = Data(#"{"entries":[{"type":"word","value":"Vercel"}]}"#.utf8)
+        try data.write(to: store.fileURL)
+
+        store.load()
+
+        XCTAssertEqual(store.entries.map(\.value), ["Vercel"])
+        XCTAssertNotNil(store.entries.first?.id)
+    }
+
+    func testUnbekannterTypUeberspringtNurBetroffenenEintrag() throws {
+        let data = Data(#"{"entries":[{"type":"word","value":"Vercel"},{"type":"spaeter","value":"Zukunft"},{"type":"word","value":"Supabase"}]}"#.utf8)
+        try data.write(to: store.fileURL)
+
+        store.load()
+
+        XCTAssertEqual(Set(store.entries.map(\.value)), ["Vercel", "Supabase"])
+        XCTAssertEqual(store.state, .loaded)
+    }
+
+    func testWoerterbuchSchreibtSchemaVersionEins() throws {
+        store.save()
+
+        let json = try XCTUnwrap(JSONSerialization.jsonObject(
+            with: Data(contentsOf: store.fileURL)
+        ) as? [String: Any])
+        XCTAssertEqual(json["version"] as? Int, 1)
+    }
 }
 
 // MARK: - HistoryStore
@@ -204,6 +267,21 @@ final class HistoryStoreTests: XCTestCase {
         }
         XCTAssertNotNil(reloaded.lastError)
         XCTAssertEqual(try Data(contentsOf: url), original)
+    }
+
+    func testVollstaendigKaputteHistorieWirdGesichert() throws {
+        let url = tempDir.appendingPathComponent("history.json")
+        let original = Data("{nicht-json".utf8)
+        try original.write(to: url)
+
+        _ = HistoryStore(directory: tempDir)
+
+        let backups = try FileManager.default.contentsOfDirectory(
+            at: tempDir,
+            includingPropertiesForKeys: nil
+        ).filter { $0.lastPathComponent.hasPrefix("history.corrupt-") }
+        XCTAssertEqual(backups.count, 1)
+        XCTAssertEqual(try Data(contentsOf: try XCTUnwrap(backups.first)), original)
     }
 
     func testInsertCannotOverwriteUnreadableHistory() throws {
@@ -288,6 +366,138 @@ final class HistoryStoreTests: XCTestCase {
 
         XCTAssertEqual(reloaded.records.first?.correctedText, "Altes Protokoll")
         XCTAssertNil(reloaded.records.first?.polish)
+    }
+
+    func testEinKaputtesProtokollVerwirftNichtDenRest() throws {
+        let records = [
+            makeRecord(text: "Eins", date: Date(timeIntervalSince1970: 100)),
+            makeRecord(text: "Kaputt", date: Date(timeIntervalSince1970: 200)),
+            makeRecord(text: "Drei", date: Date(timeIntervalSince1970: 300)),
+        ]
+        let encoded = try JSONEncoder().encode(records)
+        var json = try XCTUnwrap(JSONSerialization.jsonObject(with: encoded) as? [[String: Any]])
+        json[1]["date"] = "kein Datum"
+        let data = try JSONSerialization.data(withJSONObject: json)
+        try data.write(to: tempDir.appendingPathComponent("history.json"))
+
+        let reloaded = HistoryStore(directory: tempDir)
+
+        XCTAssertEqual(Set(reloaded.records.map(\.correctedText)), ["Eins", "Drei"])
+        XCTAssertEqual(reloaded.state, .loaded)
+        XCTAssertTrue(reloaded.lastError?.contains("1") == true)
+        XCTAssertNoThrow(try reloaded.insert(makeRecord(text: "Neu")))
+        let backups = try FileManager.default.contentsOfDirectory(atPath: tempDir.path)
+            .filter { $0.hasPrefix("history.corrupt-") }
+        XCTAssertEqual(backups.count, 1, "Original mit defektem Record muss gesichert sein")
+    }
+
+    func testAudioEinesUebersprungenenProtokollsBleibtErhalten() throws {
+        let audioDirectory = tempDir.appendingPathComponent("audio", isDirectory: true)
+        try FileManager.default.createDirectory(at: audioDirectory, withIntermediateDirectories: true)
+        let audio = audioDirectory.appendingPathComponent("teilweise-lesbar.wav")
+        try Data("audio".utf8).write(to: audio)
+        var damaged = makeRecord(text: "Kaputtes Datum")
+        damaged.audioPath = audio.path
+        let encoded = try JSONEncoder().encode([damaged])
+        var json = try XCTUnwrap(JSONSerialization.jsonObject(with: encoded) as? [[String: Any]])
+        json[0]["date"] = "kein Datum"
+        try JSONSerialization.data(withJSONObject: json)
+            .write(to: tempDir.appendingPathComponent("history.json"))
+
+        let reloaded = HistoryStore(directory: tempDir)
+
+        XCTAssertEqual(reloaded.state, .loaded)
+        XCTAssertTrue(reloaded.records.isEmpty)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: audio.path))
+    }
+
+    func testUnbekanntePolishArtBleibtAlsFallbackLesbar() throws {
+        let change = PolishChange(kind: .hesitation, count: 1, removed: "äh")
+        let summary = PolishSummary(level: .standard, changes: [change])
+        let record = TranscriptionRecord(
+            date: Date(), localeID: "de_DE", rawText: "äh Hallo", correctedText: "Hallo",
+            corrections: [], polish: summary
+        )
+        let encoded = try JSONEncoder().encode([record])
+        var json = try XCTUnwrap(JSONSerialization.jsonObject(with: encoded) as? [[String: Any]])
+        var polish = try XCTUnwrap(json[0]["polish"] as? [String: Any])
+        var changes = try XCTUnwrap(polish["changes"] as? [[String: Any]])
+        changes[0]["kind"] = "zukuenftigeArt"
+        polish["changes"] = changes
+        json[0]["polish"] = polish
+        try JSONSerialization.data(withJSONObject: json)
+            .write(to: tempDir.appendingPathComponent("history.json"))
+
+        let reloaded = HistoryStore(directory: tempDir)
+
+        XCTAssertEqual(reloaded.records.first?.polish?.changes.first?.kind, .unknown)
+    }
+
+    func testAltesArrayWirdBeimNaechstenSchreibenAufSchemaEinsMigriert() throws {
+        let legacy = try JSONEncoder().encode([makeRecord(text: "Alt")])
+        let url = tempDir.appendingPathComponent("history.json")
+        try legacy.write(to: url)
+        let reloaded = HistoryStore(directory: tempDir)
+
+        try reloaded.save()
+
+        let json = try XCTUnwrap(JSONSerialization.jsonObject(
+            with: Data(contentsOf: url)
+        ) as? [String: Any])
+        XCTAssertEqual(json["version"] as? Int, 1)
+        XCTAssertEqual((json["records"] as? [[String: Any]])?.count, 1)
+    }
+
+    func testVerwaisteAudiodateiWirdNachGeladenemVerlaufEntfernt() throws {
+        let audioDirectory = tempDir.appendingPathComponent("audio", isDirectory: true)
+        try FileManager.default.createDirectory(at: audioDirectory, withIntermediateDirectories: true)
+        let referenced = audioDirectory.appendingPathComponent("referenziert.wav")
+        let orphaned = audioDirectory.appendingPathComponent("verwaist.wav")
+        let orphanedOtherFormat = audioDirectory.appendingPathComponent("verwaist.m4a")
+        try Data("audio".utf8).write(to: referenced)
+        try Data("audio".utf8).write(to: orphaned)
+        try Data("audio".utf8).write(to: orphanedOtherFormat)
+        var record = makeRecord(text: "Mit Audio")
+        record.audioPath = referenced.path
+        try JSONEncoder().encode([record])
+            .write(to: tempDir.appendingPathComponent("history.json"))
+
+        _ = HistoryStore(directory: tempDir)
+
+        XCTAssertTrue(FileManager.default.fileExists(atPath: referenced.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: orphaned.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: orphanedOtherFormat.path))
+    }
+
+    func testUnlesbarerVerlaufLoeschtKeineVerwaisteAudiodatei() throws {
+        let audioDirectory = tempDir.appendingPathComponent("audio", isDirectory: true)
+        try FileManager.default.createDirectory(at: audioDirectory, withIntermediateDirectories: true)
+        let orphaned = audioDirectory.appendingPathComponent("verwaist.wav")
+        try Data("audio".utf8).write(to: orphaned)
+        try Data("{kaputt".utf8).write(to: tempDir.appendingPathComponent("history.json"))
+
+        _ = HistoryStore(directory: tempDir)
+
+        XCTAssertTrue(FileManager.default.fileExists(atPath: orphaned.path))
+    }
+
+    func testAudioSweepLaesstRecoveryOrdnerUnberuehrt() throws {
+        let recoveryDirectory = tempDir.appendingPathComponent(
+            "Audio Recovery",
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(
+            at: recoveryDirectory,
+            withIntermediateDirectories: true
+        )
+        let recovery = recoveryDirectory.appendingPathComponent("recovery.wav")
+        try Data("audio".utf8).write(to: recovery)
+        try JSONEncoder().encode([makeRecord()])
+            .write(to: tempDir.appendingPathComponent("history.json"))
+
+        _ = HistoryStore(directory: tempDir)
+
+        XCTAssertTrue(FileManager.default.fileExists(atPath: recovery.path))
     }
 
     func testInsertAtTop() throws {
