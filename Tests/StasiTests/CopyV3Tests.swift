@@ -85,14 +85,14 @@ final class CopyV3Tests: XCTestCase {
         func date(hour: Int) -> Date {
             cal.date(bySettingHour: hour, minute: 0, second: 0, of: Date())!
         }
-        XCTAssertEqual(Copy.greeting(for: date(hour: 6)), "Guten Morgen")
-        XCTAssertEqual(Copy.greeting(for: date(hour: 12)), "Guten Tag")
-        XCTAssertEqual(Copy.greeting(for: date(hour: 15)), "Guten Nachmittag")
-        XCTAssertEqual(Copy.greeting(for: date(hour: 21)), "Guten Abend")
+        XCTAssertEqual(Copy.greeting(for: date(hour: 6), calendar: cal), "Guten Morgen")
+        XCTAssertEqual(Copy.greeting(for: date(hour: 12), calendar: cal), "Guten Tag")
+        XCTAssertEqual(Copy.greeting(for: date(hour: 15), calendar: cal), "Guten Nachmittag")
+        XCTAssertEqual(Copy.greeting(for: date(hour: 21), calendar: cal), "Guten Abend")
 
-        let named = Copy.greetingLine(for: date(hour: 9), name: "Philipp")
+        let named = Copy.greetingLine(for: date(hour: 9), name: "Philipp", calendar: cal)
         XCTAssertEqual(named, "Guten Morgen, Philipp.")
-        XCTAssertEqual(Copy.greetingLine(for: date(hour: 9), name: ""), "Guten Morgen.")
+        XCTAssertEqual(Copy.greetingLine(for: date(hour: 9), name: "", calendar: cal), "Guten Morgen.")
     }
 
     func testAnleitungBar() {

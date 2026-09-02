@@ -330,10 +330,15 @@ enum Copy {
 
     /// Datumszeile mono: „MONTAG, 24. AUGUST" (fest de_DE – UI ist deutsch).
     static func dateLine(_ date: Date, calendar: Calendar = .current) -> String {
-        weekdayFormatter.calendar = calendar
-        dayMonthFormatter.calendar = calendar
-        let weekday = weekdayFormatter.string(from: date).uppercased()
-        let dayMonth = dayMonthFormatter.string(from: date).uppercased()
+        // FormatStyle ist ein Wertetyp: thread-sicher und nimmt Zeitzone + Kalender
+        // des Aufrufers mit (ein geteilter DateFormatter ignorierte die Zeitzone).
+        let style = Date.FormatStyle(
+            locale: Locale(identifier: "de_DE"),
+            calendar: calendar,
+            timeZone: calendar.timeZone
+        )
+        let weekday = date.formatted(style.weekday(.wide)).uppercased()
+        let dayMonth = date.formatted(style.day().month(.wide)).uppercased()
         return "\(weekday), \(dayMonth)"
     }
 
@@ -342,18 +347,6 @@ enum Copy {
         germanNumberFormatter.string(from: NSNumber(value: n)) ?? "\(n)"
     }
 
-    private static let weekdayFormatter: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "de_DE")
-        formatter.setLocalizedDateFormatFromTemplate("EEEE")
-        return formatter
-    }()
-    private static let dayMonthFormatter: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "de_DE")
-        formatter.setLocalizedDateFormatFromTemplate("dMMMM")
-        return formatter
-    }()
     private static let germanNumberFormatter: NumberFormatter = {
         let formatter = NumberFormatter()
         formatter.numberStyle = .decimal

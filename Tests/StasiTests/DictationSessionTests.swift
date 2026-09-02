@@ -690,6 +690,8 @@ final class DictationSessionTests: XCTestCase {
             },
             directory: directory
         )
+        // Explizit Deutsch: „auto" wäre die Systemsprache des Test-Rechners (CI: en).
+        app.settings.language = "de_DE"
         try await app.history.insert(TranscriptionRecord(
             date: Date().addingTimeInterval(-60),
             localeID: "de_DE",
