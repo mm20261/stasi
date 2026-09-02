@@ -9,7 +9,7 @@ import Foundation
 //     "CloudCode", "Cloud-Code", "cloud  code" usw.
 //   · Wortgrenzen verhindern Kollisionen ("Claude Code" ↔ "Cloudflare")
 
-struct AppliedCorrection: Identifiable, Codable, Equatable {
+struct AppliedCorrection: Identifiable, Codable, Equatable, Sendable {
     var id = UUID()
     let entryID: UUID
     /// Quellmuster des Eintrags ("cloud code")
@@ -21,6 +21,38 @@ struct AppliedCorrection: Identifiable, Codable, Equatable {
 }
 
 enum CorrectionEngine {
+    private final class RegexCache: @unchecked Sendable {
+        private let lock = NSLock()
+        private var expressions: [String: NSRegularExpression] = [:]
+
+        func expression(for source: String) -> NSRegularExpression? {
+            let key = source.precomposedStringWithCanonicalMapping
+            lock.lock()
+            defer { lock.unlock() }
+            if let cached = expressions[key] { return cached }
+            guard let expression = Self.makeExpression(for: key) else { return nil }
+            expressions[key] = expression
+            return expression
+        }
+
+        private static func makeExpression(for source: String) -> NSRegularExpression? {
+            let parts = source.split(whereSeparator: { $0 == " " })
+                .map { NSRegularExpression.escapedPattern(for: String($0)) }
+            guard !parts.isEmpty else { return nil }
+            // Trenner zwischen Teilen: 0–2 Zeichen (Leerzeichen/Tab/Bindestrich) –
+            // 0 = zusammengeklebte Form ("CloudCode"), 1–2 = getrennte Formen.
+            let joined = parts.joined(separator: "[ \\t\\-\u{2011}]{0,2}")
+            let boundary = "(?<![\\p{L}\\p{N}\\p{M}\\-_])"
+            let endBoundary = "(?![\\p{L}\\p{N}\\p{M}\\-_])"
+            return try? NSRegularExpression(
+                pattern: "\(boundary)\(joined)\(endBoundary)",
+                options: [.caseInsensitive]
+            )
+        }
+    }
+
+    private static let regexCache = RegexCache()
+
     static func correct(_ input: String, entries: [DictionaryEntry]) -> (text: String, applied: [AppliedCorrection]) {
         var text = input
         var applied: [AppliedCorrection] = []
@@ -69,17 +101,6 @@ enum CorrectionEngine {
     /// Teile werden zu Pattern mit optionalem Leerzeichen/Bindewort-Trenner dazwischen,
     /// umgeben von Unicode-Wortgrenzen (Lookarounds statt \b wegen Umlauten & Bindestrichen).
     private static func regex(for source: String) -> NSRegularExpression? {
-        let parts = source.split(whereSeparator: { $0 == " " })
-            .map { NSRegularExpression.escapedPattern(for: String($0)) }
-        guard !parts.isEmpty else { return nil }
-        // Trenner zwischen Teilen: 0–2 Zeichen (Leerzeichen/Tab/Bindestrich) –
-        // 0 = zusammengeklebte Form ("CloudCode"), 1–2 = getrennte Formen.
-        let joined = parts.joined(separator: "[ \\t\\-\u{2011}]{0,2}")
-        let boundary = "(?<![\\p{L}\\p{N}\\p{M}\\-_])"
-        let endBoundary = "(?![\\p{L}\\p{N}\\p{M}\\-_])"
-        return try? NSRegularExpression(
-            pattern: "\(boundary)\(joined)\(endBoundary)",
-            options: [.caseInsensitive]
-        )
+        regexCache.expression(for: source)
     }
 }

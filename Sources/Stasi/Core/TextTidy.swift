@@ -6,25 +6,39 @@ enum TextTidy {
         "z.b.", "z. b.", "usw.", "ca.", "bzw.", "dr.", "nr.", "vgl.", "s.",
         "abs.", "etc.", "e.g.", "i.e.", "mr.", "mrs.",
     ]
+    private static let whitespaceExpression = try! NSRegularExpression(pattern: "\\s+")
+    private static let repeatedCommaExpression = try! NSRegularExpression(
+        pattern: ",\\s*,(?:\\s*,)*"
+    )
+    private static let leadingCommaExpression = try! NSRegularExpression(
+        pattern: "^\\s*,(?:\\s*,)*\\s*"
+    )
+    private static let punctuationWhitespaceExpression = try! NSRegularExpression(
+        pattern: "[ \\t]+([,.;:!?])"
+    )
+    private static let sentenceStartExpression = try! NSRegularExpression(
+        pattern: "(?:^|[.!?]\\s+)(\\p{L})"
+    )
 
     static func tidy(_ input: String) -> String {
         var text = input.trimmingCharacters(in: .whitespacesAndNewlines)
-        text = replacingAll(in: text, pattern: "\\s+", template: " ")
-        text = replacingAll(in: text, pattern: ",\\s*,(?:\\s*,)*", template: ",")
-        text = replacingAll(in: text, pattern: "^\\s*,(?:\\s*,)*\\s*", template: "")
-        text = replacingAll(in: text, pattern: "[ \\t]+([,.;:!?])", template: "$1")
+        text = replacingAll(in: text, expression: whitespaceExpression, template: " ")
+        text = replacingAll(in: text, expression: repeatedCommaExpression, template: ",")
+        text = replacingAll(in: text, expression: leadingCommaExpression, template: "")
+        text = replacingAll(
+            in: text,
+            expression: punctuationWhitespaceExpression,
+            template: "$1"
+        )
         text = text.trimmingCharacters(in: .whitespacesAndNewlines)
         return capitalizingSentenceStarts(text)
     }
 
     /// Alle Treffer werden einmal auf dem unveränderten Stand gesammelt und
     /// anschließend rückwärts angewandt (Regel 4).
-    private static func replacingAll(in input: String, pattern: String,
-                                     template: String,
-                                     options: NSRegularExpression.Options = []) -> String {
-        guard let regex = try? NSRegularExpression(pattern: pattern, options: options) else {
-            return input
-        }
+    private static func replacingAll(in input: String,
+                                     expression regex: NSRegularExpression,
+                                     template: String) -> String {
         let fullRange = NSRange(input.startIndex..., in: input)
         let replacements = regex.matches(in: input, range: fullRange).compactMap { match -> (Range<String.Index>, String)? in
             guard let range = Range(match.range, in: input) else { return nil }
@@ -40,9 +54,7 @@ enum TextTidy {
     }
 
     private static func capitalizingSentenceStarts(_ input: String) -> String {
-        guard let regex = try? NSRegularExpression(
-            pattern: "(?:^|[.!?]\\s+)(\\p{L})"
-        ) else { return input }
+        let regex = sentenceStartExpression
         let fullRange = NSRange(input.startIndex..., in: input)
         let replacements = regex.matches(in: input, range: fullRange).compactMap { match -> (Range<String.Index>, String)? in
             guard let range = Range(match.range(at: 1), in: input) else { return nil }

@@ -118,6 +118,9 @@ final class AppState {
         case press, release, discard, commit, handsFree, copyLast, insertLast, tapStopped
         case prepareModel(Locale)
         case phaseWatchdog
+        case deleteHistory(TranscriptionRecord)
+        case deleteAllHistory
+        case applyRetention
     }
     nonisolated static let copyLastChord = HotkeyEngine.Combo(
         keyCode: 8,
@@ -154,6 +157,9 @@ final class AppState {
                 case .tapStopped: tapInstalled = false
                 case .prepareModel(let locale): await prepareModel(for: locale)
                 case .phaseWatchdog: await recoverFromPhaseWatchdog()
+                case .deleteHistory(let record): await performDeleteHistoryRecord(record)
+                case .deleteAllHistory: await performDeleteAllHistory()
+                case .applyRetention: await performRetention()
                 }
             }
         }
@@ -948,12 +954,14 @@ final class AppState {
         let durationSnapshot = duration
 
         DebugLog.log("STASI-APP: finishTranscription (\(rawText.count) Zeichen roh)")
-        let outcome = TranscriptPolisher.polishSync(
-            rawSnapshot,
-            locale: localeSnapshot,
-            entries: dictionarySnapshot,
-            level: levelSnapshot
-        )
+        let outcome = await Task.detached(priority: .userInitiated) {
+            TranscriptPolisher.polishSync(
+                rawSnapshot,
+                locale: localeSnapshot,
+                entries: dictionarySnapshot,
+                level: levelSnapshot
+            )
+        }.value
         guard session === currentSession, phase == .polishing else { return }
         let trimmedRaw = rawSnapshot.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmed = outcome.text
@@ -977,7 +985,7 @@ final class AppState {
             polish: outcome.summary
         )
         do {
-            try history.insert(newRecord)
+            try await history.insert(newRecord)
         } catch {
             DebugLog.log("STASI-APP: Verlauf speichern fehlgeschlagen: \(error.localizedDescription)")
             session.preserveAudioFile()
@@ -987,19 +995,36 @@ final class AppState {
             onToast?("Verlauf konnte nicht gespeichert werden. Die Audiodatei bleibt erhalten.", false)
             return
         }
+        guard session === currentSession, phase == .polishing else { return }
 
         let historicalRecords = history.records.filter { $0.id != newRecord.id }
-        let learned = AutoLearnScout.candidates(
-            newRecord: newRecord,
-            historyExcludingNew: historicalRecords,
-            dictionary: dictionary.entries,
-            ignored: dictionary.ignoredLearned,
-            locale: localeSnapshot,
-            isKnownWord: { [self] word in
-                isKnownWord(word, locale: localeSnapshot)
-            },
-            options: .init()
-        )
+        let learningDictionarySnapshot = dictionary.entries
+        let ignoredLearnedSnapshot = dictionary.ignoredLearned
+        let possible = await Task.detached(priority: .userInitiated) {
+            AutoLearnScout.potentialCandidates(
+                newRecord: newRecord,
+                dictionary: learningDictionarySnapshot,
+                ignored: ignoredLearnedSnapshot,
+                locale: localeSnapshot
+            )
+        }.value
+        guard session === currentSession, phase == .polishing else { return }
+
+        // NSSpellChecker ist AppKit und nicht thread-sicher. Ausschließlich diese
+        // kleine, vorab begrenzte Liste wird deshalb auf dem MainActor geprüft.
+        let unknown = possible.filter { [self] candidate in
+            !isKnownWord(candidate.spelling, locale: localeSnapshot)
+        }
+        guard session === currentSession, phase == .polishing else { return }
+
+        let learned = await Task.detached(priority: .userInitiated) {
+            AutoLearnScout.candidates(
+                from: unknown,
+                newRecord: newRecord,
+                historyExcludingNew: historicalRecords
+            )
+        }.value
+        guard session === currentSession, phase == .polishing else { return }
         dictionary.mergeLearned(learned)
 
         session.preserveAudioFile()
@@ -1183,8 +1208,12 @@ final class AppState {
     }
 
     func deleteHistoryRecord(_ record: TranscriptionRecord) {
+        enqueue(.deleteHistory(record))
+    }
+
+    private func performDeleteHistoryRecord(_ record: TranscriptionRecord) async {
         do {
-            try history.delete(record)
+            try await history.delete(record)
         } catch {
             DebugLog.log("STASI-APP: Verlauf löschen fehlgeschlagen: \(error.localizedDescription)")
             onToast?("Protokoll konnte nicht gelöscht werden.", false)
@@ -1192,8 +1221,12 @@ final class AppState {
     }
 
     func deleteAllHistory() {
+        enqueue(.deleteAllHistory)
+    }
+
+    private func performDeleteAllHistory() async {
         do {
-            try history.deleteAll()
+            try await history.deleteAll()
         } catch {
             DebugLog.log("STASI-APP: Verlauf vollständig löschen fehlgeschlagen: \(error.localizedDescription)")
             onToast?("Verlauf konnte nicht gelöscht werden.", false)
@@ -1203,9 +1236,18 @@ final class AppState {
     /// Aufbewahrungsdauer anwenden: Protokolle + Audio löschen, die älter
     /// als die eingestellte Dauer sind.
     func applyRetention() {
+        guard settings.retention.days != nil else { return }
+        if case .unreadable = history.state {
+            onToast?(Self.unreadableHistoryMessage, false)
+            return
+        }
+        enqueue(.applyRetention)
+    }
+
+    private func performRetention() async {
         guard let days = settings.retention.days else { return }
         do {
-            let purged = try history.purge(olderThan: days)
+            let purged = try await history.purge(olderThan: days)
             if purged > 0 {
                 DebugLog.log("STASI-APP: Retention – \(purged) alte Protokolle gelöscht")
             }

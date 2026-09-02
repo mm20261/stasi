@@ -43,12 +43,10 @@ enum ProtocolSearch {
     /// Volltext-Treffer: Groß-/Kleinschreibung egal, durchsucht korrigierten
     /// Text, Rohtext und die Ziel-App.
     static func matches(_ record: TranscriptionRecord, query: String) -> Bool {
-        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return true }
-        let needle = trimmed.lowercased()
-        return record.correctedText.lowercased().contains(needle)
-            || record.rawText.lowercased().contains(needle)
-            || record.targetApp.lowercased().contains(needle)
+        matchesNormalized(
+            record,
+            query: query.trimmingCharacters(in: .whitespacesAndNewlines)
+        )
     }
 
     /// Kombinierter Filter (Query ∩ Zeitraum), Reihenfolge bleibt erhalten.
@@ -57,12 +55,22 @@ enum ProtocolSearch {
                        filter: ProtocolSearchFilter,
                        calendar: Calendar = .current,
                        now: Date = Date()) -> [TranscriptionRecord] {
-        var result = records.filter { matches($0, query: query) }
+        let normalizedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        var result = records.filter { matchesNormalized($0, query: normalizedQuery) }
         if let days = filter.days {
             let cutoff = RetentionCutoff.date(daysBack: days, calendar: calendar, now: now)
             result = result.filter { $0.date >= cutoff }
         }
         return result
+    }
+
+    private static func matchesNormalized(_ record: TranscriptionRecord,
+                                          query: String) -> Bool {
+        guard !query.isEmpty else { return true }
+        let options: String.CompareOptions = [.caseInsensitive, .diacriticInsensitive]
+        return record.correctedText.range(of: query, options: options) != nil
+            || record.rawText.range(of: query, options: options) != nil
+            || record.targetApp.range(of: query, options: options) != nil
     }
 
     /// Trefferzähler für die Suchzeile („7 TREFFER").

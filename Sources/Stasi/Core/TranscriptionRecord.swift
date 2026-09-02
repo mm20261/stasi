@@ -10,7 +10,7 @@ enum DurationFormatter {
 // MARK: - TranscriptionRecord
 // Ein abgeschlossener Diktat-Vorgang inkl. Korrektur-Nachweis, Metadaten & Audio.
 
-struct TranscriptionRecord: Identifiable, Codable {
+struct TranscriptionRecord: Identifiable, Codable, Equatable, Sendable {
     let id: UUID
     let date: Date
     let localeID: String
@@ -26,10 +26,9 @@ struct TranscriptionRecord: Identifiable, Codable {
     /// Optionale Zusammenfassung der regelbasierten Nachbearbeitung.
     /// Optional hält bestehende history.json-Dateien rückwärtskompatibel.
     let polish: PolishSummary?
-
-    var wordCount: Int {
-        correctedText.split(whereSeparator: { $0.isWhitespace || $0.isNewline }).count
-    }
+    /// Beim Erzeugen einmal berechnet; alte Dateien erhalten beim Dekodieren
+    /// denselben Wert als Fallback und werden beim nächsten Speichern migriert.
+    let wordCount: Int
 
     init(date: Date, localeID: String, rawText: String, correctedText: String,
          corrections: [AppliedCorrection], durationSecs: Double = 0,
@@ -45,6 +44,50 @@ struct TranscriptionRecord: Identifiable, Codable {
         self.targetApp = targetApp
         self.audioPath = audioPath
         self.polish = polish
+        self.wordCount = Self.countWords(in: correctedText)
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, date, localeID, rawText, correctedText, corrections
+        case durationSecs, targetApp, audioPath, polish, wordCount
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        date = try container.decode(Date.self, forKey: .date)
+        localeID = try container.decode(String.self, forKey: .localeID)
+        rawText = try container.decode(String.self, forKey: .rawText)
+        correctedText = try container.decode(String.self, forKey: .correctedText)
+        corrections = try container.decodeIfPresent(
+            [AppliedCorrection].self,
+            forKey: .corrections
+        ) ?? []
+        durationSecs = try container.decodeIfPresent(Double.self, forKey: .durationSecs) ?? 0
+        targetApp = try container.decodeIfPresent(String.self, forKey: .targetApp) ?? ""
+        audioPath = try container.decodeIfPresent(String.self, forKey: .audioPath)
+        polish = try container.decodeIfPresent(PolishSummary.self, forKey: .polish)
+        wordCount = try container.decodeIfPresent(Int.self, forKey: .wordCount)
+            ?? Self.countWords(in: correctedText)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(date, forKey: .date)
+        try container.encode(localeID, forKey: .localeID)
+        try container.encode(rawText, forKey: .rawText)
+        try container.encode(correctedText, forKey: .correctedText)
+        try container.encode(corrections, forKey: .corrections)
+        try container.encode(durationSecs, forKey: .durationSecs)
+        try container.encode(targetApp, forKey: .targetApp)
+        try container.encodeIfPresent(audioPath, forKey: .audioPath)
+        try container.encodeIfPresent(polish, forKey: .polish)
+        try container.encode(wordCount, forKey: .wordCount)
+    }
+
+    private static func countWords(in text: String) -> Int {
+        text.split(whereSeparator: { $0.isWhitespace || $0.isNewline }).count
     }
 }
 
@@ -98,7 +141,7 @@ enum HistoryStoreState: Equatable {
     case unreadable(String)
 }
 
-enum HistoryStoreError: LocalizedError {
+enum HistoryStoreError: LocalizedError, Sendable {
     case writeBlockedByUnreadableHistory(URL)
     case encodingFailed(String)
     case writeFailed(URL, String)
@@ -115,26 +158,65 @@ enum HistoryStoreError: LocalizedError {
     }
 }
 
+/// Serialisiert komplette Mutationen über Actor-Reentranz hinweg. Dadurch
+/// sieht jeder schnelle Folgeaufruf den bereits geschriebenen MainActor-Stand.
+private actor HistoryPersistenceCoordinator {
+    private var locked = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func acquire() async {
+        if !locked {
+            locked = true
+            return
+        }
+        await withCheckedContinuation { continuation in
+            waiters.append(continuation)
+        }
+    }
+
+    func release() {
+        guard !waiters.isEmpty else {
+            locked = false
+            return
+        }
+        waiters.removeFirst().resume()
+    }
+
+    func persist(_ records: [TranscriptionRecord], to fileURL: URL) throws {
+        let data: Data
+        do {
+            data = try JSONEncoder().encode(HistoryFile(records: records))
+        } catch {
+            throw HistoryStoreError.encodingFailed(error.localizedDescription)
+        }
+        do {
+            try data.write(to: fileURL, options: .atomic)
+        } catch {
+            throw HistoryStoreError.writeFailed(fileURL, error.localizedDescription)
+        }
+    }
+}
+
 @MainActor
 protocol HistoryStoring: AnyObject {
     var records: [TranscriptionRecord] { get }
     var state: HistoryStoreState { get }
     var lastError: String? { get }
 
-    func save() throws
-    func insert(_ record: TranscriptionRecord, at position: Int) throws
-    func delete(_ record: TranscriptionRecord) throws
-    func deleteAll() throws
-    func purge(olderThan days: Int, now: Date) throws -> Int
+    func save() async throws
+    func insert(_ record: TranscriptionRecord, at position: Int) async throws
+    func delete(_ record: TranscriptionRecord) async throws
+    func deleteAll() async throws
+    func purge(olderThan days: Int, now: Date) async throws -> Int
 }
 
 extension HistoryStoring {
-    func insert(_ record: TranscriptionRecord) throws {
-        try insert(record, at: 0)
+    func insert(_ record: TranscriptionRecord) async throws {
+        try await insert(record, at: 0)
     }
 
-    func purge(olderThan days: Int) throws -> Int {
-        try purge(olderThan: days, now: Date())
+    func purge(olderThan days: Int) async throws -> Int {
+        try await purge(olderThan: days, now: Date())
     }
 }
 
@@ -148,7 +230,7 @@ final class HistoryStore: HistoryStoring {
     private let fileURL: URL
     private let audioDirectory: URL
     private let decoder = JSONDecoder()
-    private let encoder = JSONEncoder()
+    private let persistence = HistoryPersistenceCoordinator()
     private var hasBackedUpUnreadableFile = false
 
     /// `directory` ist für Tests injizierbar; default = Application Support.
@@ -207,63 +289,104 @@ final class HistoryStore: HistoryStoring {
         }
     }
 
-    func save() throws {
-        try ensureWritable()
-        try persist(records)
-    }
-
-    func insert(_ record: TranscriptionRecord, at position: Int = 0) throws {
-        try ensureWritable()
-        var updated = records
-        updated.insert(record, at: min(position, updated.count))
-        try persist(updated)
-        records = updated
-    }
-
-    func delete(_ record: TranscriptionRecord) throws {
-        try ensureWritable()
-        let updated = records.filter { $0.id != record.id }
-        try persist(updated)
-        records = updated
-        if let audioPath = record.audioPath {
-            try? FileManager.default.removeItem(atPath: audioPath)
+    func save() async throws {
+        await persistence.acquire()
+        do {
+            try ensureWritable()
+            try await persistLocked(records)
+            await persistence.release()
+        } catch {
+            await persistence.release()
+            throw error
         }
-        sweepOrphanedAudio()
     }
 
-    /// Löscht sämtliche Protokolle inkl. Audio-Dateien.
-    func deleteAll() throws {
-        try ensureWritable()
-        let removed = records
-        try persist([])
-        records = []
-        for record in removed {
+    func insert(_ record: TranscriptionRecord, at position: Int = 0) async throws {
+        await persistence.acquire()
+        do {
+            try ensureWritable()
+            var updated = records
+            updated.insert(record, at: min(position, updated.count))
+            try await persistLocked(updated)
+            records = updated
+            await persistence.release()
+        } catch {
+            await persistence.release()
+            throw error
+        }
+    }
+
+    func delete(_ record: TranscriptionRecord) async throws {
+        await persistence.acquire()
+        do {
+            try ensureWritable()
+            let updated = records.filter { $0.id != record.id }
+            try await persistLocked(updated)
+            records = updated
             if let audioPath = record.audioPath {
                 try? FileManager.default.removeItem(atPath: audioPath)
             }
+            sweepOrphanedAudio()
+            await persistence.release()
+        } catch {
+            await persistence.release()
+            throw error
         }
-        sweepOrphanedAudio()
+    }
+
+    /// Löscht sämtliche Protokolle inkl. Audio-Dateien.
+    func deleteAll() async throws {
+        await persistence.acquire()
+        do {
+            try ensureWritable()
+            let removed = records
+            try await persistLocked([])
+            records = []
+            for record in removed {
+                if let audioPath = record.audioPath {
+                    try? FileManager.default.removeItem(atPath: audioPath)
+                }
+            }
+            sweepOrphanedAudio()
+            await persistence.release()
+        } catch {
+            await persistence.release()
+            throw error
+        }
     }
 
     /// Entfernt Protokolle (und deren Audio), die älter als `days` Tage sind.
     /// Liefert die Anzahl der entfernten Einträge.
     @discardableResult
-    func purge(olderThan days: Int, now: Date = Date()) throws -> Int {
-        try ensureWritable()
-        guard days > 0 else { return 0 }
-        let cutoff = RetentionCutoff.date(daysBack: days, calendar: .current, now: now)
-        let stale = records.filter { $0.date < cutoff }
-        guard !stale.isEmpty else { return 0 }
-        let updated = records.filter { $0.date >= cutoff }
-        try persist(updated)
-        records = updated
-        for record in stale {
-            if let audioPath = record.audioPath {
-                try? FileManager.default.removeItem(atPath: audioPath)
+    func purge(olderThan days: Int, now: Date = Date()) async throws -> Int {
+        await persistence.acquire()
+        do {
+            try ensureWritable()
+            guard days > 0 else {
+                await persistence.release()
+                return 0
             }
+            let cutoff = RetentionCutoff.date(daysBack: days, calendar: .current, now: now)
+            let stale = records.filter { $0.date < cutoff }
+            guard !stale.isEmpty else {
+                await persistence.release()
+                return 0
+            }
+            let updated = records.filter { $0.date >= cutoff }
+            try await persistLocked(updated)
+            records = updated
+            for record in stale {
+                if let audioPath = record.audioPath {
+                    try? FileManager.default.removeItem(atPath: audioPath)
+                }
+            }
+            sweepOrphanedAudio()
+            await persistence.release()
+            return stale.count
+        } catch {
+            await persistence.release()
+            throw error
         }
-        sweepOrphanedAudio()
-        return stale.count
     }
 
     private func ensureWritable() throws {
@@ -272,20 +395,15 @@ final class HistoryStore: HistoryStoring {
         }
     }
 
-    private func persist(_ records: [TranscriptionRecord]) throws {
-        let data: Data
+    private func persistLocked(_ records: [TranscriptionRecord]) async throws {
         do {
-            data = try encoder.encode(HistoryFile(records: records))
-        } catch {
-            let message = error.localizedDescription
-            lastError = message
-            throw HistoryStoreError.encodingFailed(message)
-        }
-
-        do {
-            try data.write(to: fileURL, options: .atomic)
+            try await persistence.persist(records, to: fileURL)
             state = .loaded
             lastError = nil
+        } catch let error as HistoryStoreError {
+            let message = error.localizedDescription
+            lastError = message
+            throw error
         } catch {
             let message = error.localizedDescription
             lastError = message

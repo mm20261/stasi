@@ -1,6 +1,29 @@
 import Foundation
 
 enum FillerFilter {
+    private struct DiscourseRule {
+        let phrase: [String]
+        let expression: NSRegularExpression
+    }
+
+    private static let deHesitationExpression = makeHesitationExpression(
+        PolishLocale.de.hesitations
+    )
+    private static let enHesitationExpression = makeHesitationExpression(
+        PolishLocale.en.hesitations
+    )
+    private static let stutterExpression = try! NSRegularExpression(
+        pattern: "(?<![\\p{L}\\p{N}\\p{M}\\-_])((?:\\p{L}\\p{M}*){2,12})(?:[ \\t]+\\1){1,3}(?![\\p{L}\\p{N}\\p{M}\\-_])",
+        options: [.caseInsensitive]
+    )
+    private static let deDiscourseRules = makeDiscourseRules(
+        PolishLocale.de.discourseFillers
+    )
+    private static let enDiscourseRules = makeDiscourseRules(
+        PolishLocale.en.discourseFillers
+    )
+    private static let whitespaceExpression = try! NSRegularExpression(pattern: "\\s+")
+
     struct Edit: Equatable, Sendable {
         let removed: String
         let kept: String?
@@ -13,14 +36,11 @@ enum FillerFilter {
     }
 
     static func removeHesitations(_ input: String, locale: PolishLocale) -> Result {
-        let alternatives = locale.hesitations
-            .sorted { $0.count > $1.count }
-            .map(NSRegularExpression.escapedPattern(for:))
-        guard !alternatives.isEmpty,
-              let regex = try? NSRegularExpression(
-                pattern: "(?<![\\p{L}\\p{N}\\p{M}\\-_])(?:\(alternatives.joined(separator: "|")))(?![\\p{L}\\p{N}\\p{M}\\-_])",
-                options: [.caseInsensitive]
-              ) else {
+        let regex: NSRegularExpression
+        switch locale {
+        case .de: regex = deHesitationExpression
+        case .en: regex = enHesitationExpression
+        case .other:
             return Result(text: input, removedWords: 0, edits: [])
         }
         let ranges = matches(regex, in: input).compactMap { Range($0.range, in: input) }
@@ -30,12 +50,7 @@ enum FillerFilter {
     }
 
     static func collapseStutters(_ input: String, locale: PolishLocale) -> Result {
-        guard let regex = try? NSRegularExpression(
-            pattern: "(?<![\\p{L}\\p{N}\\p{M}\\-_])((?:\\p{L}\\p{M}*){2,12})(?:[ \\t]+\\1){1,3}(?![\\p{L}\\p{N}\\p{M}\\-_])",
-            options: [.caseInsensitive]
-        ) else { return Result(text: input, removedWords: 0, edits: []) }
-
-        let replacements = matches(regex, in: input).compactMap {
+        let replacements = matches(stutterExpression, in: input).compactMap {
             match -> (Range<String.Index>, String, Int, String)? in
             guard let range = Range(match.range, in: input),
                   let wordRange = Range(match.range(at: 1), in: input) else { return nil }
@@ -58,23 +73,23 @@ enum FillerFilter {
         var removals: [(range: Range<String.Index>, replacement: String,
                         words: Int, phrases: [String])] = []
 
-        for phrase in locale.discourseFillers.sorted(by: { $0.count > $1.count }) {
-            let joined = phrase.map(NSRegularExpression.escapedPattern(for:))
-                .joined(separator: "[ \\t]+")
-            guard let regex = try? NSRegularExpression(
-                pattern: "(?<![\\p{L}\\p{N}\\p{M}\\-_])\(joined)(?![\\p{L}\\p{N}\\p{M}\\-_])",
-                options: [.caseInsensitive]
-            ) else { continue }
+        let rules: [DiscourseRule]
+        switch locale {
+        case .de: rules = deDiscourseRules
+        case .en: rules = enDiscourseRules
+        case .other: rules = []
+        }
 
-            for match in matches(regex, in: input) {
+        for rule in rules {
+            for match in matches(rule.expression, in: input) {
                 guard let phraseRange = Range(match.range, in: input),
                       let context = fillerContext(
                         for: phraseRange,
-                        filler: phrase,
+                        filler: rule.phrase,
                         locale: locale,
                         in: input
                       ) else { continue }
-                removals.append((context.range, context.replacement, phrase.count,
+                removals.append((context.range, context.replacement, rule.phrase.count,
                                  [String(input[phraseRange])]))
             }
         }
@@ -137,13 +152,36 @@ enum FillerFilter {
     }
 
     private static func compactWhitespace(_ input: String) -> String {
-        guard let regex = try? NSRegularExpression(pattern: "\\s+") else { return input }
-        let matches = matches(regex, in: input).compactMap { Range($0.range, in: input) }
+        let matches = matches(whitespaceExpression, in: input)
+            .compactMap { Range($0.range, in: input) }
         var output = input
         for range in matches.reversed() {
             output.replaceSubrange(range, with: " ")
         }
         return output.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func makeHesitationExpression(_ values: Set<String>) -> NSRegularExpression {
+        let alternatives = values.sorted { $0.count > $1.count }
+            .map(NSRegularExpression.escapedPattern(for:))
+        return try! NSRegularExpression(
+            pattern: "(?<![\\p{L}\\p{N}\\p{M}\\-_])(?:\(alternatives.joined(separator: "|")))(?![\\p{L}\\p{N}\\p{M}\\-_])",
+            options: [.caseInsensitive]
+        )
+    }
+
+    private static func makeDiscourseRules(_ phrases: [[String]]) -> [DiscourseRule] {
+        phrases.sorted(by: { $0.count > $1.count }).map { phrase in
+            let joined = phrase.map(NSRegularExpression.escapedPattern(for:))
+                .joined(separator: "[ \\t]+")
+            return DiscourseRule(
+                phrase: phrase,
+                expression: try! NSRegularExpression(
+                    pattern: "(?<![\\p{L}\\p{N}\\p{M}\\-_])\(joined)(?![\\p{L}\\p{N}\\p{M}\\-_])",
+                    options: [.caseInsensitive]
+                )
+            )
+        }
     }
 
     private static func fillerContext(

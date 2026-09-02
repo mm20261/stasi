@@ -14,23 +14,23 @@ final class DictationSessionTests: XCTestCase {
         private(set) var insertCount = 0
         var insertError: Error?
 
-        func save() throws {}
+        func save() async throws {}
 
-        func insert(_ record: TranscriptionRecord, at position: Int) throws {
+        func insert(_ record: TranscriptionRecord, at position: Int) async throws {
             insertCount += 1
             if let insertError { throw insertError }
             records.insert(record, at: min(position, records.count))
         }
 
-        func delete(_ record: TranscriptionRecord) throws {
+        func delete(_ record: TranscriptionRecord) async throws {
             records.removeAll { $0.id == record.id }
         }
 
-        func deleteAll() throws {
+        func deleteAll() async throws {
             records.removeAll()
         }
 
-        func purge(olderThan days: Int, now: Date) throws -> Int { 0 }
+        func purge(olderThan days: Int, now: Date) async throws -> Int { 0 }
     }
 
     private final class FakeAudioCapture: AudioCapturing, @unchecked Sendable {
@@ -671,7 +671,7 @@ final class DictationSessionTests: XCTestCase {
             },
             directory: directory
         )
-        try app.history.insert(TranscriptionRecord(
+        try await app.history.insert(TranscriptionRecord(
             date: Date().addingTimeInterval(-60),
             localeID: "de_DE",
             rawText: "Der Frobulator hilft",
@@ -2107,6 +2107,18 @@ final class DictationSessionTests: XCTestCase {
         XCTAssertEqual(app.elapsed, 0.4, accuracy: 0.001)
         app.requestDiscard()
         await waitUntil { app.phase == .idle }
+    }
+
+    func testProductionPollTickDoesNotChangeIdleHotPathMetrics() {
+        let app = makeApp(audio: FakeAudioCapture(), engines: [FakeSpeechEngine()])
+        let levelBefore = app.displayLevel
+        let elapsedBefore = app.elapsed
+
+        AppDelegate.updateHotPathMetrics(app)
+
+        XCTAssertEqual(app.phase, .idle)
+        XCTAssertEqual(app.displayLevel, levelBefore)
+        XCTAssertEqual(app.elapsed, elapsedBefore)
     }
 
     func testHardwareStartsThenActivationWinsThenCueFinishesThenCaptureOpens() async {

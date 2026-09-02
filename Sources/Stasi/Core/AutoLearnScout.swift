@@ -15,6 +15,11 @@ enum AutoLearnScout {
         let sentenceInitial: Bool
     }
 
+    struct Candidate: Sendable, Equatable {
+        let key: String
+        let spelling: String
+    }
+
     static func candidates(
         newRecord: TranscriptionRecord,
         historyExcludingNew: [TranscriptionRecord],
@@ -24,6 +29,30 @@ enum AutoLearnScout {
         isKnownWord: (String) -> Bool,
         options: Options = .init()
     ) -> [DictionaryEntry] {
+        let possible = potentialCandidates(
+            newRecord: newRecord,
+            dictionary: dictionary,
+            ignored: ignored,
+            locale: locale,
+            options: options
+        ).filter { !isKnownWord($0.spelling) }
+        return candidates(
+            from: possible,
+            newRecord: newRecord,
+            historyExcludingNew: historyExcludingNew,
+            options: options
+        )
+    }
+
+    /// Reiner, begrenzter Token-Scan. Der Aufrufer kann die kleine Ergebnisliste
+    /// anschließend auf dem MainActor mit NSSpellChecker prüfen.
+    static func potentialCandidates(
+        newRecord: TranscriptionRecord,
+        dictionary: [DictionaryEntry],
+        ignored: [String],
+        locale: Locale,
+        options: Options = .init()
+    ) -> [Candidate] {
         guard options.maxCandidatesBeforeCounting > 0 else { return [] }
         let polishLocale = PolishLocale(locale: locale)
         let excluded = excludedWords(
@@ -33,7 +62,7 @@ enum AutoLearnScout {
         )
 
         var seen: Set<String> = []
-        var possible: [(key: String, spelling: String)] = []
+        var possible: [Candidate] = []
         for token in tokens(in: newRecord.correctedText) {
             let key = normalized(token.spelling)
             guard token.spelling.count >= options.minimumTokenLength,
@@ -45,12 +74,21 @@ enum AutoLearnScout {
 
             let eligibleByShape = polishLocale == .en
                 || (!token.sentenceInitial && token.spelling.first?.isUppercase == true)
-            guard eligibleByShape, !isKnownWord(token.spelling) else { continue }
+            guard eligibleByShape else { continue }
 
-            possible.append((key, token.spelling))
+            possible.append(Candidate(key: key, spelling: token.spelling))
             if possible.count == options.maxCandidatesBeforeCounting { break }
         }
+        return possible
+    }
 
+    /// Teurer Regex-Scan über die Historie; vollständig frei von AppKit.
+    static func candidates(
+        from possible: [Candidate],
+        newRecord: TranscriptionRecord,
+        historyExcludingNew: [TranscriptionRecord],
+        options: Options = .init()
+    ) -> [DictionaryEntry] {
         let history = historyExcludingNew
             .filter { $0.id != newRecord.id }
             .prefix(max(0, options.historyLimit))

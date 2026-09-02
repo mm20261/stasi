@@ -3,7 +3,7 @@ import Foundation
 // MARK: - Dictionary-Datenmodell
 // Plain-File unter ~/Library/Application Support/Stasi/dictionary.json
 
-enum EntryType: String, Codable {
+enum EntryType: String, Codable, Sendable {
     /// Wort/Phrase, die die Engine kennen soll ("Anthropic", "Vercel")
     case word
     /// Korrekturpaar: gehört X → schreibe Y ("cloud code" → "Claude Code")
@@ -12,7 +12,7 @@ enum EntryType: String, Codable {
     case learned
 }
 
-struct DictionaryEntry: Identifiable, Codable, Equatable, Hashable {
+struct DictionaryEntry: Identifiable, Codable, Equatable, Hashable, Sendable {
     var id: UUID = UUID()
     var type: EntryType
     /// Nur bei .word

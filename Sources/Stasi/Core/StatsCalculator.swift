@@ -192,15 +192,11 @@ enum StatsCalculator {
         let start = calendar.dateInterval(of: .weekOfYear, for: date)?.start
             ?? calendar.startOfDay(for: date)
         let end = calendar.date(byAdding: .day, value: 6, to: start)!
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "de_DE")
-        formatter.calendar = calendar
-
         let startDay = calendar.component(.day, from: start)
         let endDay = calendar.component(.day, from: end)
-        formatter.setLocalizedDateFormatFromTemplate("MMMM")
-        let startMonth = formatter.string(from: start).uppercased()
-        let endMonth = formatter.string(from: end).uppercased()
+        monthFormatter.calendar = calendar
+        let startMonth = monthFormatter.string(from: start).uppercased()
+        let endMonth = monthFormatter.string(from: end).uppercased()
 
         let range: String
         if startMonth == endMonth {
@@ -210,6 +206,13 @@ enum StatsCalculator {
         }
         return "KALENDERWOCHE \(week) · \(range)"
     }
+
+    private static let monthFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "de_DE")
+        formatter.setLocalizedDateFormatFromTemplate("MMMM")
+        return formatter
+    }()
 
     /// Reine Tipzeit-Estimate für die Wörter dieser Woche (40 WPM-Referenz):
     /// „Getippt hättest du dafür etwa 2:14 Stunden gebraucht.“

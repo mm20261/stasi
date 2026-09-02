@@ -330,21 +330,34 @@ enum Copy {
 
     /// Datumszeile mono: „MONTAG, 24. AUGUST" (fest de_DE – UI ist deutsch).
     static func dateLine(_ date: Date, calendar: Calendar = .current) -> String {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "de_DE")
-        formatter.calendar = calendar
-        formatter.setLocalizedDateFormatFromTemplate("EEEE")
-        let weekday = formatter.string(from: date).uppercased()
-        formatter.setLocalizedDateFormatFromTemplate("dMMMM")
-        let dayMonth = formatter.string(from: date).uppercased()
+        weekdayFormatter.calendar = calendar
+        dayMonthFormatter.calendar = calendar
+        let weekday = weekdayFormatter.string(from: date).uppercased()
+        let dayMonth = dayMonthFormatter.string(from: date).uppercased()
         return "\(weekday), \(dayMonth)"
     }
 
     /// Deutsche Tausenderpunkte (1284 → „1.284").
     static func formatGermanNumber(_ n: Int) -> String {
+        germanNumberFormatter.string(from: NSNumber(value: n)) ?? "\(n)"
+    }
+
+    private static let weekdayFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "de_DE")
+        formatter.setLocalizedDateFormatFromTemplate("EEEE")
+        return formatter
+    }()
+    private static let dayMonthFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "de_DE")
+        formatter.setLocalizedDateFormatFromTemplate("dMMMM")
+        return formatter
+    }()
+    private static let germanNumberFormatter: NumberFormatter = {
         let formatter = NumberFormatter()
         formatter.numberStyle = .decimal
         formatter.locale = Locale(identifier: "de_DE")
-        return formatter.string(from: NSNumber(value: n)) ?? "\(n)"
-    }
+        return formatter
+    }()
 }

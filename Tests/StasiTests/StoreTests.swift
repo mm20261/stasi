@@ -284,30 +284,36 @@ final class HistoryStoreTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: try XCTUnwrap(backups.first)), original)
     }
 
-    func testInsertCannotOverwriteUnreadableHistory() throws {
+    func testInsertCannotOverwriteUnreadableHistory() async throws {
         let url = tempDir.appendingPathComponent("history.json")
         let original = Data("{not-json".utf8)
         try original.write(to: url)
         let reloaded = HistoryStore(directory: tempDir)
 
-        XCTAssertThrowsError(try reloaded.insert(makeRecord())) { error in
+        do {
+            try await reloaded.insert(makeRecord())
+            XCTFail("Einfügen muss bei unlesbarem Verlauf fehlschlagen")
+        } catch {
             XCTAssertTrue(error is HistoryStoreError)
         }
         XCTAssertTrue(reloaded.records.isEmpty)
         XCTAssertEqual(try Data(contentsOf: url), original)
     }
 
-    func testSaveCannotOverwriteUnreadableHistory() throws {
+    func testSaveCannotOverwriteUnreadableHistory() async throws {
         let url = tempDir.appendingPathComponent("history.json")
         let original = Data("{not-json".utf8)
         try original.write(to: url)
         let reloaded = HistoryStore(directory: tempDir)
 
-        XCTAssertThrowsError(try reloaded.save())
+        do {
+            try await reloaded.save()
+            XCTFail("Speichern muss bei unlesbarem Verlauf fehlschlagen")
+        } catch {}
         XCTAssertEqual(try Data(contentsOf: url), original)
     }
 
-    func testDeleteCannotMutateUnreadableHistoryOrRemoveAudio() throws {
+    func testDeleteCannotMutateUnreadableHistoryOrRemoveAudio() async throws {
         let url = tempDir.appendingPathComponent("history.json")
         let original = Data("{not-json".utf8)
         try original.write(to: url)
@@ -317,34 +323,43 @@ final class HistoryStoreTests: XCTestCase {
         record.audioPath = audioURL.path
         let reloaded = HistoryStore(directory: tempDir)
 
-        XCTAssertThrowsError(try reloaded.delete(record))
+        do {
+            try await reloaded.delete(record)
+            XCTFail("Löschen muss bei unlesbarem Verlauf fehlschlagen")
+        } catch {}
         XCTAssertTrue(FileManager.default.fileExists(atPath: audioURL.path))
         XCTAssertEqual(try Data(contentsOf: url), original)
     }
 
-    func testDeleteAllCannotOverwriteUnreadableHistory() throws {
+    func testDeleteAllCannotOverwriteUnreadableHistory() async throws {
         let url = tempDir.appendingPathComponent("history.json")
         let original = Data("{not-json".utf8)
         try original.write(to: url)
         let reloaded = HistoryStore(directory: tempDir)
 
-        XCTAssertThrowsError(try reloaded.deleteAll())
+        do {
+            try await reloaded.deleteAll()
+            XCTFail("Alles löschen muss bei unlesbarem Verlauf fehlschlagen")
+        } catch {}
         XCTAssertEqual(try Data(contentsOf: url), original)
     }
 
-    func testPurgeCannotOverwriteUnreadableHistory() throws {
+    func testPurgeCannotOverwriteUnreadableHistory() async throws {
         let url = tempDir.appendingPathComponent("history.json")
         let original = Data("{not-json".utf8)
         try original.write(to: url)
         let reloaded = HistoryStore(directory: tempDir)
 
-        XCTAssertThrowsError(try reloaded.purge(olderThan: 7))
+        do {
+            _ = try await reloaded.purge(olderThan: 7)
+            XCTFail("Retention muss bei unlesbarem Verlauf fehlschlagen")
+        } catch {}
         XCTAssertEqual(try Data(contentsOf: url), original)
     }
 
-    func testInsertAndPersistRoundtrip() throws {
+    func testInsertAndPersistRoundtrip() async throws {
         let record = makeRecord(text: "Persistenz-Test")
-        try store.insert(record)
+        try await store.insert(record)
 
         let reloaded = HistoryStore(directory: tempDir)
         XCTAssertEqual(reloaded.records.first?.correctedText, "Persistenz-Test")
@@ -368,7 +383,7 @@ final class HistoryStoreTests: XCTestCase {
         XCTAssertNil(reloaded.records.first?.polish)
     }
 
-    func testEinKaputtesProtokollVerwirftNichtDenRest() throws {
+    func testEinKaputtesProtokollVerwirftNichtDenRest() async throws {
         let records = [
             makeRecord(text: "Eins", date: Date(timeIntervalSince1970: 100)),
             makeRecord(text: "Kaputt", date: Date(timeIntervalSince1970: 200)),
@@ -385,7 +400,7 @@ final class HistoryStoreTests: XCTestCase {
         XCTAssertEqual(Set(reloaded.records.map(\.correctedText)), ["Eins", "Drei"])
         XCTAssertEqual(reloaded.state, .loaded)
         XCTAssertTrue(reloaded.lastError?.contains("1") == true)
-        XCTAssertNoThrow(try reloaded.insert(makeRecord(text: "Neu")))
+        try await reloaded.insert(makeRecord(text: "Neu"))
         let backups = try FileManager.default.contentsOfDirectory(atPath: tempDir.path)
             .filter { $0.hasPrefix("history.corrupt-") }
         XCTAssertEqual(backups.count, 1, "Original mit defektem Record muss gesichert sein")
@@ -433,13 +448,13 @@ final class HistoryStoreTests: XCTestCase {
         XCTAssertEqual(reloaded.records.first?.polish?.changes.first?.kind, .unknown)
     }
 
-    func testAltesArrayWirdBeimNaechstenSchreibenAufSchemaEinsMigriert() throws {
+    func testAltesArrayWirdBeimNaechstenSchreibenAufSchemaEinsMigriert() async throws {
         let legacy = try JSONEncoder().encode([makeRecord(text: "Alt")])
         let url = tempDir.appendingPathComponent("history.json")
         try legacy.write(to: url)
         let reloaded = HistoryStore(directory: tempDir)
 
-        try reloaded.save()
+        try await reloaded.save()
 
         let json = try XCTUnwrap(JSONSerialization.jsonObject(
             with: Data(contentsOf: url)
@@ -500,23 +515,33 @@ final class HistoryStoreTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: recovery.path))
     }
 
-    func testInsertAtTop() throws {
+    func testInsertAtTop() async throws {
         let first = makeRecord(text: "erster")
         let second = makeRecord(text: "zweiter")
-        try store.insert(first)
-        try store.insert(second)
+        try await store.insert(first)
+        try await store.insert(second)
 
         XCTAssertEqual(store.records.first?.correctedText, "zweiter")
         XCTAssertEqual(store.records.count, 2)
+
+        let data = try Data(contentsOf: tempDir.appendingPathComponent("history.json"))
+        let envelope = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: data) as? [String: Any]
+        )
+        let persisted = try XCTUnwrap(envelope["records"] as? [[String: Any]])
+        XCTAssertEqual(persisted.compactMap { $0["correctedText"] as? String }, ["zweiter", "erster"])
+
+        let reloaded = HistoryStore(directory: tempDir)
+        XCTAssertEqual(reloaded.records.map(\.correctedText), ["zweiter", "erster"])
     }
 
-    func testDeleteRemovesAudioFile() throws {
+    func testDeleteRemovesAudioFile() async throws {
         let audioFile = tempDir.appendingPathComponent("test.wav")
         try Data([0x00]).write(to: audioFile)
         var record = makeRecord()
         record.audioPath = audioFile.path
-        try store.insert(record)
-        try store.delete(record)
+        try await store.insert(record)
+        try await store.delete(record)
 
         XCTAssertFalse(FileManager.default.fileExists(atPath: audioFile.path))
         XCTAssertTrue(store.records.isEmpty)
@@ -527,17 +552,36 @@ final class HistoryStoreTests: XCTestCase {
         XCTAssertEqual(record.wordCount, 5)
     }
 
+    func testLegacyRecordOhneWordCountWirdBeimKodierenErgaenzt() throws {
+        let record = makeRecord(text: "eins zwei drei")
+        let encoded = try JSONEncoder().encode(record)
+        var legacy = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: encoded) as? [String: Any]
+        )
+        legacy.removeValue(forKey: "wordCount")
+
+        let legacyData = try JSONSerialization.data(withJSONObject: legacy)
+        let decoded = try JSONDecoder().decode(TranscriptionRecord.self, from: legacyData)
+        XCTAssertEqual(decoded.wordCount, 3)
+
+        let migratedData = try JSONEncoder().encode(decoded)
+        let migrated = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: migratedData) as? [String: Any]
+        )
+        XCTAssertEqual(migrated["wordCount"] as? Int, 3)
+    }
+
     // MARK: Retention (Aufbewahrungsdauer)
 
-    func testDeleteAllRemovesRecordsAndAudio() throws {
+    func testDeleteAllRemovesRecordsAndAudio() async throws {
         let audioFile = tempDir.appendingPathComponent("a.wav")
         try Data([0x00]).write(to: audioFile)
         var r = makeRecord(text: "mit Audio")
         r.audioPath = audioFile.path
-        try store.insert(r)
-        try store.insert(makeRecord(text: "ohne Audio"))
+        try await store.insert(r)
+        try await store.insert(makeRecord(text: "ohne Audio"))
 
-        try store.deleteAll()
+        try await store.deleteAll()
 
         XCTAssertTrue(store.records.isEmpty)
         XCTAssertFalse(FileManager.default.fileExists(atPath: audioFile.path))
@@ -546,37 +590,37 @@ final class HistoryStoreTests: XCTestCase {
         XCTAssertTrue(reloaded.records.isEmpty)
     }
 
-    func testPurgeRemovesOnlyOldRecords() throws {
+    func testPurgeRemovesOnlyOldRecords() async throws {
         let now = Date()
         let old = makeRecord(text: "alt", date: now.addingTimeInterval(-20 * 86_400))
         let recent = makeRecord(text: "neu", date: now)
-        try store.insert(old)
-        try store.insert(recent)
+        try await store.insert(old)
+        try await store.insert(recent)
 
-        let purged = try store.purge(olderThan: 7, now: now)
+        let purged = try await store.purge(olderThan: 7, now: now)
 
         XCTAssertEqual(purged, 1)
         XCTAssertEqual(store.records.count, 1)
         XCTAssertEqual(store.records.first?.correctedText, "neu")
     }
 
-    func testPurgeRemovesAudioFilesOfPurgedRecords() throws {
+    func testPurgeRemovesAudioFilesOfPurgedRecords() async throws {
         let now = Date()
         let audioFile = tempDir.appendingPathComponent("old.wav")
         try Data([0x00]).write(to: audioFile)
         var old = makeRecord(text: "alt", date: now.addingTimeInterval(-10 * 86_400))
         old.audioPath = audioFile.path
-        try store.insert(old)
+        try await store.insert(old)
 
-        try store.purge(olderThan: 7, now: now)
+        try await store.purge(olderThan: 7, now: now)
 
         XCTAssertFalse(FileManager.default.fileExists(atPath: audioFile.path))
     }
 
-    func testPurgeKeepsEverythingWhenWithinRetention() throws {
+    func testPurgeKeepsEverythingWhenWithinRetention() async throws {
         let now = Date()
-        try store.insert(makeRecord(text: "frisch", date: now.addingTimeInterval(-3 * 86_400)))
-        let purged = try store.purge(olderThan: 7, now: now)
+        try await store.insert(makeRecord(text: "frisch", date: now.addingTimeInterval(-3 * 86_400)))
+        let purged = try await store.purge(olderThan: 7, now: now)
         XCTAssertEqual(purged, 0)
         XCTAssertEqual(store.records.count, 1)
     }

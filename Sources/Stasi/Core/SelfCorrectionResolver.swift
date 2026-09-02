@@ -2,6 +2,19 @@ import Foundation
 
 /// Konservativer Resolver für explizite Selbstkorrekturen innerhalb eines Satzes.
 enum SelfCorrectionResolver {
+    private static let tokenExpression = try! NSRegularExpression(
+        pattern: "[\\p{L}\\p{N}\\p{M}]+"
+    )
+    private static let whitespaceExpression = try! NSRegularExpression(pattern: "\\s+")
+    private static let punctuationWhitespaceExpression = try! NSRegularExpression(
+        pattern: "[ \\t]+([,.;:!?])"
+    )
+    private static let repeatedCommaExpression = try! NSRegularExpression(
+        pattern: ",\\s*,(?:\\s*,)*"
+    )
+    private static let leadingCommaExpression = try! NSRegularExpression(
+        pattern: "^\\s*,(?:\\s*,)*\\s*"
+    )
     struct Edit: Equatable, Sendable {
         let removed: String
         let kept: String
@@ -640,10 +653,7 @@ enum SelfCorrectionResolver {
 
     private static func tokenize(_ input: String, in range: Range<String.Index>) -> [Token] {
         let nsRange = NSRange(range, in: input)
-        guard let regex = try? NSRegularExpression(pattern: "[\\p{L}\\p{N}\\p{M}]+") else {
-            return []
-        }
-        return regex.matches(in: input, range: nsRange).compactMap { match in
+        return tokenExpression.matches(in: input, range: nsRange).compactMap { match in
             guard let tokenRange = Range(match.range, in: input) else { return nil }
             let text = String(input[tokenRange])
             return Token(normalized: text.lowercased(), range: tokenRange)
@@ -823,15 +833,16 @@ enum SelfCorrectionResolver {
     }
 
     private static func compactAfterRemoval(_ input: String) -> String {
-        var text = replace(input, pattern: "\\s+", with: " ")
-        text = replace(text, pattern: "[ \\t]+([,.;:!?])", with: "$1")
-        text = replace(text, pattern: ",\\s*,(?:\\s*,)*", with: ",")
-        text = replace(text, pattern: "^\\s*,(?:\\s*,)*\\s*", with: "")
+        var text = replace(input, expression: whitespaceExpression, with: " ")
+        text = replace(text, expression: punctuationWhitespaceExpression, with: "$1")
+        text = replace(text, expression: repeatedCommaExpression, with: ",")
+        text = replace(text, expression: leadingCommaExpression, with: "")
         return text.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    private static func replace(_ input: String, pattern: String, with template: String) -> String {
-        guard let regex = try? NSRegularExpression(pattern: pattern) else { return input }
+    private static func replace(_ input: String,
+                                expression regex: NSRegularExpression,
+                                with template: String) -> String {
         let matches = regex.matches(in: input,
                                     range: NSRange(input.startIndex..., in: input))
         let replacements = matches.compactMap { match -> (Range<String.Index>, String)? in

@@ -67,6 +67,19 @@ final class ProtocolSearchTests: XCTestCase {
         XCTAssertFalse(ProtocolSearch.matches(r, query: "slack"))
     }
 
+    func testQueryMatchesDiacriticsInsensitive() {
+        let records = [record("Viele Grüße"), record("Termin mit Müller")]
+
+        XCTAssertEqual(
+            ProtocolSearch.filter(records, query: "grusse", filter: .all).map(\.correctedText),
+            ["Viele Grüße"]
+        )
+        XCTAssertEqual(
+            ProtocolSearch.filter(records, query: "muller", filter: .all).map(\.correctedText),
+            ["Termin mit Müller"]
+        )
+    }
+
     // MARK: Datumsfilter
 
     func testFilterLast7DaysExcludesOlder() {

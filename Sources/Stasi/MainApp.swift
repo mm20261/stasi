@@ -253,6 +253,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         app.updateElapsedFromPoll()
     }
 
+    /// Im Leerlauf bleiben die beiden 20-Hz-Observation-Hot-Paths vollständig
+    /// unangetastet; Watchdog und Permission-Mailbox laufen im Poll weiter.
+    static func updateHotPathMetrics(_ app: AppState) {
+        guard app.phase != .idle else { return }
+        updateRecordingElapsed(app)
+        app.ingestLevelFromPoll()
+    }
+
     private func pollTick() {
         // Stall-Watchdog: main thread hängt? → logarithmisch sichtbar machen
         let now = Date()
@@ -266,8 +274,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         pollTickCount += 1
         app.applyPendingPermissionStateFromPoll()
         app.checkPhaseWatchdog(now: now)
-        Self.updateRecordingElapsed(app)
-        app.ingestLevelFromPoll()
+        Self.updateHotPathMetrics(app)
         statusBar.refresh()
         PillController.shared.sync(
             phase: app.phase,

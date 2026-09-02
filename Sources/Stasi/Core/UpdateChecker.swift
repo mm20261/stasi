@@ -311,11 +311,8 @@ private enum UpdateStatusFormatter {
                   calendar.isDate(lastChecked, inSameDayAs: yesterday) {
             text = "ZULETZT GEPRÜFT: GESTERN"
         } else {
-            let formatter = DateFormatter()
-            formatter.locale = Locale(identifier: "de_DE")
-            formatter.timeZone = calendar.timeZone
-            formatter.setLocalizedDateFormatFromTemplate("dd. MMMM")
-            text = "ZULETZT GEPRÜFT: \(formatter.string(from: lastChecked).uppercased())"
+            dateFormatter.timeZone = calendar.timeZone
+            text = "ZULETZT GEPRÜFT: \(dateFormatter.string(from: lastChecked).uppercased())"
         }
         if let available {
             text += " · V \(available) LIEGT BEREIT"
@@ -324,12 +321,22 @@ private enum UpdateStatusFormatter {
     }
 
     private static func timeText(_ date: Date, timeZone: TimeZone) -> String {
+        timeFormatter.timeZone = timeZone
+        return timeFormatter.string(from: date)
+    }
+
+    private static let dateFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "de_DE")
-        formatter.timeZone = timeZone
+        formatter.setLocalizedDateFormatFromTemplate("dd. MMMM")
+        return formatter
+    }()
+    private static let timeFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "de_DE")
         formatter.dateFormat = "HH:mm"
-        return formatter.string(from: date)
-    }
+        return formatter
+    }()
 }
 
 // MARK: - Checker
