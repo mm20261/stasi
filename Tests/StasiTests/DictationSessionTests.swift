@@ -1274,12 +1274,15 @@ final class DictationSessionTests: XCTestCase {
         let audio = FakeAudioCapture()
         let speech = FakeSpeechEngine()
         let gate = PermissionGate()
+        let sound = SoundFeedbackSpy()
         let app = makeApp(
             audio: audio,
             engines: [speech],
             permission: { await gate.request() },
-            minimumPushToTalkDuration: PillChrome.presentationDelay
+            minimumPushToTalkDuration: PillChrome.presentationDelay,
+            soundFeedback: sound
         )
+        app.settings.soundOn = true
         var toasts: [String] = []
         app.onToast = { message, _ in toasts.append(message) }
 
@@ -1294,6 +1297,7 @@ final class DictationSessionTests: XCTestCase {
         XCTAssertFalse(audio.isRunning)
         XCTAssertEqual(audio.stopCount, 1)
         XCTAssertEqual(metrics.startCount, 0)
+        XCTAssertTrue(sound.events.isEmpty)
         XCTAssertTrue(toasts.isEmpty)
         XCTAssertTrue(app.history.records.isEmpty)
     }
@@ -1990,7 +1994,7 @@ final class DictationSessionTests: XCTestCase {
         await waitUntil { app.phase == .idle }
     }
 
-    func testCaptureBoundaryDiscardsHardwareAndCueBuffersAndStartsDurationAtActivation() async throws {
+    func testCaptureBoundaryDiscardsHardwareBufferButAllowsCueAndStartsDurationAtActivation() async throws {
         let audio = FakeAudioCapture()
         let clock = FakeClock()
         let history = FakeHistoryStore()
@@ -2017,11 +2021,11 @@ final class DictationSessionTests: XCTestCase {
         await waitUntil { app.phase == .recording }
         let expectedStart = clock.now
         audio.emit(chunk)
-        await waitUntil { await speech.metrics().feedCount == 1 }
+        await waitUntil { await speech.metrics().feedCount >= 2 }
 
         XCTAssertEqual(app.recordStart, expectedStart)
         let metrics = await speech.metrics()
-        XCTAssertEqual(metrics.feedCount, 1)
+        XCTAssertEqual(metrics.feedCount, 2)
         clock.advance(by: 0.05)
         app.stopDictation()
         await waitUntil { app.phase == .idle }
@@ -2029,35 +2033,35 @@ final class DictationSessionTests: XCTestCase {
         XCTAssertEqual(history.records.first?.durationSecs ?? -1, 0.05, accuracy: 0.001)
     }
 
-    func testSetupStopCancelsOnlyActiveStartCueAndEmitsNoRecordingEvents() async {
+    func testSessionCancelStartCueCancelsActiveTaskBeforeTeardownFinishes() async {
         let audio = FakeAudioCapture()
         let cue = EventLog()
-        let sound = SoundFeedbackSpy(onPlay: { event in
-            guard event == .recordingStarted else { return }
+        let session = DictationSession(
+            locale: .current,
+            dictionaryEntries: [],
+            audioURL: nil,
+            speech: FakeSpeechEngine(),
+            audio: audio
+        )
+        session.startCue {
             cue.append("started")
             do {
                 try await Task.sleep(nanoseconds: 60_000_000_000)
             } catch {
                 cue.append("cancelled")
             }
-        })
-        let speech = FakeSpeechEngine()
-        let app = makeApp(audio: audio, engines: [speech], soundFeedback: sound)
-        app.settings.soundOn = true
+        }
 
-        app.startDictation()
         await waitUntil { cue.events.contains("started") }
-        app.stopDictation()
-        await waitUntil { app.phase == .idle }
+        session.cancelStartCue()
+        await session.teardown()
 
         XCTAssertEqual(cue.events, ["started", "cancelled"])
-        XCTAssertTrue(sound.events.isEmpty)
         XCTAssertEqual(audio.stopCount, 1)
-        let metrics = await speech.metrics()
-        XCTAssertEqual(metrics.streamCancellationCount, 0)
+        XCTAssertEqual(session.state, .finished)
     }
 
-    func testActivationWinningBeforeCueMakesCueRuntimeFailurePostStart() async {
+    func testRuntimeFailureAfterCaptureOpenedKeepsStartedStoppedFailedOrder() async {
         let audio = FakeAudioCapture()
         let cueGate = PermissionGate()
         let sound = SoundFeedbackSpy(onPlay: { event in
@@ -2075,16 +2079,16 @@ final class DictationSessionTests: XCTestCase {
         await waitUntil { await cueGate.requested }
         XCTAssertTrue(audio.isRunning)
         XCTAssertEqual(audio.activateCount, 1)
-        XCTAssertFalse(audio.isCaptureActive)
+        XCTAssertTrue(audio.isCaptureActive)
 
         audio.fail(.processingBacklog)
         await Task.yield()
         await cueGate.resolve(true)
         await waitUntil { app.phase == .idle }
 
-        XCTAssertEqual(audio.openCount, 0)
+        XCTAssertEqual(audio.openCount, 1)
         XCTAssertEqual(audio.stopCount, 1)
-        XCTAssertEqual(sound.events, [.failed])
+        XCTAssertEqual(sound.events, [.recordingStarted, .recordingStopped, .failed])
     }
 
     func testRuntimeErrorWinningActivationCrossingPlaysFailedOnly() async {
@@ -2139,7 +2143,7 @@ final class DictationSessionTests: XCTestCase {
         XCTAssertEqual(sound.events, [.failed])
     }
 
-    func testTargetApplicationRefreshesAtActualAudioBoundary() async {
+    func testTargetApplicationIsCapturedBeforeParallelStartCueCompletes() async {
         let before = makeTargetApplication(named: "Before", processIdentifier: 1)
         let actual = makeTargetApplication(named: "Actual", processIdentifier: 2)
         let frontmost = FrontmostApplicationStub(before)
@@ -2159,15 +2163,16 @@ final class DictationSessionTests: XCTestCase {
         app.startDictation()
         await waitUntil { await cueGate.requested }
         XCTAssertEqual(audio.startCount, 1)
-        XCTAssertFalse(audio.isCaptureActive)
+        XCTAssertTrue(audio.isCaptureActive)
+        XCTAssertEqual(app.currentSession?.targetApplication, before)
         frontmost.current = actual
         await cueGate.resolve(true)
         await waitUntil { app.phase == .recording }
 
-        XCTAssertEqual(app.currentSession?.targetApplication, actual)
+        XCTAssertEqual(app.currentSession?.targetApplication, before)
         XCTAssertEqual(frontmost.callCount, 1)
-        XCTAssertFalse(app.currentSession?.assignTargetApplication(before) ?? true)
-        XCTAssertEqual(app.currentSession?.targetApplication, actual)
+        XCTAssertFalse(app.currentSession?.assignTargetApplication(actual) ?? true)
+        XCTAssertEqual(app.currentSession?.targetApplication, before)
         app.requestDiscard()
         await waitUntil { app.phase == .idle }
     }
@@ -2231,7 +2236,7 @@ final class DictationSessionTests: XCTestCase {
         XCTAssertEqual(app.elapsed, elapsedBefore)
     }
 
-    func testHardwareStartsThenActivationWinsThenCueFinishesThenCaptureOpens() async {
+    func testHardwareOpensAndPublishesRecordingBeforeStartCueCompletes() async {
         let audio = FakeAudioCapture()
         let events = EventLog()
         weak var appReference: AppState?
@@ -2251,8 +2256,8 @@ final class DictationSessionTests: XCTestCase {
             engines: [FakeSpeechEngine()],
             soundFeedback: SoundFeedbackSpy(onPlay: { event in
                 guard event == .recordingStarted else { return }
-                XCTAssertEqual(appReference?.phase, .preparing)
-                XCTAssertNil(appReference?.recordStart)
+                XCTAssertEqual(appReference?.phase, .recording)
+                XCTAssertNotNil(appReference?.recordStart)
                 events.append("cue.complete")
             })
         )
@@ -2263,7 +2268,7 @@ final class DictationSessionTests: XCTestCase {
         await waitUntil { app.phase == .recording }
 
         XCTAssertEqual(events.events, [
-            "hardware.start", "capture.activate", "cue.complete", "capture.open",
+            "hardware.start", "capture.activate", "capture.open", "cue.complete",
         ])
         XCTAssertTrue(audio.isCaptureActive)
         XCTAssertNotNil(app.recordStart)
@@ -2725,7 +2730,56 @@ final class DictationSessionTests: XCTestCase {
         await waitUntil { app.phase == .idle }
     }
 
-    func testStopCueRunsInParallelWithSpeechFinalization() async {
+    func testRecordingStartsWithoutWaitingForOneSecondStartCue() async {
+        let sound = SoundFeedbackSpy(onPlay: { event in
+            guard event == .recordingStarted else { return }
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
+        })
+        let audio = FakeAudioCapture()
+        let app = makeApp(
+            audio: audio,
+            engines: [FakeSpeechEngine()],
+            soundFeedback: sound
+        )
+        app.settings.soundOn = true
+        let startedAt = Date()
+
+        app.startDictation()
+        await waitUntil(timeout: 0.2) { app.phase == .recording }
+
+        XCTAssertLessThan(Date().timeIntervalSince(startedAt), 0.2)
+        XCTAssertTrue(audio.isCaptureActive)
+        app.requestDiscard()
+        await waitUntil(timeout: 2) { app.phase == .idle }
+    }
+
+    func testHistoryIsWrittenWithoutWaitingForOneSecondStopCue() async {
+        let history = FakeHistoryStore()
+        let sound = SoundFeedbackSpy(onPlay: { event in
+            guard event == .recordingStopped else { return }
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
+        })
+        let audio = FakeAudioCapture()
+        let app = makeApp(
+            audio: audio,
+            engines: [FakeSpeechEngine(text: "Ohne Ton-Wartezeit")],
+            history: history,
+            soundFeedback: sound
+        )
+        app.settings.soundOn = true
+
+        app.startDictation()
+        await waitUntil { app.phase == .recording }
+        let stoppedAt = Date()
+        app.stopDictation()
+        await waitUntil(timeout: 0.3) { history.insertCount == 1 }
+
+        XCTAssertLessThan(Date().timeIntervalSince(stoppedAt), 0.3)
+        XCTAssertEqual(history.records.first?.rawText, "Ohne Ton-Wartezeit")
+        await waitUntil(timeout: 2) { app.phase == .idle }
+    }
+
+    func testStopCueDoesNotBlockHistoryAfterSpeechFinalization() async {
         let stopCueGate = PermissionGate()
         let speech = FakeSpeechEngine(text: "Parallel")
         let sound = SoundFeedbackSpy(onPlay: { event in
@@ -2741,9 +2795,10 @@ final class DictationSessionTests: XCTestCase {
         app.stopDictation()
         await waitUntil { await stopCueGate.requested }
         await waitUntil { await speech.metrics().finishCount == 1 }
+        await waitUntil { !app.history.records.isEmpty }
 
-        XCTAssertEqual(app.phase, .transcribing)
-        XCTAssertTrue(app.history.records.isEmpty)
+        XCTAssertEqual(app.phase, .polishing)
+        XCTAssertEqual(app.history.records.first?.rawText, "Parallel")
         await stopCueGate.resolve(true)
         await waitUntil { app.phase == .idle }
         XCTAssertEqual(sound.events, [
@@ -2751,7 +2806,7 @@ final class DictationSessionTests: XCTestCase {
         ])
     }
 
-    func testSoundFeedbackSuccessTimelineWaitsForCueAndAudioStop() async {
+    func testSoundFeedbackSuccessTimelineOpensCaptureBeforeStartCue() async {
         let timeline = EventLog()
         let audio = FakeAudioCapture()
         audio.onStart = { timeline.append("hardware.start") }
@@ -2775,7 +2830,7 @@ final class DictationSessionTests: XCTestCase {
             .recordingStarted, .recordingStopped, .processingCompleted,
         ])
         XCTAssertEqual(timeline.events, [
-            "hardware.start", "capture.activate", "sound.recordingStarted", "capture.open",
+            "hardware.start", "capture.activate", "capture.open", "sound.recordingStarted",
             "audio.stop", "sound.recordingStopped", "sound.processingCompleted",
         ])
     }

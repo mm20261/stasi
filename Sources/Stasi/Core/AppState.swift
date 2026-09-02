@@ -509,17 +509,20 @@ final class AppState {
         await soundFeedback.play(event)
     }
 
-    private func playRecordingStartCue(for session: DictationSession) async -> Bool {
-        if session.soundFeedbackEnabled {
-            let completed = await session.startCue { [soundFeedback] in
-                await soundFeedback.play(.recordingStarted)
-            }
-            guard completed else { return false }
+    private func startRecordingCue(for session: DictationSession) {
+        guard session.claimSoundEvent(.recordingStarted),
+              session.soundFeedbackEnabled else { return }
+        session.startCue { [soundFeedback] in
+            await soundFeedback.play(.recordingStarted)
         }
-        guard !Task.isCancelled,
-              session === currentSession,
-              session.state == .settingUp else { return false }
-        return session.claimSoundEvent(.recordingStarted)
+    }
+
+    private func startRecordingStopCue(for session: DictationSession) {
+        guard session.claimSoundEvent(.recordingStopped),
+              session.soundFeedbackEnabled else { return }
+        session.stopCue { [soundFeedback] in
+            await soundFeedback.play(.recordingStopped)
+        }
     }
 
     // MARK: Aufnahme-Steuerung
@@ -689,14 +692,6 @@ final class AppState {
                     return
                 }
                 session.markCaptureActivationWon()
-                let startCueCompleted = await self.playRecordingStartCue(for: session)
-                setupMark("Startton fertig")
-                guard await self.setupShouldContinue(session),
-                      startCueCompleted else { return }
-                if let runtimeError = health.audioRuntimeError {
-                    await self.handleAudioRuntimeError(runtimeError, session: session)
-                    return
-                }
                 guard session.audio.openCapture() else {
                     await self.handleCaptureActivationFailure(session)
                     return
@@ -708,6 +703,8 @@ final class AppState {
                 self.elapsed = 0
                 self.phase = .recording
                 setupMark("Aufnahme läuft")
+                self.startRecordingCue(for: session)
+                setupMark("Startton gestartet")
                 DebugLog.log("STASI-APP: audio.start fertig – Aufnahme läuft")
             } catch {
                 DebugLog.log("STASI-APP: startDictation FEHLER: \(error.localizedDescription)")
@@ -772,21 +769,20 @@ final class AppState {
             }
 
             let recordedURL = await session.stopAudioOnce()
-            let stopCueTask = Task { @MainActor [weak self, weak session] in
-                guard let self, let session else { return }
-                await self.playSound(.recordingStopped, for: session)
-            }
+            self.startRecordingStopCue(for: session)
             if session.health.failure == .audioRuntimeFailure {
                 DebugLog.log("STASI-APP: Commit-Drain wegen Audio-Runtimefehler abgebrochen")
-                await stopCueTask.value
+                // Hier bleibt das Warten bewusst erhalten: Der anschließende
+                // Fehlerton darf den Stoppton nicht überholen.
+                await session.waitForStopCue()
                 await self.completeTerminalFailure(
                     session,
                     fallbackMessage: "Die Audioaufnahme ist fehlgeschlagen und wurde verworfen."
                 )
                 return
             }
-            // Stop-Cue und Speech-Finalisierung laufen parallel. Das terminale
-            // Ergebnis wartet weiterhin auf beide, sodass die Ereignisfolge stabil bleibt.
+            // Stop-Cue und Speech-Finalisierung laufen parallel. Erst der
+            // Session-Teardown wartet auf den Cue; das Transkript läuft sofort weiter.
             // Erst alle gepufferten Chunks in die Engine drainen, DANN
             // finalisieren – sonst fehlt das Satzende.
             session.health.closeSpeechIngress(session.audioContinuation)
@@ -808,9 +804,7 @@ final class AppState {
             }
             guard session === self.currentSession else { return }
             session.consumeTask = nil
-            DebugLog.log("STASI-TIMING: Transkript final, warte auf Stoppton")
-            await stopCueTask.value
-            DebugLog.log("STASI-TIMING: Stoppton fertig")
+            DebugLog.log("STASI-TIMING: Transkript final, Stoppton läuft parallel")
             guard session === self.currentSession else { return }
             session.setupTask = nil
             session.state = .finished

@@ -44,6 +44,7 @@ final class DictationSession {
     private var audioStopTask: Task<URL?, Never>?
     private var terminalFailureTask: Task<Void, Never>?
     private var startCueTask: Task<Void, Never>?
+    private var stopCueTask: Task<Void, Never>?
     private var shouldPreserveAudioFile = false
     private var terminalRecoveryRequired = false
     private(set) var captureActivationWon = false
@@ -84,21 +85,22 @@ final class DictationSession {
         captureActivationWon = true
     }
 
-    func startCue(using operation: @escaping @MainActor () async -> Void) async -> Bool {
-        if let startCueTask {
-            await startCueTask.value
-            return !startCueTask.isCancelled
-        }
-        let task = Task { @MainActor in await operation() }
-        startCueTask = task
-        await task.value
-        let completed = !task.isCancelled
-        startCueTask = nil
-        return completed
+    func startCue(using operation: @escaping @MainActor () async -> Void) {
+        guard startCueTask == nil else { return }
+        startCueTask = Task { @MainActor in await operation() }
     }
 
     func cancelStartCue() {
         startCueTask?.cancel()
+    }
+
+    func stopCue(using operation: @escaping @MainActor () async -> Void) {
+        guard stopCueTask == nil else { return }
+        stopCueTask = Task { @MainActor in await operation() }
+    }
+
+    func waitForStopCue() async {
+        await stopCueTask?.value
     }
 
     /// Einziger terminaler Eigentümer einer fehlgeschlagenen Session. Weitere
@@ -181,6 +183,8 @@ final class DictationSession {
         let speech = self.speech
         let consumeTask = self.consumeTask
         let audioURL = self.audioURL
+        let startCueTask = self.startCueTask
+        let stopCueTask = self.stopCueTask
 
         let task = Task { @MainActor in
             let stoppedURL = await self.stopAudioOnce()
@@ -203,6 +207,10 @@ final class DictationSession {
             } else if !self.shouldPreserveAudioFile, let audioURL {
                 try? FileManager.default.removeItem(at: audioURL)
             }
+            // Bereits gestartete Cues bleiben bis zur Session-Grenze besessen.
+            // Damit endet kein Sound-Task verwaist nach dem Teardown.
+            await startCueTask?.value
+            await stopCueTask?.value
         }
         teardownTask = task
         await task.value
@@ -210,6 +218,8 @@ final class DictationSession {
         audioContinuation = nil
         self.feedTask = nil
         self.consumeTask = nil
+        self.startCueTask = nil
+        self.stopCueTask = nil
         state = .finished
     }
 }

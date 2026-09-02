@@ -599,13 +599,14 @@ final class AudioCapture: AudioCapturing, @unchecked Sendable {
     }
 
     /// Reserviert die Capture-Aktivierung atomar gegen einen Runtimefehler.
-    /// Bis `openCapture()` bleiben alle Render-Puffer gesperrt, damit der Cue nicht einfliesst.
+    /// Bis `openCapture()` bleiben alle Render-Puffer gesperrt. Der aktuelle Ablauf
+    /// öffnet dieses zweite Gate sofort; der Startton darf bewusst ins Mikrofon gelangen.
     @discardableResult
     func activateCapture() -> Bool {
         stateLock.withLock { currentRun?.activate() ?? false }
     }
 
-    /// Oeffnet nach dem vollstaendigen Cue die eigentliche Render-Zulassung.
+    /// Öffnet die eigentliche Render-Zulassung nach erfolgreicher Reservierung.
     @discardableResult
     func openCapture() -> Bool {
         stateLock.withLock { currentRun?.open() ?? false }
