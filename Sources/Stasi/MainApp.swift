@@ -225,12 +225,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         self.selectionRef = selection
 
         app.startCommandLoop()
+        Task { await app.bootstrap() }
         Task { await app.prepareModel(for: settings.transcriptionLocale) }
         app.onToast = { message, success in
             PillController.shared.showToast(message, success: success)
         }
         PillController.shared.app = app
-        app.applyRetention()
         statusBar.install(app: app, settings: settings, selection: selection)
         poll()
     }

@@ -20,7 +20,7 @@ final class DictionaryWatcherTests: XCTestCase {
         let url = directory.appendingPathComponent("dictionary.json")
         try encode([DictionaryEntry(type: .word, value: "Alt")]).write(to: url)
 
-        let store = DictionaryStore(directory: directory)
+        let store = DictionaryStore(directory: directory, loadImmediately: true)
         try encode([DictionaryEntry(type: .word, value: "Neu")])
             .write(to: url, options: .atomic)
 
@@ -34,7 +34,7 @@ final class DictionaryWatcherTests: XCTestCase {
 
     func testRepeatedSavesRestartWatcherWithoutCrash() {
         let directory = makeDirectory()
-        var store: DictionaryStore? = DictionaryStore(directory: directory)
+        var store: DictionaryStore? = DictionaryStore(directory: directory, loadImmediately: true)
 
         for index in 0..<25 {
             store?.add(DictionaryEntry(type: .word, value: "Watcher \(index)"))
@@ -46,11 +46,11 @@ final class DictionaryWatcherTests: XCTestCase {
 
     func testStoreCanBeRecreatedAfterWatcherCancellation() {
         let directory = makeDirectory()
-        var store: DictionaryStore? = DictionaryStore(directory: directory)
+        var store: DictionaryStore? = DictionaryStore(directory: directory, loadImmediately: true)
         store?.add(DictionaryEntry(type: .word, value: "Vor Neustart"))
         store = nil
 
-        let recreated = DictionaryStore(directory: directory)
+        let recreated = DictionaryStore(directory: directory, loadImmediately: true)
 
         XCTAssertTrue(recreated.entries.contains { $0.value == "Vor Neustart" })
     }

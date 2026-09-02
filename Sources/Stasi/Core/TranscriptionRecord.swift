@@ -136,18 +136,22 @@ private struct HistoryFile: Codable {
 // Persistiert Protokolle nach ~/Library/Application Support/Stasi/history.json.
 
 enum HistoryStoreState: Equatable {
+    case loading
     case missing
     case loaded
     case unreadable(String)
 }
 
 enum HistoryStoreError: LocalizedError, Sendable {
+    case stillLoading
     case writeBlockedByUnreadableHistory(URL)
     case encodingFailed(String)
     case writeFailed(URL, String)
 
     var errorDescription: String? {
         switch self {
+        case .stillLoading:
+            return "Der Verlauf wird noch geladen."
         case .writeBlockedByUnreadableHistory(let url):
             return "Die unlesbare Verlaufsdatei \(url.path) wurde nicht verändert."
         case .encodingFailed(let message):
@@ -156,6 +160,16 @@ enum HistoryStoreError: LocalizedError, Sendable {
             return "Der Verlauf konnte nicht nach \(url.path) geschrieben werden: \(message)"
         }
     }
+}
+
+private enum HistoryLoadResult: Sendable {
+    case missing
+    case loaded(
+        records: [TranscriptionRecord],
+        skipped: Int,
+        declaredAudioPaths: Set<String>
+    )
+    case unreadable(message: String, invalidJSON: Bool)
 }
 
 /// Serialisiert komplette Mutationen über Actor-Reentranz hinweg. Dadurch
@@ -203,6 +217,7 @@ protocol HistoryStoring: AnyObject {
     var state: HistoryStoreState { get }
     var lastError: String? { get }
 
+    func loadAsync() async
     func save() async throws
     func insert(_ record: TranscriptionRecord, at position: Int) async throws
     func delete(_ record: TranscriptionRecord) async throws
@@ -224,36 +239,67 @@ extension HistoryStoring {
 @Observable
 final class HistoryStore: HistoryStoring {
     private(set) var records: [TranscriptionRecord] = []
-    private(set) var state: HistoryStoreState = .missing
+    private(set) var state: HistoryStoreState = .loading
     private(set) var lastError: String?
 
     private let fileURL: URL
     private let audioDirectory: URL
-    private let decoder = JSONDecoder()
     private let persistence = HistoryPersistenceCoordinator()
     private var hasBackedUpUnreadableFile = false
+    @ObservationIgnored private var loadTask: Task<HistoryLoadResult, Never>?
 
     /// `directory` ist für Tests injizierbar; default = Application Support.
-    init(directory: URL? = nil) {
+    /// `loadImmediately` hält synchrone Store-Tests kompakt; die App nutzt den
+    /// nicht-blockierenden Standardwert und startet das Laden im Bootstrap.
+    init(directory: URL? = nil, loadImmediately: Bool = false) {
         let dir = directory ?? DictionaryStore.appSupportDirectory
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         fileURL = dir.appendingPathComponent("history.json")
         audioDirectory = dir.appendingPathComponent("audio", isDirectory: true)
-        load()
+        if loadImmediately {
+            loadSynchronously()
+        }
     }
 
+    /// Expliziter synchroner Reload für bestehende Store-Tests und Diagnosepfade.
     func load() {
+        loadSynchronously()
+    }
+
+    func loadAsync() async {
+        guard state == .loading else { return }
+        let task: Task<HistoryLoadResult, Never>
+        if let loadTask {
+            task = loadTask
+        } else {
+            let url = fileURL
+            let created = Task.detached(priority: .userInitiated) {
+                Self.readHistory(from: url)
+            }
+            loadTask = created
+            task = created
+        }
+        let result = await task.value
+        guard state == .loading else { return }
+        loadTask = nil
+        apply(result)
+    }
+
+    private func loadSynchronously() {
+        state = .loading
+        apply(Self.readHistory(from: fileURL))
+    }
+
+    private nonisolated static func readHistory(from fileURL: URL) -> HistoryLoadResult {
         guard FileManager.default.fileExists(atPath: fileURL.path) else {
-            records = []
-            state = .missing
-            lastError = nil
-            return
+            return .missing
         }
 
         do {
             let data = try Data(contentsOf: fileURL)
             let declaredAudioPaths = audioPathsDeclaredInFile(data)
             let decoded: (records: [TranscriptionRecord], skipped: Int)
+            let decoder = JSONDecoder()
             if let file = try? decoder.decode(HistoryFile.self, from: data) {
                 decoded = (file.records, file.skippedRecords)
             } else {
@@ -266,12 +312,32 @@ final class HistoryStore: HistoryStoring {
                     elements.filter { $0.value == nil }.count
                 )
             }
-            records = decoded.records.sorted { $0.date > $1.date }
+            return .loaded(
+                records: decoded.records.sorted { $0.date > $1.date },
+                skipped: decoded.skipped,
+                declaredAudioPaths: declaredAudioPaths
+            )
+        } catch {
+            let invalidJSON = ((try? Data(contentsOf: fileURL)).flatMap { data in
+                try? JSONSerialization.jsonObject(with: data, options: [.fragmentsAllowed])
+            }) == nil
+            return .unreadable(message: error.localizedDescription, invalidJSON: invalidJSON)
+        }
+    }
+
+    private func apply(_ result: HistoryLoadResult) {
+        switch result {
+        case .missing:
+            records = []
+            state = .missing
+            lastError = nil
+        case let .loaded(loadedRecords, skipped, declaredAudioPaths):
+            records = loadedRecords
             state = .loaded
-            if decoded.skipped > 0 {
-                let message = decoded.skipped == 1
+            if skipped > 0 {
+                let message = skipped == 1
                     ? "1 beschädigtes Protokoll wurde übersprungen."
-                    : "\(decoded.skipped) beschädigte Protokolle wurden übersprungen."
+                    : "\(skipped) beschädigte Protokolle wurden übersprungen."
                 lastError = message
                 DebugLog.log("STASI-HISTORY: \(message)")
                 // Übersprungene Records fehlen beim nächsten Schreiben; Original sichern.
@@ -280,10 +346,9 @@ final class HistoryStore: HistoryStoring {
                 lastError = nil
             }
             sweepOrphanedAudio(protecting: declaredAudioPaths)
-        } catch {
+        case let .unreadable(message, invalidJSON):
             records = []
-            let message = error.localizedDescription
-            backupInvalidJSONIfNeeded()
+            if invalidJSON { backupUnreadableFileOnce() }
             state = .unreadable(message)
             lastError = message
         }
@@ -390,6 +455,9 @@ final class HistoryStore: HistoryStoring {
     }
 
     private func ensureWritable() throws {
+        if state == .loading {
+            throw HistoryStoreError.stillLoading
+        }
         if case .unreadable = state {
             throw HistoryStoreError.writeBlockedByUnreadableHistory(fileURL)
         }
@@ -411,13 +479,6 @@ final class HistoryStore: HistoryStoring {
         }
     }
 
-    private func backupInvalidJSONIfNeeded() {
-        guard let data = try? Data(contentsOf: fileURL),
-              (try? JSONSerialization.jsonObject(with: data, options: [.fragmentsAllowed])) == nil
-        else { return }
-        backupUnreadableFileOnce()
-    }
-
     private func backupUnreadableFileOnce() {
         guard !hasBackedUpUnreadableFile,
               FileManager.default.fileExists(atPath: fileURL.path) else { return }
@@ -434,7 +495,7 @@ final class HistoryStore: HistoryStoring {
         }
     }
 
-    private func audioPathsDeclaredInFile(_ data: Data) -> Set<String> {
+    private nonisolated static func audioPathsDeclaredInFile(_ data: Data) -> Set<String> {
         guard let root = try? JSONSerialization.jsonObject(
             with: data,
             options: [.fragmentsAllowed]

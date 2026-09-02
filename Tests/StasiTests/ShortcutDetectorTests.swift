@@ -74,8 +74,14 @@ final class ShortcutDetectorTests: XCTestCase {
         var startHotkeyCalls = 0
         let app = AppState(
             settings: settings,
-            dictionary: DictionaryStore(directory: directory.appendingPathComponent("dictionary")),
-            history: HistoryStore(directory: directory.appendingPathComponent("history")),
+            dictionary: DictionaryStore(
+                directory: directory.appendingPathComponent("dictionary"),
+                loadImmediately: true
+            ),
+            history: HistoryStore(
+                directory: directory.appendingPathComponent("history"),
+                loadImmediately: true
+            ),
             installHotkey: false,
             startHotkey: { _, _ in
                 startHotkeyCalls += 1
@@ -110,8 +116,14 @@ final class ShortcutDetectorTests: XCTestCase {
         var startedCombos: [HotkeyEngine.Combo] = []
         let app = AppState(
             settings: SettingsStore(defaults: defaults),
-            dictionary: DictionaryStore(directory: directory.appendingPathComponent("dictionary")),
-            history: HistoryStore(directory: directory.appendingPathComponent("history")),
+            dictionary: DictionaryStore(
+                directory: directory.appendingPathComponent("dictionary"),
+                loadImmediately: true
+            ),
+            history: HistoryStore(
+                directory: directory.appendingPathComponent("history"),
+                loadImmediately: true
+            ),
             installHotkey: true,
             startHotkey: { _, combo in
                 startedCombos.append(combo)

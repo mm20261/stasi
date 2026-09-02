@@ -37,10 +37,15 @@ struct DictionaryView: View {
                         .foregroundColor(Theme.Palette.text2)
                 }
 
-                tabs
-                    .padding(.top, 20)
-                content
-                    .padding(.top, 0)
+                if app.dictionary.state == .loading {
+                    loadingState
+                        .padding(.top, 20)
+                } else {
+                    tabs
+                        .padding(.top, 20)
+                    content
+                        .padding(.top, 0)
+                }
             }
             .padding(.horizontal, Theme.Metrics.contentPaddingH)
             .padding(.bottom, 80)
@@ -48,6 +53,14 @@ struct DictionaryView: View {
         }
         .frame(maxWidth: .infinity, alignment: .center)
         .onAppear { app.refreshPermissionState() }
+    }
+
+    private var loadingState: some View {
+        Text("Lade Wörterbuch…")
+            .font(Theme.Typo.secondary())
+            .foregroundColor(Theme.Palette.text2)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .secondaryCard()
     }
 
     // MARK: Segmented-Tabs (v3: Akzent-Knopf auf hover-Track)

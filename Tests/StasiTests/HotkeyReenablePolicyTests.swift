@@ -197,8 +197,14 @@ final class HotkeyReenablePolicyTests: XCTestCase {
         let defaults = UserDefaults(suiteName: "HotkeyState.\(UUID().uuidString)")!
         let app = AppState(
             settings: SettingsStore(defaults: defaults),
-            dictionary: DictionaryStore(directory: directory.appendingPathComponent("dictionary")),
-            history: HistoryStore(directory: directory.appendingPathComponent("history")),
+            dictionary: DictionaryStore(
+                directory: directory.appendingPathComponent("dictionary"),
+                loadImmediately: true
+            ),
+            history: HistoryStore(
+                directory: directory.appendingPathComponent("history"),
+                loadImmediately: true
+            ),
             installHotkey: false,
             audioDirectory: directory.appendingPathComponent("audio")
         )

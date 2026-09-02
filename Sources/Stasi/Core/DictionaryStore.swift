@@ -4,8 +4,49 @@ import Foundation
 // Lädt/speichert dictionary.json, beobachtet die Datei (Hand-Edits erscheinen live).
 
 enum DictionaryStoreState: Equatable {
+    case loading
     case loaded
     case unreadable(String)
+}
+
+private enum DictionaryLoadResult: Sendable {
+    case missing
+    case loaded(entries: [DictionaryEntry], ignoredLearned: [String])
+    case unreadable(String)
+}
+
+private enum DictionaryWatcherResult: Sendable {
+    case ownWrite
+    case disk(DictionaryLoadResult)
+}
+
+/// Thread-sichere Brücke aus dem Dispatch-Source-Callback. Der Callback darf
+/// keinen MainActor-isolierten Store-Zustand berühren und erzeugt keine Task.
+private final class DictionaryWatcherMailbox: @unchecked Sendable {
+    let stream: AsyncStream<Void>
+    private let continuation: AsyncStream<Void>.Continuation
+
+    init() {
+        (stream, continuation) = AsyncStream.makeStream(of: Void.self)
+    }
+
+    func signal() {
+        continuation.yield(())
+    }
+
+    func finish() {
+        continuation.finish()
+    }
+
+    func makeEventHandler() -> @Sendable () -> Void {
+        { [weak self] in self?.signal() }
+    }
+
+    static func makeCancelHandler(fileDescriptor: Int32) -> @Sendable () -> Void {
+        {
+            if fileDescriptor >= 0 { close(fileDescriptor) }
+        }
+    }
 }
 
 @MainActor
@@ -14,7 +55,7 @@ final class DictionaryStore {
     private(set) var entries: [DictionaryEntry] = []
     private(set) var ignoredLearned: [String] = []
     private(set) var lastError: String?
-    private(set) var state: DictionaryStoreState = .loaded
+    private(set) var state: DictionaryStoreState = .loading
 
     static let appSupportDirectory = FileManager.default
         .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -27,38 +68,134 @@ final class DictionaryStore {
     private var lastWrittenData: Data?
     @ObservationIgnored
     private var hasBackedUpUnreadableFile = false
+    @ObservationIgnored
+    private var loadTask: Task<DictionaryLoadResult, Never>?
+    @ObservationIgnored
+    private var watcherTask: Task<Void, Never>?
+    @ObservationIgnored
+    private let watcherMailbox = DictionaryWatcherMailbox()
+    private nonisolated let watcherQueue = DispatchQueue(
+        label: "app.stasi.dictionary-watcher",
+        qos: .utility
+    )
 
     /// `directory` ist für Tests injizierbar; default = Application Support.
-    init(directory: URL? = nil) {
+    /// `loadImmediately` ist ausschließlich der synchrone Kompatibilitätspfad
+    /// für Store-Tests; die App lädt im Bootstrap asynchron.
+    init(directory: URL? = nil, loadImmediately: Bool = false) {
         let dir = directory ?? Self.appSupportDirectory
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         fileURL = dir.appendingPathComponent("dictionary.json")
-        if FileManager.default.fileExists(atPath: fileURL.path) {
-            load()
-        } else if entries.isEmpty {
-            entries = seedEntries()
-            save()
+        if loadImmediately {
+            loadSynchronously(initial: true)
         }
-        restartWatcher()
     }
 
     // MARK: Laden / Speichern
 
     func load() {
-        guard FileManager.default.fileExists(atPath: fileURL.path) else { return }
+        loadSynchronously(initial: false)
+    }
+
+    func loadAsync() async {
+        guard state == .loading else { return }
+        let task: Task<DictionaryLoadResult, Never>
+        if let loadTask {
+            task = loadTask
+        } else {
+            let url = fileURL
+            let created = Task.detached(priority: .userInitiated) {
+                Self.readDictionary(from: url)
+            }
+            loadTask = created
+            task = created
+        }
+        let result = await task.value
+        guard state == .loading else { return }
+        loadTask = nil
+        applyInitial(result)
+    }
+
+    private func loadSynchronously(initial: Bool) {
+        let result = Self.readDictionary(from: fileURL)
+        if initial {
+            applyInitial(result)
+        } else {
+            applyReload(result)
+        }
+    }
+
+    private nonisolated static func readDictionary(from fileURL: URL) -> DictionaryLoadResult {
+        guard FileManager.default.fileExists(atPath: fileURL.path) else { return .missing }
         do {
             let data = try Data(contentsOf: fileURL)
+            return decodeDictionary(data)
+        } catch {
+            return .unreadable("dictionary.json unlesbar: \(error.localizedDescription)")
+        }
+    }
+
+    private nonisolated static func decodeDictionary(_ data: Data) -> DictionaryLoadResult {
+        do {
             let file = try JSONDecoder().decode(DictionaryFile.self, from: data)
-            entries = file.entries.sorted(by: DictionaryEntryOrdering.precedes)
-            ignoredLearned = stableUnique(file.ignoredLearned ?? [])
+            return .loaded(
+                entries: file.entries.sorted(by: DictionaryEntryOrdering.precedes),
+                ignoredLearned: file.ignoredLearned ?? []
+            )
+        } catch {
+            return .unreadable("dictionary.json unlesbar: \(error.localizedDescription)")
+        }
+    }
+
+    private func applyInitial(_ result: DictionaryLoadResult) {
+        switch result {
+        case .missing:
+            entries = seedEntries()
+            ignoredLearned = []
             state = .loaded
             lastError = nil
-        } catch {
-            let message = "dictionary.json unlesbar: \(error.localizedDescription)"
-            backupUnreadableFileIfNeeded()
-            state = .unreadable(message)
-            lastError = message
+            save()
+            startWatcherLoop()
+        case let .loaded(loadedEntries, loadedIgnored):
+            applyLoaded(entries: loadedEntries, ignoredLearned: loadedIgnored)
+            restartWatcher()
+            startWatcherLoop()
+        case .unreadable(let message):
+            applyUnreadable(message)
         }
+    }
+
+    private func applyReload(_ result: DictionaryLoadResult) {
+        switch result {
+        case .missing:
+            // Ein temporäres Delete/Rename beim atomaren Editor-Speichern darf
+            // den bereits geladenen In-Memory-Stand nicht leeren oder neu seeden.
+            break
+        case let .loaded(loadedEntries, loadedIgnored):
+            applyLoaded(entries: loadedEntries, ignoredLearned: loadedIgnored)
+        case .unreadable(let message):
+            applyUnreadable(message)
+        }
+        // Auch nach einem externen ungültigen Rename weiter beobachten, damit
+        // eine anschließende Reparatur der Datei wieder übernommen wird.
+        restartWatcher()
+        if state == .loaded {
+            startWatcherLoop()
+        }
+    }
+
+    private func applyLoaded(entries loadedEntries: [DictionaryEntry],
+                             ignoredLearned loadedIgnored: [String]) {
+        entries = loadedEntries
+        ignoredLearned = stableUnique(loadedIgnored)
+        state = .loaded
+        lastError = nil
+    }
+
+    private func applyUnreadable(_ message: String) {
+        backupUnreadableFileIfNeeded()
+        state = .unreadable(message)
+        lastError = message
     }
 
     func save() {
@@ -198,8 +335,7 @@ final class DictionaryStore {
     }
 
     private func ensureWritable() -> Bool {
-        if case .unreadable = state { return false }
-        return true
+        state == .loaded
     }
 
     private func backupUnreadableFileIfNeeded() {
@@ -227,36 +363,59 @@ final class DictionaryStore {
         let source = DispatchSource.makeFileSystemObjectSource(
             fileDescriptor: watchFD,
             eventMask: [.write, .delete, .rename],
-            queue: .main
+            queue: watcherQueue
         )
-        source.setEventHandler { [weak self] in
-            guard let self else { return }
-            // Kleine Verzögerung – Editoren schreiben in mehreren Schritten.
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
-                self?.handleWatcherEvent()
-            }
-        }
-        source.setCancelHandler { [watchFD] in
-            if watchFD >= 0 { close(watchFD) }
-        }
+        let mailbox = watcherMailbox
+        // Beide Closures entstehen außerhalb der MainActor-isolierten Methode.
+        // Der Event-Callback signalisiert nur und erzeugt keine Task.
+        source.setEventHandler(handler: mailbox.makeEventHandler())
+        source.setCancelHandler(
+            handler: DictionaryWatcherMailbox.makeCancelHandler(fileDescriptor: watchFD)
+        )
         source.resume()
         watcher = source
     }
 
-    private func handleWatcherEvent() {
-        if let ownData = lastWrittenData,
-           let currentData = try? Data(contentsOf: fileURL),
-           currentData == ownData {
+    private func startWatcherLoop() {
+        guard watcherTask == nil else { return }
+        let events = watcherMailbox.stream
+        watcherTask = Task { [weak self] in
+            for await _ in events {
+                guard !Task.isCancelled else { return }
+                // Kleine Verzögerung – Editoren schreiben in mehreren Schritten.
+                try? await Task.sleep(for: .milliseconds(300))
+                guard !Task.isCancelled, let self else { return }
+                await self.handleWatcherEvent()
+            }
+        }
+    }
+
+    private func handleWatcherEvent() async {
+        let url = fileURL
+        let ownData = lastWrittenData
+        let result = await Task.detached(priority: .utility) {
+            guard let currentData = try? Data(contentsOf: url) else {
+                return DictionaryWatcherResult.disk(.missing)
+            }
+            if let ownData, currentData == ownData {
+                return .ownWrite
+            }
+            return .disk(Self.decodeDictionary(currentData))
+        }.value
+
+        switch result {
+        case .ownWrite:
             lastWrittenData = nil
             restartWatcher()
-            return
+        case .disk(let diskResult):
+            lastWrittenData = nil
+            applyReload(diskResult)
         }
-        lastWrittenData = nil
-        load()
-        restartWatcher()
     }
 
     deinit {
+        watcherTask?.cancel()
+        watcherMailbox.finish()
         watcher?.cancel()
     }
 }

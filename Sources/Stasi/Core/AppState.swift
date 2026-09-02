@@ -3,6 +3,17 @@ import SwiftUI
 import AppKit
 import AVFoundation
 
+/// Der Recovery-Store arbeitet ausschließlich auf seinem eigenen Verzeichnis.
+/// Der Wrapper erlaubt den einmaligen Bootstrap-Cleanup im detached Task; alle
+/// späteren Zugriffe warten vorher auf denselben Bootstrap.
+private struct AudioRecoveryCleanup: @unchecked Sendable {
+    let store: AudioRecoveryStore
+
+    func run() throws {
+        try store.cleanup()
+    }
+}
+
 // MARK: - AppState
 // Zentrale State-Machine: idle → recording → transcribing → polishing → injecting → idle.
 // Hotkey-Modi: Push-to-talk (halten) oder Umschalten (togglen).
@@ -115,6 +126,7 @@ final class AppState {
     @ObservationIgnored private var recordingLimitCommitQueued = false
     @ObservationIgnored private var modelPreparationWaiters = 0
     @ObservationIgnored private var activeInjectionID: UUID?
+    @ObservationIgnored private var bootstrapTask: Task<Void, Never>?
     private let permissionCheckMailbox = PermissionCheckMailbox()
 
     // MARK: Command-Channel
@@ -184,6 +196,39 @@ final class AppState {
                 case .applyRetention: await performRetention()
                 }
             }
+        }
+    }
+
+    /// Lädt die persistierten Stores ohne Main-Thread-I/O und führt danach die
+    /// startabhängigen Aufräumarbeiten genau einmal aus.
+    func bootstrap() async {
+        if let bootstrapTask {
+            await bootstrapTask.value
+            return
+        }
+        let task = Task { [weak self] in
+            guard let self else { return }
+            await self.performBootstrap()
+        }
+        bootstrapTask = task
+        await task.value
+    }
+
+    private func performBootstrap() async {
+        await history.loadAsync()
+        await dictionary.loadAsync()
+        presentUnreadableHistoryIfNeeded()
+        applyRetention()
+
+        let cleanup = AudioRecoveryCleanup(store: audioRecoveryStore)
+        do {
+            try await Task.detached(priority: .utility) {
+                try cleanup.run()
+            }.value
+        } catch {
+            DebugLog.log(
+                "STASI-AUDIO: Recovery-Cleanup beim Start fehlgeschlagen: \(error.localizedDescription)"
+            )
         }
     }
 
@@ -264,11 +309,6 @@ final class AppState {
             directory: resolvedAudioDirectory.deletingLastPathComponent()
                 .appendingPathComponent("Audio Recovery", isDirectory: true)
         )
-        do {
-            try self.audioRecoveryStore.cleanup()
-        } catch {
-            DebugLog.log("STASI-AUDIO: Recovery-Cleanup beim Start fehlgeschlagen: \(error.localizedDescription)")
-        }
         self.revealRecoveryFile = revealRecoveryFile
         self.frontmostApplication = frontmostApplication
         self.isTextFieldEditable = isTextFieldEditable
@@ -868,12 +908,16 @@ final class AppState {
             session.state = .stopping
             self.phase = .transcribing
             await self.teardown(session)
-            let recoveredURL = session.recoveredAudioURL.flatMap {
-                self.registerRecoveryAudio(at: $0)
+            let resolvedRecoveryURL: URL?
+            if let recoverySource = session.recoveredAudioURL {
+                await self.bootstrap()
+                resolvedRecoveryURL = self.registerRecoveryAudio(at: recoverySource)
+            } else {
+                resolvedRecoveryURL = nil
             }
             await self.playSound(.failed, for: session)
             self.finishAbortedSession(session)
-            if recoveredURL != nil {
+            if resolvedRecoveryURL != nil {
                 self.onToast?(
                     "Die Aufnahme ist unvollständig. Die Wiederherstellungsdatei wurde im Finder geöffnet.",
                     false
@@ -1033,6 +1077,11 @@ final class AppState {
             onToast?(Copy.toastNothingHeard, false)
             return
         }
+
+        // Ein während des Starts beendetes Diktat darf die noch ungelesene
+        // history.json niemals mit einem leeren In-Memory-Stand überschreiben.
+        await bootstrap()
+        guard session === currentSession, phase == .polishing else { return }
 
         let newRecord = TranscriptionRecord(
             date: Date(),
@@ -1303,6 +1352,7 @@ final class AppState {
     /// als die eingestellte Dauer sind.
     func applyRetention() {
         guard settings.retention.days != nil else { return }
+        guard history.state != .loading else { return }
         if case .unreadable = history.state {
             onToast?(Self.unreadableHistoryMessage, false)
             return

@@ -172,7 +172,9 @@ struct DashboardView: View {
         heroRecord: TranscriptionRecord?,
         earlierToday: [TranscriptionRecord]
     ) -> some View {
-        if heroRecord == nil {
+        if app.history.state == .loading {
+            loadingState("Lade Protokolle…")
+        } else if heroRecord == nil {
             FirstStartEmptyState(
                 onTry: { app.startDictation() },
                 onChangeKey: { selection.section = .einstellungen }
@@ -191,6 +193,14 @@ struct DashboardView: View {
                 }
             }
         }
+    }
+
+    private func loadingState(_ text: String) -> some View {
+        Text(text)
+            .font(Theme.Typo.secondary())
+            .foregroundColor(Theme.Palette.text2)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .secondaryCard()
     }
 
     // MARK: Hero „Zuletzt diktiert"

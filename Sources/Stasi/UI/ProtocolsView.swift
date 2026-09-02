@@ -182,7 +182,9 @@ struct ProtocolsView: View {
         filteredRecords: [TranscriptionRecord],
         groups: [ProtocolSearch.DayGroup]
     ) -> some View {
-        if app.history.records.isEmpty {
+        if app.history.state == .loading {
+            loadingState
+        } else if app.history.records.isEmpty {
             emptyState
         } else if filteredRecords.isEmpty {
             VStack(spacing: 6) {
@@ -210,6 +212,15 @@ struct ProtocolsView: View {
                 }
             }
         }
+    }
+
+    private var loadingState: some View {
+        Text("Lade Protokolle…")
+            .font(Theme.Typo.secondary())
+            .foregroundColor(Theme.Palette.text2)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .secondaryCard()
+            .padding(.vertical, 24)
     }
 
     private func dayCard(_ group: ProtocolSearch.DayGroup) -> some View {

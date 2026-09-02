@@ -14,7 +14,7 @@ final class DictionaryStoreTests: XCTestCase {
         tempDir = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
             .appendingPathComponent(".build/test-artifacts", isDirectory: true)
             .appendingPathComponent("StoreTests-\(UUID().uuidString)", isDirectory: true)
-        store = DictionaryStore(directory: tempDir)
+        store = DictionaryStore(directory: tempDir, loadImmediately: true)
     }
 
     override func tearDown() {
@@ -33,7 +33,7 @@ final class DictionaryStoreTests: XCTestCase {
         store.add(entry)
 
         // Frische Instanz auf demselben Verzeichnis = Persistenz-Check
-        let reloaded = DictionaryStore(directory: tempDir)
+        let reloaded = DictionaryStore(directory: tempDir, loadImmediately: true)
         XCTAssertTrue(reloaded.entries.contains { $0.value == "Supabase" && $0.note == "Datenbank" })
     }
 
@@ -58,7 +58,7 @@ final class DictionaryStoreTests: XCTestCase {
         store.delete(entry)
         XCTAssertFalse(store.entries.contains { $0.id == entry.id })
 
-        let reloaded = DictionaryStore(directory: tempDir)
+        let reloaded = DictionaryStore(directory: tempDir, loadImmediately: true)
         XCTAssertFalse(reloaded.entries.contains { $0.value == "Testwort" })
     }
 
@@ -136,7 +136,7 @@ final class DictionaryStoreTests: XCTestCase {
         XCTAssertFalse(store.entries.contains {
             $0.matchSource.caseInsensitiveCompare("Frobulator") == .orderedSame
         })
-        let reloaded = DictionaryStore(directory: tempDir)
+        let reloaded = DictionaryStore(directory: tempDir, loadImmediately: true)
         XCTAssertFalse(reloaded.entries.contains { $0.id == learned.id })
         XCTAssertEqual(reloaded.ignoredLearned, ["frobulator"])
     }
@@ -149,7 +149,7 @@ final class DictionaryStoreTests: XCTestCase {
         let legacyData = try JSONSerialization.data(withJSONObject: ["entries": [encodedEntry]])
         try legacyData.write(to: legacyDirectory.appendingPathComponent("dictionary.json"))
 
-        let reloaded = DictionaryStore(directory: legacyDirectory)
+        let reloaded = DictionaryStore(directory: legacyDirectory, loadImmediately: true)
 
         XCTAssertEqual(reloaded.entries.map(\.value), ["Legacy"])
         XCTAssertTrue(reloaded.ignoredLearned.isEmpty)
@@ -217,6 +217,53 @@ final class DictionaryStoreTests: XCTestCase {
         ) as? [String: Any])
         XCTAssertEqual(json["version"] as? Int, 1)
     }
+
+    func testMutationVorLadenIstNoOpUndDanachNormal() async throws {
+        let directory = tempDir.appendingPathComponent("asynchron", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let url = directory.appendingPathComponent("dictionary.json")
+        let existing = DictionaryEntry(type: .word, value: "Bestehend")
+        let original = try JSONEncoder().encode(DictionaryFile(entries: [existing]))
+        try original.write(to: url)
+
+        let loading = DictionaryStore(directory: directory)
+        loading.add(DictionaryEntry(type: .word, value: "Zu früh"))
+
+        XCTAssertEqual(loading.state, .loading)
+        XCTAssertTrue(loading.entries.isEmpty)
+        XCTAssertEqual(try Data(contentsOf: url), original)
+
+        await loading.loadAsync()
+        loading.add(DictionaryEntry(type: .word, value: "Nach Laden"))
+
+        XCTAssertEqual(loading.state, .loaded)
+        XCTAssertTrue(loading.entries.contains { $0.value == "Bestehend" })
+        XCTAssertTrue(loading.entries.contains { $0.value == "Nach Laden" })
+    }
+
+    func testSeedingPassiertNurBeiFehlenderDateiNachErstemLaden() async throws {
+        let missingDirectory = tempDir.appendingPathComponent("fehlend", isDirectory: true)
+        let missing = DictionaryStore(directory: missingDirectory)
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: missing.fileURL.path))
+        await missing.loadAsync()
+
+        XCTAssertEqual(missing.state, .loaded)
+        XCTAssertFalse(missing.entries.isEmpty)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: missing.fileURL.path))
+
+        let existingDirectory = tempDir.appendingPathComponent("vorhanden", isDirectory: true)
+        try FileManager.default.createDirectory(at: existingDirectory, withIntermediateDirectories: true)
+        let custom = DictionaryEntry(type: .word, value: "Nur dieser Eintrag")
+        try JSONEncoder().encode(DictionaryFile(entries: [custom])).write(
+            to: existingDirectory.appendingPathComponent("dictionary.json")
+        )
+        let existing = DictionaryStore(directory: existingDirectory)
+
+        await existing.loadAsync()
+
+        XCTAssertEqual(existing.entries.map(\.value), ["Nur dieser Eintrag"])
+    }
 }
 
 // MARK: - HistoryStore
@@ -232,7 +279,7 @@ final class HistoryStoreTests: XCTestCase {
         tempDir = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
             .appendingPathComponent(".build/test-artifacts", isDirectory: true)
             .appendingPathComponent("HistoryStoreTests-\(UUID().uuidString)", isDirectory: true)
-        store = HistoryStore(directory: tempDir)
+        store = HistoryStore(directory: tempDir, loadImmediately: true)
     }
 
     override func tearDown() {
@@ -258,12 +305,52 @@ final class HistoryStoreTests: XCTestCase {
         XCTAssertNil(store.lastError)
     }
 
+    func testInitBlockiertNichtUndLoadAsyncLiefertGrossenVerlauf() async throws {
+        let records = (0..<20_000).map { index in
+            makeRecord(text: "Protokoll \(index)", date: Date(timeIntervalSince1970: Double(index)))
+        }
+        try JSONEncoder().encode(records)
+            .write(to: tempDir.appendingPathComponent("history.json"), options: .atomic)
+
+        let start = ContinuousClock.now
+        let loading = HistoryStore(directory: tempDir)
+        let elapsed = start.duration(to: .now)
+
+        XCTAssertLessThan(elapsed, .milliseconds(500))
+        XCTAssertEqual(loading.state, .loading)
+        XCTAssertTrue(loading.records.isEmpty)
+
+        await loading.loadAsync()
+
+        XCTAssertEqual(loading.state, .loaded)
+        XCTAssertEqual(loading.records.count, 20_000)
+    }
+
+    func testInsertVorLadenWirftStillLoadingUndBewahrtDatei() async throws {
+        let url = tempDir.appendingPathComponent("history.json")
+        let original = try JSONEncoder().encode([makeRecord(text: "Vorhanden")])
+        try original.write(to: url)
+        let loading = HistoryStore(directory: tempDir)
+
+        do {
+            try await loading.insert(makeRecord(text: "Zu früh"))
+            XCTFail("Einfügen muss während des Ladens fehlschlagen")
+        } catch let error as HistoryStoreError {
+            guard case .stillLoading = error else {
+                return XCTFail("Erwartet stillLoading, erhalten: \(error)")
+            }
+        }
+
+        XCTAssertTrue(loading.records.isEmpty)
+        XCTAssertEqual(try Data(contentsOf: url), original)
+    }
+
     func testValidHistoryIsLoaded() throws {
         let record = makeRecord(text: "Gültiger Verlauf")
         let data = try JSONEncoder().encode([record])
         try data.write(to: tempDir.appendingPathComponent("history.json"))
 
-        let reloaded = HistoryStore(directory: tempDir)
+        let reloaded = HistoryStore(directory: tempDir, loadImmediately: true)
 
         XCTAssertEqual(reloaded.records.map(\.correctedText), ["Gültiger Verlauf"])
         XCTAssertEqual(reloaded.state, .loaded)
@@ -275,7 +362,7 @@ final class HistoryStoreTests: XCTestCase {
         let original = Data("{not-json".utf8)
         try original.write(to: url)
 
-        let reloaded = HistoryStore(directory: tempDir)
+        let reloaded = HistoryStore(directory: tempDir, loadImmediately: true)
 
         guard case .unreadable = reloaded.state else {
             return XCTFail("Beschädigte Historie muss als unlesbar markiert werden")
@@ -289,7 +376,7 @@ final class HistoryStoreTests: XCTestCase {
         let original = Data("{nicht-json".utf8)
         try original.write(to: url)
 
-        _ = HistoryStore(directory: tempDir)
+        _ = HistoryStore(directory: tempDir, loadImmediately: true)
 
         let backups = try FileManager.default.contentsOfDirectory(
             at: tempDir,
@@ -303,7 +390,7 @@ final class HistoryStoreTests: XCTestCase {
         let url = tempDir.appendingPathComponent("history.json")
         let original = Data("{not-json".utf8)
         try original.write(to: url)
-        let reloaded = HistoryStore(directory: tempDir)
+        let reloaded = HistoryStore(directory: tempDir, loadImmediately: true)
 
         do {
             try await reloaded.insert(makeRecord())
@@ -319,7 +406,7 @@ final class HistoryStoreTests: XCTestCase {
         let url = tempDir.appendingPathComponent("history.json")
         let original = Data("{not-json".utf8)
         try original.write(to: url)
-        let reloaded = HistoryStore(directory: tempDir)
+        let reloaded = HistoryStore(directory: tempDir, loadImmediately: true)
 
         do {
             try await reloaded.save()
@@ -336,7 +423,7 @@ final class HistoryStoreTests: XCTestCase {
         try Data("audio".utf8).write(to: audioURL)
         var record = makeRecord()
         record.audioPath = audioURL.path
-        let reloaded = HistoryStore(directory: tempDir)
+        let reloaded = HistoryStore(directory: tempDir, loadImmediately: true)
 
         do {
             try await reloaded.delete(record)
@@ -350,7 +437,7 @@ final class HistoryStoreTests: XCTestCase {
         let url = tempDir.appendingPathComponent("history.json")
         let original = Data("{not-json".utf8)
         try original.write(to: url)
-        let reloaded = HistoryStore(directory: tempDir)
+        let reloaded = HistoryStore(directory: tempDir, loadImmediately: true)
 
         do {
             try await reloaded.deleteAll()
@@ -363,7 +450,7 @@ final class HistoryStoreTests: XCTestCase {
         let url = tempDir.appendingPathComponent("history.json")
         let original = Data("{not-json".utf8)
         try original.write(to: url)
-        let reloaded = HistoryStore(directory: tempDir)
+        let reloaded = HistoryStore(directory: tempDir, loadImmediately: true)
 
         do {
             _ = try await reloaded.purge(olderThan: 7)
@@ -376,7 +463,7 @@ final class HistoryStoreTests: XCTestCase {
         let record = makeRecord(text: "Persistenz-Test")
         try await store.insert(record)
 
-        let reloaded = HistoryStore(directory: tempDir)
+        let reloaded = HistoryStore(directory: tempDir, loadImmediately: true)
         XCTAssertEqual(reloaded.records.first?.correctedText, "Persistenz-Test")
         XCTAssertEqual(reloaded.records.first?.durationSecs ?? 0, 3.5, accuracy: 0.001)
         XCTAssertEqual(reloaded.records.first?.targetApp, "Notizen")
@@ -392,7 +479,7 @@ final class HistoryStoreTests: XCTestCase {
         XCTAssertNil(json.first?["polish"])
         try encoded.write(to: historyDirectory.appendingPathComponent("history.json"))
 
-        let reloaded = HistoryStore(directory: historyDirectory)
+        let reloaded = HistoryStore(directory: historyDirectory, loadImmediately: true)
 
         XCTAssertEqual(reloaded.records.first?.correctedText, "Altes Protokoll")
         XCTAssertNil(reloaded.records.first?.polish)
@@ -410,7 +497,7 @@ final class HistoryStoreTests: XCTestCase {
         let data = try JSONSerialization.data(withJSONObject: json)
         try data.write(to: tempDir.appendingPathComponent("history.json"))
 
-        let reloaded = HistoryStore(directory: tempDir)
+        let reloaded = HistoryStore(directory: tempDir, loadImmediately: true)
 
         XCTAssertEqual(Set(reloaded.records.map(\.correctedText)), ["Eins", "Drei"])
         XCTAssertEqual(reloaded.state, .loaded)
@@ -434,7 +521,7 @@ final class HistoryStoreTests: XCTestCase {
         try JSONSerialization.data(withJSONObject: json)
             .write(to: tempDir.appendingPathComponent("history.json"))
 
-        let reloaded = HistoryStore(directory: tempDir)
+        let reloaded = HistoryStore(directory: tempDir, loadImmediately: true)
 
         XCTAssertEqual(reloaded.state, .loaded)
         XCTAssertTrue(reloaded.records.isEmpty)
@@ -458,7 +545,7 @@ final class HistoryStoreTests: XCTestCase {
         try JSONSerialization.data(withJSONObject: json)
             .write(to: tempDir.appendingPathComponent("history.json"))
 
-        let reloaded = HistoryStore(directory: tempDir)
+        let reloaded = HistoryStore(directory: tempDir, loadImmediately: true)
 
         XCTAssertEqual(reloaded.records.first?.polish?.changes.first?.kind, .unknown)
     }
@@ -467,7 +554,7 @@ final class HistoryStoreTests: XCTestCase {
         let legacy = try JSONEncoder().encode([makeRecord(text: "Alt")])
         let url = tempDir.appendingPathComponent("history.json")
         try legacy.write(to: url)
-        let reloaded = HistoryStore(directory: tempDir)
+        let reloaded = HistoryStore(directory: tempDir, loadImmediately: true)
 
         try await reloaded.save()
 
@@ -492,7 +579,7 @@ final class HistoryStoreTests: XCTestCase {
         try JSONEncoder().encode([record])
             .write(to: tempDir.appendingPathComponent("history.json"))
 
-        _ = HistoryStore(directory: tempDir)
+        _ = HistoryStore(directory: tempDir, loadImmediately: true)
 
         XCTAssertTrue(FileManager.default.fileExists(atPath: referenced.path))
         XCTAssertFalse(FileManager.default.fileExists(atPath: orphaned.path))
@@ -506,7 +593,7 @@ final class HistoryStoreTests: XCTestCase {
         try Data("audio".utf8).write(to: orphaned)
         try Data("{kaputt".utf8).write(to: tempDir.appendingPathComponent("history.json"))
 
-        _ = HistoryStore(directory: tempDir)
+        _ = HistoryStore(directory: tempDir, loadImmediately: true)
 
         XCTAssertTrue(FileManager.default.fileExists(atPath: orphaned.path))
     }
@@ -525,7 +612,7 @@ final class HistoryStoreTests: XCTestCase {
         try JSONEncoder().encode([makeRecord()])
             .write(to: tempDir.appendingPathComponent("history.json"))
 
-        _ = HistoryStore(directory: tempDir)
+        _ = HistoryStore(directory: tempDir, loadImmediately: true)
 
         XCTAssertTrue(FileManager.default.fileExists(atPath: recovery.path))
     }
@@ -546,7 +633,7 @@ final class HistoryStoreTests: XCTestCase {
         let persisted = try XCTUnwrap(envelope["records"] as? [[String: Any]])
         XCTAssertEqual(persisted.compactMap { $0["correctedText"] as? String }, ["zweiter", "erster"])
 
-        let reloaded = HistoryStore(directory: tempDir)
+        let reloaded = HistoryStore(directory: tempDir, loadImmediately: true)
         XCTAssertEqual(reloaded.records.map(\.correctedText), ["zweiter", "erster"])
     }
 
@@ -601,7 +688,7 @@ final class HistoryStoreTests: XCTestCase {
         XCTAssertTrue(store.records.isEmpty)
         XCTAssertFalse(FileManager.default.fileExists(atPath: audioFile.path))
 
-        let reloaded = HistoryStore(directory: tempDir)
+        let reloaded = HistoryStore(directory: tempDir, loadImmediately: true)
         XCTAssertTrue(reloaded.records.isEmpty)
     }
 

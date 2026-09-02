@@ -13,6 +13,30 @@ final class DictationSessionTests: XCTestCase {
         var lastError: String?
         private(set) var insertCount = 0
         var insertError: Error?
+        private(set) var loadStarted = false
+        private var suspendLoading = false
+        private var loadContinuation: CheckedContinuation<Void, Never>?
+
+        func blockLoading() {
+            state = .loading
+            suspendLoading = true
+        }
+
+        func finishLoading() {
+            suspendLoading = false
+            state = .loaded
+            loadContinuation?.resume()
+            loadContinuation = nil
+        }
+
+        func loadAsync() async {
+            loadStarted = true
+            guard suspendLoading else {
+                if state == .loading { state = .loaded }
+                return
+            }
+            await withCheckedContinuation { loadContinuation = $0 }
+        }
 
         func save() async throws {}
 
@@ -566,8 +590,14 @@ final class DictationSessionTests: XCTestCase {
                          now: @escaping @MainActor () -> Date = { Date() },
                          soundFeedback: any SoundFeedback = SoundFeedbackSpy()) -> AppState {
         let root = directory ?? makeDirectory("makeApp")
-        let dictionary = DictionaryStore(directory: root.appendingPathComponent("dictionary"))
-        let history = history ?? HistoryStore(directory: root.appendingPathComponent("history"))
+        let dictionary = DictionaryStore(
+            directory: root.appendingPathComponent("dictionary"),
+            loadImmediately: true
+        )
+        let history = history ?? HistoryStore(
+            directory: root.appendingPathComponent("history"),
+            loadImmediately: true
+        )
         var remaining = engines
         let app = AppState(
             settings: makeSettings(),
@@ -603,7 +633,7 @@ final class DictationSessionTests: XCTestCase {
         try Data("{not-json".utf8).write(
             to: historyDirectory.appendingPathComponent("history.json")
         )
-        let history = HistoryStore(directory: historyDirectory)
+        let history = HistoryStore(directory: historyDirectory, loadImmediately: true)
         let app = makeApp(
             audio: FakeAudioCapture(),
             engines: [FakeSpeechEngine()],
@@ -761,6 +791,34 @@ final class DictationSessionTests: XCTestCase {
         XCTAssertEqual(clipboard.strings, ["Finaler Text"])
         XCTAssertEqual(history.records.first?.targetApp, "Slack")
         XCTAssertTrue(toasts.contains { $0.contains("Slack") })
+    }
+
+    func testDiktatAbschlussWartetAufBootstrapUndSpeichertDanach() async {
+        let audio = FakeAudioCapture()
+        let history = FakeHistoryStore()
+        history.blockLoading()
+        let app = makeApp(
+            audio: audio,
+            engines: [FakeSpeechEngine(text: "Während des Ladens")],
+            history: history
+        )
+        let bootstrap = Task { await app.bootstrap() }
+        await waitUntil { history.loadStarted }
+
+        app.startDictation()
+        await waitUntil { audio.isRunning }
+        app.stopDictation()
+        await waitUntil { app.phase == .polishing }
+
+        XCTAssertTrue(history.records.isEmpty)
+        XCTAssertEqual(history.insertCount, 0)
+
+        history.finishLoading()
+        await bootstrap.value
+        await waitUntil { app.phase == .idle }
+
+        XCTAssertEqual(history.insertCount, 1)
+        XCTAssertEqual(history.records.first?.correctedText, "Während des Ladens")
     }
 
     func testFocusChangeBetweenEditableAndApplicationChecksSkipsInjection() async {
