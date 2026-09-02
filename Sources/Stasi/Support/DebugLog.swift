@@ -14,10 +14,12 @@ enum DebugLog {
         return dir.appendingPathComponent("debug.log")
     }()
     private static let queue = DispatchQueue(label: "app.stasi.debuglog")
+    /// Millisekunden-Auflösung, damit Startlatenzen messbar sind.
+    private static let timestampFormat = Date.ISO8601FormatStyle(includingFractionalSeconds: true)
 
     static func log(_ msg: String) {
         NSLog("%@", msg)
-        let line = "\(Date()) \(msg)\n"
+        let line = "\(Date().formatted(timestampFormat)) \(msg)\n"
         queue.async {
             try? rotateIfNeeded(at: url, maxBytes: maxBytes)
             if let handle = try? FileHandle(forWritingTo: url) {

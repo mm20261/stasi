@@ -581,6 +581,11 @@ final class AppState {
         phase = .preparing
 
         DebugLog.log("STASI-APP: startDictation → Setup")
+        let setupStartedAt = Date()
+        func setupMark(_ step: String) {
+            let ms = Int(Date().timeIntervalSince(setupStartedAt) * 1000)
+            DebugLog.log("STASI-TIMING: \(step) nach \(ms) ms")
+        }
         session.setupTask = Task { @MainActor [weak self, weak session] in
             guard let self, let session,
                   session === self.currentSession,
@@ -590,6 +595,7 @@ final class AppState {
                 // die Audio-Hardware ohne Recht anzufassen hängt sonst den
                 // Main-Thread in der synchronen TCC-Abfrage fest.
                 let microphoneGranted = await self.requestMicrophone()
+                setupMark("Mikrofon-Recht")
                 guard await self.setupShouldContinue(session) else { return }
                 guard microphoneGranted else {
                     DebugLog.log("STASI-APP: startDictation abgebrochen – Mikrofon-Recht fehlt")
@@ -611,9 +617,11 @@ final class AppState {
                 session.applyResolvedLocale(resolvedLocale)
 
                 await self.prepareModel(for: resolvedLocale)
+                setupMark("Locale + Modell")
                 guard await self.setupShouldContinue(session) else { return }
 
                 let chunks = try await session.speech.start()
+                setupMark("speech.start")
                 guard await self.setupShouldContinue(session) else { return }
                 self.modelReadyByLocale[session.locale.identifier] = true
                 let format = await session.speech.preferredInputFormat()
@@ -621,6 +629,7 @@ final class AppState {
                 guard let format else {
                     throw TranscriptionError.noAudioFormat
                 }
+                setupMark("preferredInputFormat")
                 DebugLog.log("STASI-APP: Engine bereit (\(format.sampleRate) Hz)")
 
                 // Audio muss die Engine in Aufnahme-Reihenfolge erreichen:
@@ -669,6 +678,7 @@ final class AppState {
                 ) { chunk in
                     health.ingest(chunk, into: audioContinuation)
                 }
+                setupMark("audio.start")
                 if let runtimeError = health.audioRuntimeError {
                     await self.handleAudioRuntimeError(runtimeError, session: session)
                     return
@@ -680,6 +690,7 @@ final class AppState {
                 }
                 session.markCaptureActivationWon()
                 let startCueCompleted = await self.playRecordingStartCue(for: session)
+                setupMark("Startton fertig")
                 guard await self.setupShouldContinue(session),
                       startCueCompleted else { return }
                 if let runtimeError = health.audioRuntimeError {
@@ -696,6 +707,7 @@ final class AppState {
                 self.recordStart = recordingStartCandidate
                 self.elapsed = 0
                 self.phase = .recording
+                setupMark("Aufnahme läuft")
                 DebugLog.log("STASI-APP: audio.start fertig – Aufnahme läuft")
             } catch {
                 DebugLog.log("STASI-APP: startDictation FEHLER: \(error.localizedDescription)")
@@ -796,7 +808,9 @@ final class AppState {
             }
             guard session === self.currentSession else { return }
             session.consumeTask = nil
+            DebugLog.log("STASI-TIMING: Transkript final, warte auf Stoppton")
             await stopCueTask.value
+            DebugLog.log("STASI-TIMING: Stoppton fertig")
             guard session === self.currentSession else { return }
             session.setupTask = nil
             session.state = .finished
