@@ -20,6 +20,8 @@ und das Projekt verwendet [Semantic Versioning](https://semver.org/lang/de/).
   ohne Watchdog; Tap-Neuinstallation während der Aufnahme verlor das Loslassen;
   Startton konnte die Aufnahme ewig blockieren; Update-Prüfung verstand `v0.10` nicht.
 - Aufnahme-Pill lag unter anderen Fenstern und blieb beim Monitorwechsel stehen.
+- Aufnahme startete erst nach dem kompletten Startton (≈ 760 ms statt 75 ms), Text wurde
+  erst nach dem kompletten Stoppton (1,6 s) eingefügt. Beide Töne laufen jetzt parallel.
 
 ### Geändert
 
