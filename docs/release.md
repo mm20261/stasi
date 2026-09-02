@@ -18,8 +18,8 @@ Abgeschlossen:
   objektgenau verifiziert über die `git-filter-repo`-Commit-Map
   (`scripts/verify-history-rewrite.py`): 119 Commits, identischer Tip-Tree,
   identische Topologie und Zeitstempel.
-- Veröffentlichung: `main` per `--force-with-lease` von `5a5224a` auf `0e9285f`
-  gepusht; GitHub-Contributors ausschließlich `mm20261` (119 Commits), kein
+- Veröffentlichung: Der bereinigte Stand von `main` wurde per `--force-with-lease`
+  veröffentlicht; GitHub-Contributors ausschließlich `mm20261` (119 Commits), kein
   Claude-Knoten in Root- und Tip-Commit (GraphQL geprüft).
 - Sichtbarkeit: Repository `PUBLIC`; `main` gegen Löschung und Force-Push geschützt.
 - Release-Environment `release`: Required Reviewer `mm20261`, Deploymentquellen
@@ -52,6 +52,8 @@ Bewusst offen:
 
 - Tag: `vMAJOR.MINOR.PATCH`
 - Bundle: `MAJOR.MINOR.PATCH`
+- Versionsquelle: `VERSION` im Repo-Root; `STASI_VERSION` darf sie für kontrollierte
+  Build-Schritte überschreiben
 - Release-Endpunkt: `https://api.github.com/repos/mm20261/stasi/releases/latest`
 - Runner: `macos-26`, erste Veröffentlichung nur `arm64`
 - Verify-Job: ohne Release-Secrets
@@ -70,7 +72,9 @@ Der Workflow `.github/workflows/release.yml` startet entweder beim Push eines
 Release-Tags `v*` oder kontrolliert manuell vom geschützten Branch `main`. Beim
 manuellen Start wird ein bereits vorhandener Tag im Format `vMAJOR.MINOR.PATCH`
 als `release_tag` angegeben. Beide Pfade lösen den Tag auf einen exakten Commit auf;
-bei einem Tag-Event muss dieser Commit mit dem Event-Commit übereinstimmen.
+bei einem Tag-Event muss dieser Commit mit dem Event-Commit übereinstimmen. Der
+Workflow bricht außerdem ab, wenn die aus dem Tag abgeleitete Version nicht exakt mit
+dem Inhalt von `VERSION` übereinstimmt.
 
 Der Job `verify` läuft mit `contents: read` und ohne Environment oder Release-Secrets.
 Er checkt den aufgelösten Commit detached aus, führt die vollständige Testsuite aus,
@@ -129,13 +133,15 @@ Fehler. Die Veröffentlichung ist damit fail-closed.
 1. Auf `main` die vollständige Suite und den App-Smoke-Test ausführen:
 
    ```bash
+   test "$(tr -d '\r\n' < VERSION)" = '0.10.0'
    swift build --build-tests
    xcrun xctest "$(swift build --show-bin-path)/StasiPackageTests.xctest"
    ./scripts/smoke-test-app.sh
    ```
 
 2. Den geschützten Tag, beispielsweise `v0.10.0`, auf dem freigegebenen Commit
-   erstellen. Das Tag-Ruleset muss wirksam sein. Der Tag-Push startet den Workflow;
+   erstellen. Tag und `VERSION` müssen dieselbe Versionsnummer tragen. Das
+   Tag-Ruleset muss wirksam sein. Der Tag-Push startet den Workflow;
    alternativ wird der kontrollierte manuelle Lauf von `main` mit `release_tag`
    `v0.10.0` gestartet.
 3. Das Deployment in `release` als Required Reviewer `mm20261` prüfen und freigeben.
@@ -180,7 +186,6 @@ ihre Werte gehören nicht ins Repository.
    xcrun xctest "$(swift build --show-bin-path)/StasiPackageTests.xctest"
    ./scripts/smoke-test-app.sh
 
-   STASI_VERSION='0.10.0' \
    STASI_RELEASE_API_URL='https://api.github.com/repos/mm20261/stasi/releases/latest' \
    STASI_SIGNING_MODE=none \
    ./scripts/make-app.sh
@@ -270,4 +275,5 @@ TCC-Berechtigungen.
 Für lokale Entwicklungsbuilds verwendet `STASI_SIGNING_MODE=local` die Identität
 `Stasi Dev Signing` oder ersatzweise eine ad-hoc-Signatur. `STASI_SIGNING_MODE=none`
 ist nur für den bewusst anschließend signierten Release-/Diagnosepfad vorgesehen und
-stellt allein kein verteilbares Artefakt her.
+stellt allein kein verteilbares Artefakt her. `scripts/make-app.sh` liest die Version
+standardmäßig aus `VERSION`; `STASI_VERSION` ist nur eine explizite Überschreibung.

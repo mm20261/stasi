@@ -1,5 +1,6 @@
 #!/bin/bash
 # Baut die doppelklickbare Stasi.app (Release-Build + Bundle + lokale Signatur).
+# Lokale Ausgabe ohne Hardened Runtime und Notarisierung: nicht zur Weitergabe.
 # Aufruf: ./scripts/make-app.sh [Ausgabeordner]
 set -euo pipefail
 
@@ -7,10 +8,21 @@ OUT_DIR="${1:-${STASI_APP_OUTPUT_DIR:-build}}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 APP_NAME="Stasi"
 BUNDLE_ID="app.stasi.macos"
-VERSION="${STASI_VERSION:-0.9.0}"
+VERSION_FILE="$ROOT/VERSION"
+
+if [[ -n "${STASI_VERSION:-}" ]]; then
+    VERSION="$STASI_VERSION"
+elif [[ -s "$VERSION_FILE" ]]; then
+    VERSION="$(<"$VERSION_FILE")"
+else
+    printf '%s\n' \
+        'Keine Version gefunden: STASI_VERSION setzen oder VERSION im Repo-Root anlegen.' \
+        >&2
+    exit 2
+fi
 
 if [[ ! "$VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
-    printf 'Ungültige STASI_VERSION: %s; erwartet MAJOR.MINOR.PATCH ohne v-Präfix.\n' \
+    printf 'Ungültige Version: %s; erwartet MAJOR.MINOR.PATCH ohne v-Präfix.\n' \
         "$VERSION" >&2
     exit 2
 fi
@@ -75,6 +87,7 @@ cat > "$CONTENTS/Info.plist" <<PLIST
     <key>CFBundleExecutable</key>        <string>$APP_NAME</string>
     <key>CFBundlePackageType</key>       <string>APPL</string>
     <key>CFBundleInfoDictionaryVersion</key> <string>6.0</string>
+    <key>CFBundleDevelopmentRegion</key> <string>de</string>
     <key>LSMinimumSystemVersion</key>    <string>26.0</string>
     <key>NSHighResolutionCapable</key>   <true/>
     <key>NSSupportsAutomaticTermination</key> <false/>
@@ -154,8 +167,36 @@ if [[ "$SIGNING_MODE" == "local" ]]; then
         | grep -Fq "\"$SIGN_ID\""; then
         SIGN_ID="-"
     fi
-    echo "▸ Lokale Signatur ($SIGN_ID)…"
-    codesign --force --deep --entitlements "$ENTITLEMENTS" --sign "$SIGN_ID" "$APP"
+    echo "▸ Lokale Inside-out-Signatur ($SIGN_ID)…"
+
+    # Eingebetteten Mach-O-Code zuerst signieren. Der Haupt-Executable wird beim
+    # abschließenden Signieren des App-Bundles erfasst.
+    while IFS= read -r -d '' EMBEDDED_BINARY; do
+        if [[ "$EMBEDDED_BINARY" == "$MACOS/$APP_NAME" ]]; then
+            continue
+        fi
+        if file -b "$EMBEDDED_BINARY" 2>/dev/null | grep -q '^Mach-O'; then
+            echo "  ↳ $(basename "$EMBEDDED_BINARY")"
+            codesign --force --sign "$SIGN_ID" "$EMBEDDED_BINARY"
+        fi
+    done < <(find "$CONTENTS" -type f -print0)
+
+    # Wrapper nach ihren Inhalten signieren. find liefert Eltern vor Kindern;
+    # die umgekehrte Array-Reihenfolge signiert daher von innen nach außen.
+    EMBEDDED_BUNDLES=()
+    while IFS= read -r -d '' EMBEDDED_BUNDLE; do
+        EMBEDDED_BUNDLES+=("$EMBEDDED_BUNDLE")
+    done < <(
+        find "$CONTENTS" -type d \
+            \( -name '*.framework' -o -name '*.xpc' -o -name '*.appex' -o -name '*.app' \) \
+            -print0
+    )
+    for ((INDEX=${#EMBEDDED_BUNDLES[@]} - 1; INDEX >= 0; INDEX--)); do
+        echo "  ↳ $(basename "${EMBEDDED_BUNDLES[$INDEX]}")"
+        codesign --force --sign "$SIGN_ID" "${EMBEDDED_BUNDLES[$INDEX]}"
+    done
+
+    codesign --force --entitlements "$ENTITLEMENTS" --sign "$SIGN_ID" "$APP"
 else
     echo "▸ Signatur übersprungen (Diagnosemodus none)"
 fi
@@ -165,3 +206,4 @@ echo "✓ Fertig: $APP"
 echo "  Version:  $VERSION"
 echo "  Starten:  open \"$APP\""
 echo "  Install.: ditto \"$APP\" /Applications/Stasi.app"
+echo "  Hinweis: Lokaler Build ohne Hardened Runtime und Notarisierung – nicht zur Weitergabe."

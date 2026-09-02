@@ -1,4 +1,4 @@
-name: Build, sign, notarize, and release app
+name: App bauen, signieren, notarisieren und veröffentlichen
 
 on:
   push:
@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: Existing release tag in vMAJOR.MINOR.PATCH format
+        description: Vorhandener Release-Tag im Format vMAJOR.MINOR.PATCH
         required: true
         type: string
 
@@ -28,7 +28,7 @@ jobs:
       release_sha: ${{ steps.release.outputs.sha }}
 
     steps:
-      - name: Resolve and check out release tag
+      - name: Release-Tag auflösen und auschecken
         id: release
         shell: bash
         env:
@@ -46,7 +46,7 @@ jobs:
           fi
 
           if [[ ! "$release_tag" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
-            printf 'Invalid release tag: %s\n' "$release_tag" >&2
+            printf 'Ungültiger Release-Tag: %s\n' "$release_tag" >&2
             exit 1
           fi
           release_version="${release_tag#v}"
@@ -86,25 +86,41 @@ jobs:
               git -C "$GITHUB_WORKSPACE" rev-parse "${GITHUB_SHA}^{commit}"
             )"
             if [[ "$event_sha" != "$release_sha" ]]; then
-              printf '%s\n' 'Event SHA and release-tag commit differ.' >&2
+              printf '%s\n' 'Event-SHA und Commit des Release-Tags unterscheiden sich.' >&2
               exit 1
             fi
           fi
 
           git -C "$GITHUB_WORKSPACE" checkout --quiet --detach "$release_sha"
 
+          version_file="$GITHUB_WORKSPACE/VERSION"
+          if [[ ! -s "$version_file" ]]; then
+            printf '%s\n' 'VERSION fehlt oder ist leer.' >&2
+            exit 1
+          fi
+          repository_version="$(<"$version_file")"
+          if [[ ! "$repository_version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            printf 'Ungültiger Inhalt in VERSION: %s\n' "$repository_version" >&2
+            exit 1
+          fi
+          if [[ "$repository_version" != "$release_version" ]]; then
+            printf 'Tag-Version %s stimmt nicht mit VERSION %s überein.\n' \
+              "$release_version" "$repository_version" >&2
+            exit 1
+          fi
+
           printf 'tag=%s\n' "$release_tag" >>"$GITHUB_OUTPUT"
           printf 'version=%s\n' "$release_version" >>"$GITHUB_OUTPUT"
           printf 'sha=%s\n' "$release_sha" >>"$GITHUB_OUTPUT"
 
-      - name: Run tests
+      - name: Tests ausführen
         shell: bash
         run: |
           set -euo pipefail
           swift build --build-tests
           xcrun xctest "$(swift build --show-bin-path)/StasiPackageTests.xctest"
 
-      - name: Build local app
+      - name: Lokale App bauen
         shell: bash
         env:
           STASI_VERSION: ${{ steps.release.outputs.version }}
@@ -113,7 +129,7 @@ jobs:
           set -euo pipefail
           STASI_SIGNING_MODE=local ./scripts/make-app.sh
 
-      - name: Run smoke test
+      - name: Smoke-Test ausführen
         shell: bash
         env:
           STASI_VERSION: ${{ steps.release.outputs.version }}
@@ -133,7 +149,7 @@ jobs:
       contents: write
 
     steps:
-      - name: Check out verified release commit
+      - name: Verifizierten Release-Commit auschecken
         shell: bash
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -169,7 +185,7 @@ jobs:
 
           test "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" = "$RELEASE_SHA"
 
-      - name: Build unsigned release app
+      - name: Unsignierte Release-App bauen
         shell: bash
         env:
           STASI_VERSION: ${{ needs.verify.outputs.release_version }}
@@ -198,7 +214,7 @@ jobs:
 
           test "$(lipo -archs build/Stasi.app/Contents/MacOS/Stasi)" = "arm64"
 
-      - name: Sign and notarize with Developer ID
+      - name: Mit Developer ID signieren und notarisieren
         shell: bash
         env:
           STASI_DEVELOPER_ID_CERTIFICATE_BASE64: ${{ secrets.STASI_DEVELOPER_ID_CERTIFICATE_BASE64 }}
@@ -217,7 +233,7 @@ jobs:
              || -z "$STASI_NOTARY_KEY_ID" \
              || -z "$STASI_NOTARY_ISSUER_ID" ]]; then
             printf '%s\n' \
-              'Required Developer-ID or notarization credentials are absent or incomplete.' \
+              'Erforderliche Developer-ID- oder Notarisierungsdaten fehlen oder sind unvollständig.' \
               >&2
             exit 1
           fi
@@ -319,7 +335,7 @@ jobs:
           spctl --assess --type execute --verbose=4 "$archive_check/Stasi.app"
           test "$(lipo -archs "$archive_check/Stasi.app/Contents/MacOS/Stasi")" = "arm64"
 
-      - name: Publish GitHub release
+      - name: GitHub Release veröffentlichen
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -335,7 +351,7 @@ jobs:
               --jq '.sha'
           )"
           if [[ "$current_release_sha" != "$RELEASE_SHA" ]]; then
-            printf '%s\n' 'Release tag no longer points to the verified commit.' >&2
+            printf '%s\n' 'Der Release-Tag zeigt nicht mehr auf den verifizierten Commit.' >&2
             exit 1
           fi
 

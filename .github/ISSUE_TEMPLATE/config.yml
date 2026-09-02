@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Sicherheitslücke vertraulich melden
+    url: https://github.com/mm20261/stasi/security/advisories/new
+    about: Sicherheitsprobleme bitte nicht als öffentliches Issue melden.

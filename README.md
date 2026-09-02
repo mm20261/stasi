@@ -2,8 +2,13 @@
 
 Push-to-Talk-Diktat für macOS – Wispr-Flow-Style, komplett on-device.
 
-Rechte **Command-Taste halten** → Startton abwarten → sprechen → loslassen. Der korrigierte Text
-wird in die fokussierte App getippt.
+Standardmäßig die **rechte Command-Taste halten** → Startton abwarten → sprechen →
+loslassen. Der Push-to-talk-Shortcut lässt sich in den Einstellungen frei belegen.
+Der korrigierte Text wird in die fokussierte App getippt.
+
+## Screenshots
+
+Screenshots folgen. Neue Bilder werden unter `docs/screenshots/` abgelegt.
 
 ## Voraussetzungen
 
@@ -13,12 +18,24 @@ wird in die fokussierte App getippt.
 
 ## Installation
 
+> **Noch nicht veröffentlicht:** Der erste GitHub Release und der Homebrew-Tap
+> stehen noch aus. Bis dahin gibt es kein öffentliches Installationsartefakt;
+> verwende den Quellcode-Build weiter unten.
+
 ```bash
 brew install --cask mm20261/tap/stasi
 ```
 
-Der Befehl gilt ab dem ersten veröffentlichten GitHub Release und Homebrew-Tap;
-vorher steht noch kein öffentliches Installationsartefakt bereit.
+### Aus dem Quellcode bauen
+
+Der lokale Build benötigt eine macOS-26-Toolchain mit Unterstützung für Swift Tools
+6.2. Er ist weder mit Hardened Runtime gebaut noch notarisiert und deshalb nicht zur
+Weitergabe bestimmt.
+
+```bash
+./scripts/make-app.sh
+open build/Stasi.app
+```
 
 Beim ersten Start fordert macOS die notwendigen Berechtigungen für Mikrofon und
 Bedienungshilfen an. Diese Zustimmungen werden nicht durch Homebrew oder die App
@@ -70,8 +87,11 @@ brew uninstall --cask --zap stasi
   Wortzahl, Diktiergeschwindigkeit und geschätzter Zeitersparnis
 - **Onboarding** für Rechte, Hotkey, Modellvorbereitung und Probaufnahme
 - **Aufbewahrung**: Nie, 1 Tag, 1 Woche, 2 Wochen oder 1 Monat; Audio wird mit gelöscht
+- **Frei belegbares Push-to-talk**: rechte Command-Taste als Standard; alternativ
+  Umschaltmodus „Drücken zum Starten, nochmal drücken zum Stoppen“
 - **Globale Zusatz-Shortcuts**: ⌃⌘C kopiert und ⌃⌘V fügt das letzte Protokoll erneut ein
-- **Hands-free** per Fn-Doppeltipp, in den Einstellungen ein- und ausschaltbar
+- **Hands-free** standardmäßig per Fn-Doppeltipp; frei wählbar sind fn sowie die
+  linke oder rechte ⌘-, ⌥-, ⌃- oder ⇧-Taste
 - **Update-Prüfung** über GitHub Releases mit direktem Link zur verfügbaren Version
 - **Menüleisten-Status** mit explizit gecachten Symbolen je Verarbeitungsphase
 
@@ -82,18 +102,10 @@ Alle Views ziehen aus den Tokens in `Sources/Stasi/UI/Theme.swift`
 und 5 wählbare Akzent-Presets. Maßgebliche Vorschau:
 `import/design_handoff_v3/preview.html` im Browser öffnen.
 
-## Aus dem Quellcode bauen
+## Entwicklung
 
-Dieser Abschnitt ist der Entwicklerweg. Für die normale Installation ist der oben
-beschriebene Homebrew-Cask vorgesehen. Der Quellcode-Build benötigt eine
-macOS-26-Toolchain mit Unterstützung für Swift Tools 6.2.
-
-```bash
-./scripts/make-app.sh          # baut build/Stasi.app
-open build/Stasi.app
-```
-
-Entwicklung:
+Für die normale Installation ist nach der ersten Veröffentlichung der oben
+beschriebene Homebrew-Cask vorgesehen.
 
 ```bash
 swift build                    # Kompilieren
@@ -117,6 +129,10 @@ Konfigurationspfad fest verdrahtet ist.
 1. **Mikrofon** – Systemdialog beim ersten Aufnehmen bestätigen
 2. **Bedienungshilfen** – für den globalen Hotkey und das Text-Einfügen;
    Settings (⌘,) → Berechtigungen → Link folgt zu System Settings
+
+Stasi ist bewusst nicht sandboxed: Der globale Hotkey benötigt einen `CGEventTap`,
+und das Einfügen in die jeweils fokussierte App erfolgt über synthetische
+Tastaturereignisse. Beide Funktionen sind mit der App Sandbox nicht umsetzbar.
 
 ## Architektur
 
@@ -167,6 +183,12 @@ Debug-Log: `~/Library/Application Support/Stasi/debug.log`
 ## Roadmap-Ideen
 
 - Sprach-Auto-Umschalter, Snippets, lokale LLM-Politur, whisper.cpp-Fallback
+
+## Weitere Dokumentation
+
+- [Fehlerbehebung](docs/troubleshooting.md)
+- [Mitwirken](CONTRIBUTING.md)
+- [Änderungsprotokoll](CHANGELOG.md)
 
 ## Lizenz
 

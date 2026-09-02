@@ -1,0 +1,107 @@
+name: Fehlerbericht
+description: Melde ein reproduzierbares Problem mit Stasi.
+title: "bug: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Danke für den Bericht. Bitte entferne vertrauliche Diktatinhalte aus Logs und Beispielen.
+
+  - type: input
+    id: macos_version
+    attributes:
+      label: macOS-Version
+      placeholder: z. B. 26.0
+    validations:
+      required: true
+
+  - type: input
+    id: chip
+    attributes:
+      label: Chip
+      placeholder: z. B. Apple M4
+    validations:
+      required: true
+
+  - type: input
+    id: app_version
+    attributes:
+      label: App-Version
+      description: Zu finden unter Einstellungen → ÜBER.
+      placeholder: z. B. 0.10.0
+    validations:
+      required: true
+
+  - type: dropdown
+    id: microphone
+    attributes:
+      label: Mikrofon
+      options:
+        - Intern
+        - USB
+        - Bluetooth
+    validations:
+      required: true
+
+  - type: input
+    id: push_to_talk
+    attributes:
+      label: Push-to-talk-Taste
+      placeholder: z. B. rechte Command-Taste
+    validations:
+      required: true
+
+  - type: dropdown
+    id: hands_free
+    attributes:
+      label: Hands-free aktiv
+      options:
+        - Nein
+        - Ja
+    validations:
+      required: true
+
+  - type: input
+    id: target_app
+    attributes:
+      label: Ziel-App
+      placeholder: z. B. Notizen 26.0
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Schritte zum Reproduzieren
+      description: Beschreibe den kürzesten zuverlässigen Ablauf.
+      placeholder: |
+        1. …
+        2. …
+        3. …
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Erwartetes Verhalten
+    validations:
+      required: true
+
+  - type: textarea
+    id: observed
+    attributes:
+      label: Beobachtetes Verhalten
+    validations:
+      required: true
+
+  - type: textarea
+    id: debug_log
+    attributes:
+      label: Auszug aus debug.log
+      description: Relevanter Auszug aus ~/Library/Application Support/Stasi/debug.log, vertrauliche Inhalte entfernt.
+      render: text
+    validations:
+      required: false

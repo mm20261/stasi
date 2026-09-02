@@ -61,7 +61,8 @@ und Löschung geschützt; Release-Environment `release` mit Required Reviewer un
 Deploymentquellen `main` + `v*` steht. **Offen bis v0.10.0:** sechs Environment-Secrets
 (interaktiv), Tag-Push → signierter/notarisierter Workflow → Release-Assets prüfen,
 danach Homebrew-Tap `mm20261/homebrew-tap`. Transkript-Neustartbereinigung und
-Tag-/Verify-/Publish-Workflow (fail-closed) sind umgesetzt; 582 Tests grün.
+Tag-/Verify-/Publish-Workflow (fail-closed) sind umgesetzt; vollständige Suite grün
+(siehe CI-Log).
 
 **Umgesetzte Audit-Blöcke:** 1A Session-Lifecycle · 1B Tap/WAV/Watcher ·
 1C kleine Korrektheitsfixes · 2 UX/Feedback/A11y · 3A regelbasierte

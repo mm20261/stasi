@@ -1,0 +1,54 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Bauen und testen
+    runs-on: macos-26
+    timeout-minutes: 30
+
+    steps:
+      - name: Repository auschecken
+        uses: actions/checkout@v4
+
+      - name: Swift-Version ausgeben
+        run: swift --version
+
+      - name: Tests bauen
+        run: swift build --build-tests
+
+      - name: Tests ausführen und Anzahl ausgeben
+        shell: bash
+        run: |
+          set -euo pipefail
+          test_log="$(mktemp "${RUNNER_TEMP}/stasi-xctest.XXXXXX")"
+          trap 'rm -f "$test_log"' EXIT
+
+          set +e
+          xcrun xctest "$(swift build --show-bin-path)/StasiPackageTests.xctest" \
+            2>&1 | tee "$test_log"
+          test_status="${PIPESTATUS[0]}"
+          set -e
+
+          test_count="$(
+            grep -Eo 'Executed [0-9]+ tests?' "$test_log" \
+              | tail -1 \
+              | grep -Eo '[0-9]+' \
+              || true
+          )"
+          printf 'Test-Anzahl laut xctest: %s\n' "${test_count:-nicht ermittelbar}"
+
+          if [[ "$test_status" -ne 0 ]]; then
+            exit "$test_status"
+          fi
+
+          printf '%s\n' \
+            'TranscriptionPipelineTests werden ohne STASI_PIPELINE_E2E=1 übersprungen.'
