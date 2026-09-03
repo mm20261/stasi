@@ -8,7 +8,13 @@ Der korrigierte Text wird in die fokussierte App getippt.
 
 ## Screenshots
 
-Screenshots folgen. Neue Bilder werden unter `docs/screenshots/` abgelegt.
+| Der Bericht | Protokolle |
+|---|---|
+| ![Der Bericht](docs/screenshots/bericht.jpg) | ![Protokolle](docs/screenshots/protokolle.jpg) |
+
+| Insights | Wörterbuch | Einstellungen |
+|---|---|---|
+| ![Insights](docs/screenshots/insights.jpg) | ![Wörterbuch](docs/screenshots/woerterbuch.jpg) | ![Einstellungen](docs/screenshots/einstellungen.jpg) |
 
 ## Voraussetzungen
 
