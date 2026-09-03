@@ -76,8 +76,10 @@ brew upgrade --cask stasi
 ```
 
 Die integrierte Update-Prüfung informiert über neue GitHub Releases. Sie installiert
-Updates nicht selbst. Da die veröffentlichten Builds nur ad-hoc signiert sind, fragt
-macOS die Berechtigungen für Mikrofon und Bedienungshilfen nach jedem Update erneut ab.
+Updates bei einer Homebrew-Installation unter **Einstellungen → Über** direkt. Bei einer
+ZIP-Installation führt sie weiterhin zur manuellen Download-Seite. Da die veröffentlichten
+Builds nur ad-hoc signiert sind, fragt macOS die Berechtigungen für Mikrofon und
+Bedienungshilfen nach jedem Update erneut ab.
 
 ## Deinstallieren
 
@@ -123,7 +125,8 @@ brew uninstall --cask --zap stasi
 - **Globale Zusatz-Shortcuts**: ⌃⌘C kopiert und ⌃⌘V fügt das letzte Protokoll erneut ein
 - **Hands-free** standardmäßig per Fn-Doppeltipp; frei wählbar sind fn sowie die
   linke oder rechte ⌘-, ⌥-, ⌃- oder ⇧-Taste
-- **Update-Prüfung** über GitHub Releases mit direktem Link zur verfügbaren Version
+- **Update-Prüfung** über GitHub Releases mit direkter Homebrew-Installation oder
+  manuellem Download-Link für ZIP-Installationen
 - **Menüleisten-Status** mit explizit gecachten Symbolen je Verarbeitungsphase
 
 ## Design-System

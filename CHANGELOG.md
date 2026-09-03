@@ -6,6 +6,14 @@ und das Projekt verwendet [Semantic Versioning](https://semver.org/lang/de/).
 
 ## [Unreleased]
 
+## [0.10.3] - 2026-09-03
+
+### Hinzugefügt
+
+- Einstellungen → Über kann verfügbare Updates bei einer Homebrew-Cask-Installation
+  jetzt direkt installieren und Stasi anschließend neu starten. ZIP-Installationen
+  behalten den manuellen Download-Weg.
+
 ## [0.10.2] - 2026-09-03
 
 ### Behoben
@@ -82,5 +90,6 @@ und das Projekt verwendet [Semantic Versioning](https://semver.org/lang/de/).
   Gatekeeper-Freigabe.
 - Der Release unterstützt ausschließlich Apple Silicon (`arm64`).
 
-[Unreleased]: https://github.com/mm20261/stasi/compare/v0.10.0...HEAD
+[Unreleased]: https://github.com/mm20261/stasi/compare/v0.10.3...HEAD
+[0.10.3]: https://github.com/mm20261/stasi/releases/tag/v0.10.3
 [0.10.0]: https://github.com/mm20261/stasi/releases/tag/v0.10.0

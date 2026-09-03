@@ -142,6 +142,7 @@
 "update.checking.uppercase" = "CHECKING …";
 "update.check.uppercase" = "CHECK CURRENT VERSION";
 "update.install.uppercase" = "UPDATE TO V %@";
+"update.installHomebrew.uppercase" = "INSTALL UPDATE";
 "phase.idle" = "READY";
 "phase.preparing" = "PREPARING";
 "phase.setupTimedOut" = "RESTART REQUIRED";
@@ -313,6 +314,16 @@
 "update.error.rateLimited" = "GitHub rate limit reached. Try again later.";
 "update.error.invalidVersion" = "The update response contains an invalid version.";
 "update.error.invalidResponse" = "Invalid response from the update server.";
+"update.install.running" = "Installing via Homebrew…";
+"update.install.success" = "Installed. Stasi is restarting…";
+"update.install.zipHint" = "Installed via ZIP – download the update manually";
+"update.install.error.failed" = "Homebrew update failed: %@";
+"update.install.error.failedWithoutDetails" = "Homebrew update failed. Try again or download the update manually.";
+"update.install.error.password" = "Homebrew requires a password. Run the update in Terminal: %@";
+"update.install.error.timeout" = "Homebrew took too long. Check your network and try again.";
+"update.install.error.launch" = "Homebrew couldn't be started: %@";
+"update.install.error.relaunch" = "Stasi couldn't restart: %@";
+"update.install.error.tempFiles" = "Temporary output files couldn't be created.";
 "audio.error.alreadyRunning" = "Audio recording is already running.";
 "audio.error.componentUnavailable" = "The input-only AUHAL isn't available.";
 "audio.error.inputDeviceUnavailable" = "No audio input device is available.";

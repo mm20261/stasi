@@ -142,6 +142,7 @@
 "update.checking.uppercase" = "PRÜFE …";
 "update.check.uppercase" = "AKTUELLE VERSION PRÜFEN";
 "update.install.uppercase" = "UPDATE AUF V %@";
+"update.installHomebrew.uppercase" = "UPDATE INSTALLIEREN";
 "phase.idle" = "BEREIT";
 "phase.preparing" = "VORBEREITUNG";
 "phase.setupTimedOut" = "NEUSTART NÖTIG";
@@ -313,6 +314,16 @@
 "update.error.rateLimited" = "GitHub-Limit erreicht. Bitte später erneut prüfen.";
 "update.error.invalidVersion" = "Ungültige Versionsangabe in der Update-Antwort.";
 "update.error.invalidResponse" = "Ungültige Antwort vom Update-Server.";
+"update.install.running" = "Installiere über Homebrew…";
+"update.install.success" = "Installiert. Stasi startet neu…";
+"update.install.zipHint" = "Installiert über ZIP – Update manuell laden";
+"update.install.error.failed" = "Homebrew-Update fehlgeschlagen: %@";
+"update.install.error.failedWithoutDetails" = "Homebrew-Update fehlgeschlagen. Bitte erneut versuchen oder das Update manuell laden.";
+"update.install.error.password" = "Homebrew benötigt ein Passwort. Führe das Update im Terminal aus: %@";
+"update.install.error.timeout" = "Homebrew hat zu lange gebraucht. Bitte Netzwerk prüfen und erneut versuchen.";
+"update.install.error.launch" = "Homebrew konnte nicht gestartet werden: %@";
+"update.install.error.relaunch" = "Stasi konnte nicht neu gestartet werden: %@";
+"update.install.error.tempFiles" = "Temporäre Ausgabedateien konnten nicht erstellt werden.";
 "audio.error.alreadyRunning" = "Die Audioaufnahme läuft bereits.";
 "audio.error.componentUnavailable" = "Die input-only AUHAL ist nicht verfügbar.";
 "audio.error.inputDeviceUnavailable" = "Kein Audio-Eingabegerät verfügbar.";

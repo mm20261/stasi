@@ -23,6 +23,9 @@ struct SettingsWindowView: View {
 
     // Update-Prüfung
     @State private var updater = UpdateChecker()
+    @State private var updateInstaller = UpdateInstaller()
+    @State private var checkRequested = false
+    @State private var installRequested = false
 
     var body: some View {
         ScrollView {
@@ -57,6 +60,24 @@ struct SettingsWindowView: View {
         }
         .onDisappear {
             activeRecorder = nil
+        }
+        .task(id: checkRequested) {
+            guard checkRequested else { return }
+            await updater.check()
+            checkRequested = false
+        }
+        .task(id: installRequested) {
+            guard installRequested else { return }
+            await updateInstaller.install()
+
+            guard updateInstaller.installState == .installedAwaitingRelaunch else {
+                installRequested = false
+                return
+            }
+            // Bei Navigation aus den Einstellungen wird der View-Task abgebrochen.
+            // Das installierte Update soll die App dann trotzdem neu starten.
+            try? await Task.sleep(for: .seconds(1.5))
+            relaunchAfterUpdate()
         }
     }
 
@@ -644,7 +665,10 @@ struct SettingsWindowView: View {
     // MARK: ÜBER (inkl. Update-Prüfung)
 
     private var ueberSection: some View {
-        let presentation = UpdateStatusPresentation(status: updater.status)
+        let presentation = UpdateStatusPresentation(
+            status: updater.status,
+            installState: updateInstaller.installState
+        )
 
         return section(L10n.text("settings.section.about")) {
             HStack(spacing: 10) {
@@ -655,7 +679,7 @@ struct SettingsWindowView: View {
                     .foregroundColor(Theme.Palette.ink)
                 Spacer()
                 Button {
-                    Task { await updater.check() }
+                    checkRequested = true
                 } label: {
                     Text(L10n.text(updater.isChecking ? "update.checking.uppercase" : "update.check.uppercase"))
                         .font(Theme.Typo.kicker(size: 10.5))
@@ -668,21 +692,13 @@ struct SettingsWindowView: View {
                             .strokeBorder(Theme.Palette.linieSidebar, lineWidth: Theme.Metrics.hairline))
                 }
                 .buttonStyle(.plain)
-                .disabled(updater.isChecking)
+                .disabled(
+                    checkRequested || updater.isChecking
+                        || updateInstaller.installState == .installing
+                )
 
                 if case let .updateAvailable(version, url, _) = updater.status {
-                    Button(L10n.text("update.install.uppercase", version)) {
-                        NSWorkspace.shared.open(url)
-                    }
-                        .font(Theme.Typo.kicker(size: 10.5))
-                        .tracking(0.8)
-                        .textCase(.uppercase)
-                        .foregroundColor(Theme.Palette.papier)
-                        .padding(.horizontal, 11)
-                        .padding(.vertical, 7)
-                        .background(RoundedRectangle(cornerRadius: 5)
-                            .fill(Theme.Palette.stempelrot))
-                        .buttonStyle(.plain)
+                    updateAction(version: version, url: url)
                 }
             }
             .padding(.horizontal, 16)
@@ -704,10 +720,31 @@ struct SettingsWindowView: View {
                     .monospacedDigit()
                     .textCase(.uppercase)
                     .foregroundColor(updateStatusColor(for: presentation.colorRole))
+                    .fixedSize(horizontal: false, vertical: true)
                 Spacer()
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 10)
+
+            if case let .updateAvailable(version, url, _) = updater.status,
+               case .failed = updateInstaller.installState,
+               isCaskInstalled {
+                HStack {
+                    releaseLinkButton(version: version, url: url)
+                    Spacer()
+                }
+                .padding(.horizontal, 16)
+                .padding(.bottom, 10)
+            }
+
+            if case .updateAvailable = updater.status, !isCaskInstalled {
+                Text(L10n.text("update.install.zipHint"))
+                    .font(Theme.Typo.secondary(size: 11.5))
+                    .foregroundColor(Theme.Palette.text2)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.horizontal, 16)
+                    .padding(.bottom, 10)
+            }
 
             Rectangle().fill(Theme.Palette.linieInnen).frame(height: Theme.Metrics.hairline)
 
@@ -717,6 +754,69 @@ struct SettingsWindowView: View {
                 .lineHeight()
                 .padding(.horizontal, 16)
                 .padding(.vertical, 13)
+        }
+    }
+
+    @ViewBuilder
+    private func updateAction(version: String, url: URL) -> some View {
+        switch updateInstaller.installation {
+        case .caskInstalled:
+            switch updateInstaller.installState {
+            case .failed:
+                EmptyView()
+            case .installedAwaitingRelaunch:
+                EmptyView()
+            case .idle, .installing:
+                Button(L10n.text("update.installHomebrew.uppercase")) {
+                    installRequested = true
+                }
+                .font(Theme.Typo.kicker(size: 10.5))
+                .tracking(0.8)
+                .textCase(.uppercase)
+                .foregroundColor(Theme.Palette.papier)
+                .padding(.horizontal, 11)
+                .padding(.vertical, 7)
+                .background(RoundedRectangle(cornerRadius: 5)
+                    .fill(Theme.Palette.stempelrot))
+                .buttonStyle(.plain)
+                .disabled(installRequested || updateInstaller.installState == .installing)
+            }
+        case .notInstalled, .brewWithoutCask:
+            releaseLinkButton(version: version, url: url)
+        }
+    }
+
+    private func releaseLinkButton(version: String, url: URL) -> some View {
+        Button(L10n.text("update.install.uppercase", version)) {
+            NSWorkspace.shared.open(url)
+        }
+        .font(Theme.Typo.kicker(size: 10.5))
+        .tracking(0.8)
+        .textCase(.uppercase)
+        .foregroundColor(Theme.Palette.papier)
+        .padding(.horizontal, 11)
+        .padding(.vertical, 7)
+        .background(RoundedRectangle(cornerRadius: 5)
+            .fill(Theme.Palette.stempelrot))
+        .buttonStyle(.plain)
+    }
+
+    private var isCaskInstalled: Bool {
+        if case .caskInstalled = updateInstaller.installation { return true }
+        return false
+    }
+
+    private func relaunchAfterUpdate() {
+        let command = HomebrewUpdater.relaunchCommand(appPath: Bundle.main.bundleURL.path)
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: command.executable)
+        process.arguments = command.arguments
+        do {
+            try process.run()
+            NSApp.terminate(nil)
+        } catch {
+            installRequested = false
+            updateInstaller.reportRelaunchFailure(error.localizedDescription)
         }
     }
 

@@ -318,6 +318,32 @@ struct UpdateStatusPresentation: Equatable {
             self.init(text: message, colorRole: .warning, showsProgress: false)
         }
     }
+
+    init(
+        status: UpdateCheckStatus,
+        installState: UpdateInstallState,
+        now: Date = Date(),
+        calendar: Calendar = .current
+    ) {
+        switch installState {
+        case .idle:
+            self.init(status: status, now: now, calendar: calendar)
+        case .installing:
+            self.init(
+                text: L10n.text("update.install.running"),
+                colorRole: .neutral,
+                showsProgress: true
+            )
+        case let .failed(message):
+            self.init(text: message, colorRole: .warning, showsProgress: false)
+        case .installedAwaitingRelaunch:
+            self.init(
+                text: L10n.text("update.install.success"),
+                colorRole: .success,
+                showsProgress: false
+            )
+        }
+    }
 }
 
 private enum UpdateStatusFormatter {

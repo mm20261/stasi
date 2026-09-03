@@ -50,6 +50,27 @@ Starte Stasi danach erneut und erteile beide Berechtigungen über die macOS-Dial
 Die Reset-Befehle erteilen keine Rechte, sondern entfernen nur die bisherigen
 Zuordnungen.
 
+## Update installieren schlägt fehl
+
+Die direkte Installation unter **Einstellungen → Über** setzt eine bestehende
+Homebrew-Cask-Installation von Stasi voraus. Prüfe sie im Terminal:
+
+```bash
+brew list --cask stasi
+```
+
+- Fehlt Homebrew, installiere das Update manuell über den Link zum GitHub-Release.
+- Ist Homebrew vorhanden, aber der Cask nicht installiert, nutze ebenfalls den ZIP-Weg
+  oder installiere Stasi künftig mit `brew install --cask mm20261/tap/stasi`.
+- Bei Netzwerk- oder Timeout-Fehlern prüfe die Verbindung und versuche es erneut. Als
+  Ausweichweg funktioniert `brew update && brew upgrade --cask stasi` im Terminal.
+- Fordert Homebrew ein Passwort, führe das Update im Terminal aus. Der Stasi-Cask nutzt
+  ein `app`-Artefakt und benötigt normalerweise kein `sudo`; abweichende lokale
+  Homebrew-Berechtigungen können dennoch eine interaktive Korrektur verlangen.
+
+Nach einem erfolgreichen Update startet Stasi neu. Wegen der ad-hoc-Signatur können die
+macOS-Berechtigungen anschließend erneut erforderlich sein.
+
 ## Berechtigungen vollständig zurücksetzen
 
 Beende Stasi und führe bei Bedarf die folgenden Befehle im Terminal aus:
