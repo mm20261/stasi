@@ -65,12 +65,21 @@ macOS-Dialoge. Ein Reset entfernt bestehende Zustimmungen; er erteilt keine neue
 
 ## Hotkey reagiert nicht
 
-Der globale Hotkey benötigt Bedienungshilfen-Zugriff. Entferne Stasi unter
-**Systemeinstellungen → Datenschutz & Sicherheit → Bedienungshilfen** vollständig
-aus der Liste, füge die aktuell gebaute beziehungsweise installierte App erneut hinzu
-und starte sie neu. Das ist besonders nach einem Update, Zertifikatswechsel oder
-einer Neusignierung wichtig, weil macOS alte Einträge trotz sichtbarem Schalter nicht
-mehr der aktuellen Code-Signatur zuordnen kann.
+Der globale Hotkey benötigt Bedienungshilfen-Zugriff. Typisches Bild nach einem
+Update: Der Schalter unter **Systemeinstellungen → Datenschutz & Sicherheit →
+Bedienungshilfen** steht auf „an“, Stasi meldet trotzdem „Hotkey inaktiv“. Der Eintrag
+gehört dann noch zur alten Code-Signatur; Entfernen und neu Hinzufügen über die Liste
+reicht oft nicht. Verlässlicher Weg:
+
+1. Stasi beenden.
+2. Im Terminal den Eintrag zurücksetzen:
+
+   ```bash
+   tccutil reset Accessibility app.stasi.macos
+   ```
+
+3. Stasi starten und im Bericht auf **Erlauben** klicken. macOS legt einen frischen
+   Eintrag an; den Schalter einschalten. Die App erkennt das ohne Neustart.
 
 Zur Eingrenzung kann Stasi ohne globalen Event-Tap gestartet werden:
 
