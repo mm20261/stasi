@@ -6,10 +6,28 @@ und das Projekt verwendet [Semantic Versioning](https://semver.org/lang/de/).
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-09-03
+
 ### Hinzugefügt
 
 - Deutsche und englische Oberfläche mit Systemsprachen-Automatik und manueller
   Auswahl in den Einstellungen.
+- Vollständig lokale Diktierpipeline für Deutsch und Englisch mit frei belegbarem
+  Push-to-talk, Umschaltmodus und konfigurierbarem Hands-free-Modifikator-Doppeltipp.
+- Regelbasierte Nachbearbeitung für Zögerlaute, Stotterer, Selbstkorrekturen,
+  Diskursfüller und Text-Hygiene.
+- Wörterbuch mit Engine-Biasing, garantiertem Korrekturpass und Vorschlägen unter
+  „Auto-gelernt“.
+- Persistente Protokolle mit Suche, Filtern, Wiedergabe, Rohtext, Export,
+  Aufbewahrungsregeln und vollständigem Markdown-Export.
+- Dashboard, Insights, Streak-Heatmap, App-Nutzung, Onboarding und anpassbare
+  Akzentfarben im v3-Design.
+- Mikrofon-Auswahl, globale Kurzbefehle für das letzte Protokoll und manuelle
+  Update-Prüfung über die GitHub-Releases-API.
+- Aufnahme-Pill mit Pegelanzeige und Live-Transkript sowie verzögerter,
+  bewegungsreduzierter Verarbeitungsanzeige.
+- Release-Workflow für Tests und den zukünftigen Weg mit Developer-ID-Signierung,
+  Notarisierung, Stapling, Prüfsumme und GitHub-Release-Assets.
 
 ### Behoben
 
@@ -36,33 +54,17 @@ und das Projekt verwendet [Semantic Versioning](https://semver.org/lang/de/).
 - Historien- und Wörterbuchlisten laden lazy; Accessibility-Labels für Icon-Buttons;
   Kontrast kleiner Beschriftungen auf volle Deckkraft.
 - Aufbewahrung und 7/30-Tage-Filter rechnen in Kalendertagen statt in 86 400 s.
-
-## [0.10.0] - unveröffentlicht
-
-### Hinzugefügt
-
-- Vollständig lokale Diktierpipeline für Deutsch und Englisch mit frei belegbarem
-  Push-to-talk, Umschaltmodus und konfigurierbarem Hands-free-Modifikator-Doppeltipp.
-- Regelbasierte Nachbearbeitung für Zögerlaute, Stotterer, Selbstkorrekturen,
-  Diskursfüller und Text-Hygiene.
-- Wörterbuch mit Engine-Biasing, garantiertem Korrekturpass und Vorschlägen unter
-  „Auto-gelernt“.
-- Persistente Protokolle mit Suche, Filtern, Wiedergabe, Rohtext, Export,
-  Aufbewahrungsregeln und vollständigem Markdown-Export.
-- Dashboard, Insights, Streak-Heatmap, App-Nutzung, Onboarding und anpassbare
-  Akzentfarben im v3-Design.
-- Mikrofon-Auswahl, globale Kurzbefehle für das letzte Protokoll und manuelle
-  Update-Prüfung über die GitHub-Releases-API.
-- Aufnahme-Pill mit Pegelanzeige und Live-Transkript sowie verzögerter,
-  bewegungsreduzierter Verarbeitungsanzeige.
-- Fail-closed Release-Workflow für Tests, Developer-ID-Signierung, Notarisierung,
-  Stapling, Prüfsumme und GitHub-Release-Assets.
-
-### Geändert
-
 - Kurze Push-to-talk-Tipps unter 250 ms werden still verworfen; Fehler- und
   Warnhinweise bleiben erhalten.
 - Der korrigierte Text wird zusätzlich automatisch in die Zwischenablage kopiert.
+
+### Hinweise
+
+- Dieser erste Release ist nur ad-hoc signiert, nicht mit einer Apple Developer ID
+  signiert und nicht notarisiert. Die Installation erfolgt empfohlen per Homebrew mit
+  `--no-quarantine` oder als ZIP über den GitHub-Release mit manueller
+  Gatekeeper-Freigabe.
+- Der Release unterstützt ausschließlich Apple Silicon (`arm64`).
 
 [Unreleased]: https://github.com/mm20261/stasi/compare/v0.10.0...HEAD
 [0.10.0]: https://github.com/mm20261/stasi/releases/tag/v0.10.0

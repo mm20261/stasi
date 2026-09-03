@@ -24,13 +24,35 @@ Der korrigierte Text wird in die fokussierte App getippt.
 
 ## Installation
 
-> **Noch nicht veröffentlicht:** Der erste GitHub Release und der Homebrew-Tap
-> stehen noch aus. Bis dahin gibt es kein öffentliches Installationsartefakt;
-> verwende den Quellcode-Build weiter unten.
+### Homebrew (empfohlen)
 
 ```bash
-brew install --cask mm20261/tap/stasi
+brew install --cask --no-quarantine mm20261/tap/stasi
 ```
+
+`--no-quarantine` verhindert bei diesem nicht notarisierten Release die
+Gatekeeper-Blockade beim ersten Öffnen.
+
+### GitHub-Release als ZIP
+
+1. Das aktuelle ZIP unter
+   [github.com/mm20261/stasi/releases/latest](https://github.com/mm20261/stasi/releases/latest)
+   laden und `Stasi.app` nach `/Applications` ziehen.
+2. Einmal versuchen, Stasi zu öffnen. macOS blockiert den ersten Start, weil Apple
+   die App nicht überprüfen kann.
+3. **Systemeinstellungen → Datenschutz & Sicherheit** öffnen und unten
+   **Trotzdem öffnen** wählen. Rechtsklick → Öffnen reicht seit macOS 15 nicht mehr.
+
+Alternativ lässt sich das Quarantäne-Attribut im Terminal entfernen:
+
+```bash
+xattr -dr com.apple.quarantine /Applications/Stasi.app
+```
+
+> **Warum die Warnung?** Stasi ist nicht notarisiert, weil für diesen Release kein
+> bezahlter Apple-Developer-Account zur Verfügung steht. Die App wurde daher nicht
+> von Apple geprüft; der vollständige Quellcode ist offen und kann stattdessen selbst
+> gebaut werden.
 
 ### Aus dem Quellcode bauen
 
@@ -54,7 +76,8 @@ brew upgrade --cask stasi
 ```
 
 Die integrierte Update-Prüfung informiert über neue GitHub Releases. Sie installiert
-Updates nicht selbst.
+Updates nicht selbst. Da die veröffentlichten Builds nur ad-hoc signiert sind, fragt
+macOS die Berechtigungen für Mikrofon und Bedienungshilfen nach jedem Update erneut ab.
 
 ## Deinstallieren
 
@@ -112,8 +135,7 @@ und 5 wählbare Akzent-Presets. Maßgebliche Vorschau:
 
 ## Entwicklung
 
-Für die normale Installation ist nach der ersten Veröffentlichung der oben
-beschriebene Homebrew-Cask vorgesehen.
+Für die normale Installation ist der oben beschriebene Homebrew-Cask vorgesehen.
 
 ```bash
 swift build                    # Kompilieren

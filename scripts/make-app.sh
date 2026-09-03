@@ -42,9 +42,9 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 
 case "$SIGNING_MODE" in
-    local|none) ;;
+    local|adhoc|none) ;;
     *)
-        echo "Unbekannter STASI_SIGNING_MODE: $SIGNING_MODE (erlaubt: local, none)" >&2
+        echo "Unbekannter STASI_SIGNING_MODE: $SIGNING_MODE (erlaubt: local, adhoc, none)" >&2
         exit 2
         ;;
 esac
@@ -158,19 +158,26 @@ rm -rf "$ICON_WORK_DIR"
 ICON_WORK_DIR=""
 ICONSET=""
 
-if [[ "$SIGNING_MODE" == "local" ]]; then
+if [[ "$SIGNING_MODE" == "local" || "$SIGNING_MODE" == "adhoc" ]]; then
     test -f "$ENTITLEMENTS" || {
         echo "Entitlements-Datei fehlt: $ENTITLEMENTS" >&2
         exit 1
     }
 
-    # Stabile lokale Signatur: Das selbstsignierte Zertifikat hält die Code-
-    # Identität über Builds konstant. Ohne Zertifikat fällt der lokale Modus auf
-    # ad hoc ("-") zurück; nach einem Signaturwechsel sind TCC-Rechte neu zu erteilen.
-    SIGN_ID="Stasi Dev Signing"
-    if ! security find-identity -v -p codesigning 2>/dev/null \
-        | grep -Fq "\"$SIGN_ID\""; then
+    if [[ "$SIGNING_MODE" == "adhoc" ]]; then
+        # Verteilbarer Build ohne Developer ID: Ad-hoc-Signatur ("-") ist auf
+        # fremden Macs gültig, ein lokales Dev-Zertifikat wäre dort unbekannt.
+        # Gatekeeper warnt trotzdem (nicht notarisiert), siehe docs/release.md.
         SIGN_ID="-"
+    else
+        # Stabile lokale Signatur: Das selbstsignierte Zertifikat hält die Code-
+        # Identität über Builds konstant. Ohne Zertifikat fällt der lokale Modus auf
+        # ad hoc ("-") zurück; nach einem Signaturwechsel sind TCC-Rechte neu zu erteilen.
+        SIGN_ID="Stasi Dev Signing"
+        if ! security find-identity -v -p codesigning 2>/dev/null \
+            | grep -Fq "\"$SIGN_ID\""; then
+            SIGN_ID="-"
+        fi
     fi
     echo "▸ Lokale Inside-out-Signatur ($SIGN_ID)…"
 

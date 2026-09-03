@@ -1,116 +1,188 @@
 # Release-Ablauf
 
-Diese Anleitung beschreibt den aktuellen Vertrag für veröffentlichte, mit Developer
-ID signierte und von Apple notarisierte Builds. Lokale Entwicklungssignaturen sind
-nicht für die öffentliche Verteilung bestimmt.
+Diese Anleitung beschreibt den aktuellen öffentlichen Release-Weg ohne bezahlten
+Apple-Developer-Account und den später vorgesehenen, signierten Workflow-Weg.
 
-## Veröffentlichungsstand vom 28. August 2026
+## Veröffentlichungsstand vom 3. September 2026
 
-Der öffentliche Audit und die Historienbereinigung sind abgeschlossen; das Repository
-ist öffentlich. Der erste Release `v0.10.0` und das Homebrew-Tap stehen noch aus.
+`v0.10.0` ist der erste öffentliche Release von Stasi. Er wird lokal für Apple
+Silicon (`arm64`) gebaut, ad-hoc signiert und ohne Apple-Notarisierung als
+`Stasi-0.10.0.zip` auf GitHub Releases veröffentlicht. Der Homebrew-Tap
+`mm20261/homebrew-tap` verteilt dasselbe Artefakt als Cask `stasi`.
 
-Abgeschlossen:
+„Unsigniert“ bedeutet hier: ohne Apple-Developer-ID; technisch trägt die App eine
+ad-hoc-Signatur. Diese besitzt keine stabile Apple-Team-Identität. Deshalb blockiert
+Gatekeeper das quarantänisierte ZIP zunächst, und macOS fragt nach Updates die
+Berechtigungen für Mikrofon und Bedienungshilfen erneut ab. Die Nutzerhinweise dazu
+stehen in `README.md` und `docs/troubleshooting.md`.
 
-- Öffentlicher Audit: gitleaks 8.30.1 über alle erreichbaren Commits ohne Secrets;
-  False Positives und Entscheidungen dokumentiert in `docs/history-rewrite.md`.
-- Historienbereinigung: ausschließlich Claude-/Anthropic-Co-Author-Trailer entfernt,
-  Author- und Committer-E-Mail auf die GitHub-Noreply-Adresse vereinheitlicht;
-  objektgenau verifiziert über die `git-filter-repo`-Commit-Map
-  (`scripts/verify-history-rewrite.py`): 119 Commits, identischer Tip-Tree,
-  identische Topologie und Zeitstempel.
-- Veröffentlichung: Der bereinigte Stand von `main` wurde per `--force-with-lease`
-  veröffentlicht; GitHub-Contributors ausschließlich `mm20261` (119 Commits), kein
-  Claude-Knoten in Root- und Tip-Commit (GraphQL geprüft).
-- Sichtbarkeit: Repository `PUBLIC`; `main` gegen Löschung und Force-Push geschützt.
-- Release-Environment `release`: Required Reviewer `mm20261`, Deploymentquellen
-  Branch `main` und Tags `v*`.
+Der GitHub-Release-Workflow bleibt für einen späteren Developer-ID- und
+Notarisierungsweg erhalten. Solange seine sechs Secrets fehlen, wird sein
+Publish-Job übersprungen; der lokale ad-hoc-Ablauf in diesem Dokument ist bis dahin
+der maßgebliche Veröffentlichungsweg.
 
-Noch offen bis zum ersten Release:
-
-1. Sechs Environment-Secrets interaktiv setzen
-   (`STASI_DEVELOPER_ID_CERTIFICATE_BASE64`,
-   `STASI_DEVELOPER_ID_CERTIFICATE_PASSWORD`,
-   `STASI_DEVELOPER_ID_APPLICATION`, `STASI_NOTARY_PRIVATE_KEY_BASE64`,
-   `STASI_NOTARY_KEY_ID`, `STASI_NOTARY_ISSUER_ID`).
-2. Tag `v0.10.0` auf dem geprüften `main`-Commit erstellen, pushen, Workflow-Lauf
-   als `mm20261` freigeben und Assets prüfen.
-3. Homebrew-Tap `mm20261/homebrew-tap` mit `Casks/stasi.rb` aus dem echten
-   Release veröffentlichen.
-
-Bewusst offen:
-
-- Developer-ID-Signierung, Apple-Notarisierung, Stapling, Gatekeeper des frisch
-  heruntergeladenen ZIPs und `gh release create` benötigen den autorisierten
-  GitHub-Lauf.
-- Deferred Minor: Tag-Push und manueller Main-Dispatch desselben Tags verwenden
-  verschiedene Concurrency-Gruppen und können parallel bis zur Release-Erstellung
-  laufen.
-- Deferred Minor: Der Diagnosebefehl `mkdir release-check` ist bei Wiederholung nicht
-  idempotent.
+Bereits eingerichtet sind das öffentliche Repository, der gegen Löschung und
+Force-Push geschützte Branch `main` sowie das Environment `release` mit Required
+Reviewer `mm20261` und den Deploymentquellen `main` und `v*`.
 
 ## Release-Vertrag
 
 - Tag: `vMAJOR.MINOR.PATCH`
-- Bundle: `MAJOR.MINOR.PATCH`
-- Versionsquelle: `VERSION` im Repo-Root; `STASI_VERSION` darf sie für kontrollierte
-  Build-Schritte überschreiben
+- Bundle-Version: `MAJOR.MINOR.PATCH`
+- Versionsquelle: `VERSION` im Repo-Root
 - Release-Endpunkt: `https://api.github.com/repos/mm20261/stasi/releases/latest`
-- Runner: `macos-26`, erste Veröffentlichung nur `arm64`
-- Verify-Job: ohne Release-Secrets
-- Publish-Job: Environment `release`, `contents: write`
-- Fehlende Secrets: Fehler, kein Skip
-- Assets: `Stasi.zip`, `Stasi.zip.sha256`
+- Architektur des ersten Releases: ausschließlich `arm64`
+- Artefakt: `Stasi-MAJOR.MINOR.PATCH.zip`
+- Signierung des aktuellen öffentlichen Builds: ad hoc mit `codesign --sign -`
+- Notarisierung des aktuellen öffentlichen Builds: keine
+- Homebrew-Cask: `stasi` im Tap `mm20261/homebrew-tap`
 
-Beispiel: Der Tag `v0.10.0` erzeugt ein Bundle mit
-`CFBundleShortVersionString=0.10.0` und `CFBundleVersion=0.10.0`. Die Release-App
-enthält den oben genannten Update-Endpunkt; die Architektur des App-Binärprogramms
-muss exakt `arm64` sein.
+Tag, Inhalt von `VERSION`, Bundle-Version, ZIP-Dateiname, GitHub-Release und
+Cask-Version müssen exakt dieselbe Versionsnummer tragen.
 
-## Automatischer Tag-, Verify- und Publish-Ablauf
+## Aktueller Ablauf: ad-hoc signierter Release
 
-Der Workflow `.github/workflows/release.yml` startet entweder beim Push eines
-Release-Tags `v*` oder kontrolliert manuell vom geschützten Branch `main`. Beim
-manuellen Start wird ein bereits vorhandener Tag im Format `vMAJOR.MINOR.PATCH`
-als `release_tag` angegeben. Beide Pfade lösen den Tag auf einen exakten Commit auf;
-bei einem Tag-Event muss dieser Commit mit dem Event-Commit übereinstimmen. Der
-Workflow bricht außerdem ab, wenn die aus dem Tag abgeleitete Version nicht exakt mit
-dem Inhalt von `VERSION` übereinstimmt.
+Im folgenden Beispiel steht `X.Y.Z` für die freizugebende Versionsnummer. Für den
+ersten Release ist das `0.10.0`.
 
-Der Job `verify` läuft mit `contents: read` und ohne Environment oder Release-Secrets.
-Er checkt den aufgelösten Commit detached aus, führt die vollständige Testsuite aus,
-baut die App mit der aus dem Tag abgeleiteten Version und dem Release-Endpunkt und
-führt den Smoke-Test mit der erwarteten Architektur `arm64` aus.
+### 1. Version und freizugebenden Stand prüfen
 
-Nur nach erfolgreichem `verify` erreicht der Lauf den Job `publish`. Dieser Job:
+Der Release-Commit muss auf `main` liegen. `VERSION` muss ausschließlich die
+Versionsnummer ohne vorangestelltes `v` enthalten.
 
-1. verwendet das geschützte Environment `release` und nur dort `contents: write`,
-2. checkt erneut exakt den zuvor verifizierten Commit aus,
-3. baut mit derselben Version und demselben Update-Endpunkt ein unsigned Bundle,
-4. validiert Bundle-Version, Update-Endpunkt und `arm64`,
-5. signiert mit Developer ID und Hardened Runtime, notarisiert und stapelt das Ticket,
-6. prüft Signatur, Gatekeeper, Inhalte und Architektur des finalen Archivs,
-7. erzeugt und verifiziert die SHA-256-Prüfsumme und
-8. veröffentlicht exakt `Stasi.zip` und `Stasi.zip.sha256` am bestehenden, nochmals
-   verifizierten Release-Tag.
+```bash
+git switch main
+release_version="$(tr -d '\r\n' < VERSION)"
+test "$release_version" = 'X.Y.Z'
+test "$(git branch --show-current)" = 'main'
+```
 
-Der Workflow verwendet keine Marketplace-Actions. Git-Zugriffe laufen mit einem
-temporären `GIT_ASKPASS`-Skript; temporäre Schlüssel-, Zertifikats- und
-Schlüsselbunddateien werden auch im Fehlerfall entfernt.
+Vor dem Taggen die vollständige Testsuite ausführen:
 
-## GitHub-Environment und Tag-Schutz
+```bash
+swift build --build-tests
+xcrun xctest "$(swift build --show-bin-path)/StasiPackageTests.xctest"
+```
 
-Das Environment `release` besitzt den Required Reviewer `mm20261`. Für die
-ausdrücklich gewählte Solo-Freigabe ist `prevent_self_review: false` gesetzt:
-`mm20261` darf den eigenen Deployment-Lauf freigeben. Die Solo-Freigabe benötigt
-keine zweite Person; Selbstfreigabe bleibt zulässig.
+### 2. Release-Tag auf `main` erstellen und pushen
 
-Zulässige Deploymentquellen sind ausschließlich der geschützte Branch `main` für
-kontrollierte manuelle Läufe und eng begrenzte Release-Tags `v*`. Eine
-Branch-Protection-Regel schützt `main`. Ein Tag-Ruleset schützt Erstellung und
-Änderung der Tags `v*`.
+```bash
+git tag "v$release_version"
+git push origin "v$release_version"
+```
 
-Die folgenden sechs Werte liegen ausschließlich als Environment-Secrets in
-`release`:
+Der Tag-Push startet den GitHub-Workflow. Dessen Verify-Job darf laufen; ohne die
+Developer-ID-Secrets muss der Publish-Job übersprungen werden. Das öffentliche
+Artefakt wird anschließend mit den folgenden lokalen Schritten erzeugt.
+
+### 3. App lokal ad-hoc signiert bauen
+
+```bash
+STASI_SIGNING_MODE=adhoc ./scripts/make-app.sh
+```
+
+Der Build muss die Version aus `VERSION` übernehmen. Anschließend Bundle-Version,
+Bundle-ID, Architektur und ad-hoc-Signatur prüfen:
+
+```bash
+test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' \
+  build/Stasi.app/Contents/Info.plist)" = "$release_version"
+test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' \
+  build/Stasi.app/Contents/Info.plist)" = "$release_version"
+test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' \
+  build/Stasi.app/Contents/Info.plist)" = 'app.stasi.macos'
+test "$(lipo -archs build/Stasi.app/Contents/MacOS/Stasi)" = 'arm64'
+codesign --verify --deep --strict --verbose=2 build/Stasi.app
+```
+
+### 4. Smoke-Test ausführen
+
+```bash
+./scripts/smoke-test-app.sh
+```
+
+### 5. Versionsgebundenes ZIP und SHA-256 erzeugen
+
+```bash
+ditto -c -k --keepParent build/Stasi.app "Stasi-$release_version.zip"
+shasum -a 256 "Stasi-$release_version.zip"
+```
+
+Den ausgegebenen SHA-256-Wert unverändert in die Release-Notizen und anschließend in
+den Homebrew-Cask übernehmen. Vor der Veröffentlichung kann das ZIP zusätzlich in
+ein temporäres Verzeichnis entpackt und das enthaltene Bundle erneut geprüft werden:
+
+```bash
+archive_check="$(mktemp -d)"
+ditto -x -k "Stasi-$release_version.zip" "$archive_check"
+codesign --verify --deep --strict --verbose=2 "$archive_check/Stasi.app"
+test "$(lipo -archs "$archive_check/Stasi.app/Contents/MacOS/Stasi")" = 'arm64'
+```
+
+Das temporäre Prüfverzeichnis danach entfernen.
+
+### 6. GitHub-Release veröffentlichen
+
+Die Release-Notizen müssen mindestens die SHA-256-Prüfsumme, die Beschränkung auf
+`arm64`, den Hinweis auf die fehlende Developer-ID-Signierung und Notarisierung sowie
+die Gatekeeper-Installationsschritte enthalten. Mit einer vorbereiteten lokalen
+Notizdatei lautet der Aufruf:
+
+```bash
+gh release create "v$release_version" "Stasi-$release_version.zip" \
+  --title "Stasi $release_version" \
+  --notes-file /path/to/release-notes.md
+```
+
+Danach auf der GitHub-Release-Seite prüfen, dass Tag, Titel, ZIP-Dateiname und die in
+den Notizen veröffentlichte SHA-256-Prüfsumme übereinstimmen.
+
+### 7. Homebrew-Cask aktualisieren
+
+Im Repository `mm20261/homebrew-tap` die Datei `Casks/stasi.rb` aktualisieren:
+
+- `version` auf `X.Y.Z` setzen.
+- `sha256` exakt auf den zuvor mit `shasum -a 256` ermittelten Wert setzen.
+- Prüfen, dass der Cask das versionsgebundene ZIP des GitHub-Releases verwendet.
+
+Nach Veröffentlichung des aktualisierten Taps die Installation mit dem empfohlenen
+Befehl prüfen:
+
+```bash
+brew install --cask --no-quarantine mm20261/tap/stasi
+```
+
+Für bereits installierte Versionen lautet der Update-Befehl:
+
+```bash
+brew upgrade --cask stasi
+```
+
+Wegen der ad-hoc-Signatur müssen Mikrofon und Bedienungshilfen nach einem Update
+erneut freigegeben werden.
+
+## Zukunft: signierter und notarisierter Workflow
+
+Sobald eine Apple Developer ID vorhanden und alle sechs Secrets gesetzt sind, kann
+der vorhandene Workflow `.github/workflows/release.yml` den signierten Weg
+übernehmen. Der Verify-Job löst den Tag auf einen exakten Commit auf, gleicht die
+Tag-Version mit `VERSION` ab, führt die vollständige Testsuite aus, baut die App und
+prüft den Smoke-Test sowie `arm64`.
+
+Der Publish-Job verwendet das geschützte Environment `release`. Mit vollständig
+gesetzten Secrets baut er denselben verifizierten Commit erneut, signiert die App mit
+Developer ID und Hardened Runtime, notarisiert sie, heftet das Ticket an, prüft
+Signatur und Gatekeeper und veröffentlicht die geprüften Release-Artefakte. Ohne
+vollständige Secrets bleibt dieser Publish-Job übersprungen.
+
+Das Environment `release` besitzt den Required Reviewer `mm20261`. Zulässige
+Deploymentquellen sind der geschützte Branch `main` für kontrollierte manuelle Läufe
+und Release-Tags `v*`.
+
+### Benötigte Environment-Secrets
+
+Die folgenden sechs Werte dürfen ausschließlich als Environment-Secrets in
+`release` liegen:
 
 - `STASI_DEVELOPER_ID_CERTIFICATE_BASE64`: Base64-kodierte PKCS#12-Datei mit
   Developer-ID-Zertifikat und privatem Schlüssel.
@@ -122,148 +194,8 @@ Die folgenden sechs Werte liegen ausschließlich als Environment-Secrets in
 - `STASI_NOTARY_KEY_ID`: Key-ID dieses API-Schlüssels.
 - `STASI_NOTARY_ISSUER_ID`: Issuer-ID dieses API-Schlüssels.
 
-Gleichnamige Repository- oder Organisationssecrets sind verboten; vorhandene
-breiter sichtbare Kopien müssen entfernt werden. Secrets dürfen weder in Workflow,
-Dokumentation noch Logs kopiert werden. Der Publish-Schritt prüft alle sechs Werte
-vor der Verwendung und beendet den Lauf bei einem fehlenden oder leeren Wert mit
-Fehler. Die Veröffentlichung ist damit fail-closed.
-
-## Reguläre Veröffentlichung
-
-1. Auf `main` die vollständige Suite und den App-Smoke-Test ausführen:
-
-   ```bash
-   test "$(tr -d '\r\n' < VERSION)" = '0.10.0'
-   swift build --build-tests
-   xcrun xctest "$(swift build --show-bin-path)/StasiPackageTests.xctest"
-   ./scripts/smoke-test-app.sh
-   ```
-
-2. Den geschützten Tag, beispielsweise `v0.10.0`, auf dem freigegebenen Commit
-   erstellen. Tag und `VERSION` müssen dieselbe Versionsnummer tragen. Das
-   Tag-Ruleset muss wirksam sein. Der Tag-Push startet den Workflow;
-   alternativ wird der kontrollierte manuelle Lauf von `main` mit `release_tag`
-   `v0.10.0` gestartet.
-3. Das Deployment in `release` als Required Reviewer `mm20261` prüfen und freigeben.
-4. Nach erfolgreichem Publish sicherstellen, dass der GitHub Release ausschließlich
-   `Stasi.zip` und `Stasi.zip.sha256` als Binärassets enthält.
-5. Beide Assets separat herunterladen und die ausgelieferte Datei prüfen:
-
-   ```bash
-   mkdir release-check
-   gh release download v0.10.0 \
-     --pattern 'Stasi.zip' \
-     --pattern 'Stasi.zip.sha256' \
-     --dir release-check
-   (
-     cd release-check
-     shasum -a 256 -c Stasi.zip.sha256
-   )
-   ```
-
-Die Release-Notizen dürfen keine Secrets enthalten. Erst ein vollständig grüner
-Verify- und Publish-Lauf gilt als erfolgreiche Veröffentlichung.
-
-## Manueller Notfallpfad: lokale Diagnose und Wiederherstellungsprüfung
-
-Dieser Pfad dient ausschließlich einer bewusst beaufsichtigten lokalen Diagnose,
-Artefaktvorbereitung und Wiederherstellungsprüfung. Er lädt nichts hoch, erstellt
-keinen Release und ersetzt das GitHub-Environment-Gate nicht. Eine öffentliche
-Veröffentlichung erfolgt ausschließlich über den oben beschriebenen
-Tag-/Verify-/Publish-Workflow mit dem Environment `release` und Required Review.
-
-Die lokalen Schritte prüfen Tests, App-Smoke, Bundle-Metadaten, Architektur,
-Developer-ID-Signatur, Hardened Runtime, Notarisierung, Gatekeeper, ZIP-Inhalt und
-SHA-256-Prüfsumme. Sie prüfen weder den geschützten Workflow-Checkout noch die
-Environment-Secrets oder das Required-Reviewer-Gate. Developer-ID-Identität und
-`notarytool`-Profil müssen bereits sicher im lokalen Schlüsselbund eingerichtet sein;
-ihre Werte gehören nicht ins Repository.
-
-1. Tests ausführen und das Release-Bundle unsigned bauen:
-
-   ```bash
-   swift build --build-tests
-   xcrun xctest "$(swift build --show-bin-path)/StasiPackageTests.xctest"
-   ./scripts/smoke-test-app.sh
-
-   STASI_RELEASE_API_URL='https://api.github.com/repos/mm20261/stasi/releases/latest' \
-   STASI_SIGNING_MODE=none \
-   ./scripts/make-app.sh
-   ```
-
-2. Vor dem Signieren Version, Endpunkt und Architektur prüfen:
-
-   ```bash
-   test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' \
-     build/Stasi.app/Contents/Info.plist)" = '0.10.0'
-   test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' \
-     build/Stasi.app/Contents/Info.plist)" = '0.10.0'
-   test "$(/usr/libexec/PlistBuddy -c 'Print :STASI_RELEASE_API_URL' \
-     build/Stasi.app/Contents/Info.plist)" = \
-     'https://api.github.com/repos/mm20261/stasi/releases/latest'
-   test "$(lipo -archs build/Stasi.app/Contents/MacOS/Stasi)" = 'arm64'
-   ```
-
-3. Mit Developer ID und Hardened Runtime signieren, Signaturmerkmale prüfen,
-   notarisierten ZIP-Transport einreichen und das Ticket anheften:
-
-   ```bash
-   export STASI_DEVELOPER_ID_APPLICATION='<Developer ID Application identity>'
-   export STASI_NOTARY_KEYCHAIN_PROFILE='<notarytool keychain profile name>'
-
-   codesign --force \
-     --sign "$STASI_DEVELOPER_ID_APPLICATION" \
-     --options runtime \
-     --timestamp \
-     --entitlements Release/Stasi.entitlements \
-     build/Stasi.app
-   codesign --verify --deep --strict --verbose=2 build/Stasi.app
-   codesign -d --verbose=4 build/Stasi.app 2>&1 | grep -Eq 'flags=.*runtime'
-   test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' \
-     build/Stasi.app/Contents/Info.plist)" = 'app.stasi.macos'
-
-   ditto -c -k --keepParent build/Stasi.app build/Stasi-notary.zip
-   xcrun notarytool submit build/Stasi-notary.zip \
-     --keychain-profile "$STASI_NOTARY_KEYCHAIN_PROFILE" \
-     --wait
-   xcrun stapler staple build/Stasi.app
-   xcrun stapler validate build/Stasi.app
-   codesign --verify --deep --strict --verbose=2 build/Stasi.app
-   spctl --assess --type execute --verbose=4 build/Stasi.app
-   ```
-
-4. Nach allen bisherigen Prüfungen das lokale Diagnosearchiv und seine Prüfsumme
-   erzeugen und die Prüfsumme sofort gegen das ZIP prüfen:
-
-   ```bash
-   ditto -c -k --keepParent build/Stasi.app build/Stasi.zip
-   (
-     cd build
-     shasum -a 256 Stasi.zip >Stasi.zip.sha256
-     shasum -a 256 -c Stasi.zip.sha256
-   )
-   ```
-
-5. Das finale ZIP entpacken und das enthaltene Bundle erneut lokal prüfen:
-
-   ```bash
-   archive_check="$(mktemp -d)"
-   trap 'rm -rf "$archive_check"' EXIT
-   ditto -x -k build/Stasi.zip "$archive_check"
-
-   test -d "$archive_check/Stasi.app"
-   codesign --verify --deep --strict --verbose=2 "$archive_check/Stasi.app"
-   codesign -d --verbose=4 "$archive_check/Stasi.app" 2>&1 | \
-     grep -Eq 'flags=.*runtime'
-   xcrun stapler validate "$archive_check/Stasi.app"
-   spctl --assess --type execute --verbose=4 "$archive_check/Stasi.app"
-   test "$(lipo -archs "$archive_check/Stasi.app/Contents/MacOS/Stasi")" = 'arm64'
-   ```
-
-`build/Stasi.zip` und `build/Stasi.zip.sha256` bleiben lokale Diagnoseartefakte und
-werden nicht veröffentlicht. Für eine öffentliche Freigabe muss der geschützte
-Tag-/Verify-/Publish-Workflow repariert beziehungsweise erneut ausgeführt werden; er
-baut und prüft seine Release-Assets selbst hinter dem Environment-Gate.
+Gleichnamige Repository- oder Organisationssecrets sind verboten. Secret-Werte
+dürfen weder in Workflow, Dokumentation, Release-Notizen noch Logs kopiert werden.
 
 ## Entitlements und lokale Entwicklung
 
@@ -273,7 +205,7 @@ Mikrofon-, Spracherkennungs- und Bedienungshilfen-Zustimmungen bleiben getrennte
 TCC-Berechtigungen.
 
 Für lokale Entwicklungsbuilds verwendet `STASI_SIGNING_MODE=local` die Identität
-`Stasi Dev Signing` oder ersatzweise eine ad-hoc-Signatur. `STASI_SIGNING_MODE=none`
-ist nur für den bewusst anschließend signierten Release-/Diagnosepfad vorgesehen und
-stellt allein kein verteilbares Artefakt her. `scripts/make-app.sh` liest die Version
-standardmäßig aus `VERSION`; `STASI_VERSION` ist nur eine explizite Überschreibung.
+`Stasi Dev Signing` oder ersatzweise eine ad-hoc-Signatur. Öffentliche Releases ohne
+Developer ID müssen dagegen ausdrücklich mit `STASI_SIGNING_MODE=adhoc` gebaut
+werden. `scripts/make-app.sh` liest die Version standardmäßig aus `VERSION`;
+`STASI_VERSION` ist nur eine explizite Überschreibung.

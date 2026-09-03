@@ -3,6 +3,52 @@
 Stasi benötigt Mikrofon-, Spracherkennungs- und Bedienungshilfen-Zugriff. Die
 Bundle-ID lautet `app.stasi.macos`.
 
+## App lässt sich nicht öffnen (Gatekeeper)
+
+Der GitHub-Release ist nicht notarisiert. Das heruntergeladene ZIP trägt deshalb ein
+Quarantäne-Attribut, und macOS blockiert den ersten Start mit dem Hinweis, dass Apple
+die App nicht überprüfen kann.
+
+1. `Stasi.app` nach `/Applications` ziehen und einmal versuchen, die App zu öffnen.
+2. **Systemeinstellungen → Datenschutz & Sicherheit** öffnen.
+3. Unten bei der blockierten App **Trotzdem öffnen** wählen und den Start bestätigen.
+
+Rechtsklick → Öffnen reicht seit macOS 15 nicht mehr. Alternativ kann das
+Quarantäne-Attribut im Terminal entfernt werden:
+
+```bash
+xattr -dr com.apple.quarantine /Applications/Stasi.app
+```
+
+Bei einer Homebrew-Installation vermeidet dieser Befehl die Blockade direkt:
+
+```bash
+brew install --cask --no-quarantine mm20261/tap/stasi
+```
+
+Die App wurde nicht von Apple geprüft. Wer die Ausnahme nicht setzen möchte, kann
+den offenen Quellcode selbst bauen.
+
+## Nach einem Update fragt macOS die Rechte erneut
+
+Die öffentlichen Builds sind nur ad-hoc signiert und besitzen deshalb keine stabile
+Apple-Team-Identität. macOS fragt nach jedem Update die Berechtigungen für Mikrofon
+und Bedienungshilfen erneut ab.
+
+Entferne bei Bedarf den alten Stasi-Eintrag unter **Systemeinstellungen → Datenschutz
+& Sicherheit → Bedienungshilfen**, füge die aktuell installierte App erneut hinzu und
+starte sie neu. Falls der alte Zustand bestehen bleibt, beende Stasi und setze beide
+Berechtigungen im Terminal zurück:
+
+```bash
+tccutil reset Accessibility app.stasi.macos
+tccutil reset Microphone app.stasi.macos
+```
+
+Starte Stasi danach erneut und erteile beide Berechtigungen über die macOS-Dialoge.
+Die Reset-Befehle erteilen keine Rechte, sondern entfernen nur die bisherigen
+Zuordnungen.
+
 ## Berechtigungen vollständig zurücksetzen
 
 Beende Stasi und führe bei Bedarf die folgenden Befehle im Terminal aus:

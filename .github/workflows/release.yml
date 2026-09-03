@@ -141,7 +141,12 @@ jobs:
 
   publish:
     needs: verify
-    if: github.event_name == 'push' || github.ref == 'refs/heads/main'
+    # Der signierte Publish-Job läuft erst, wenn die Repository-Variable
+    # STASI_SIGNED_RELEASES auf "true" steht (Developer ID + Notary vorhanden).
+    # Bis dahin entstehen unsignierte Releases lokal, siehe docs/release.md.
+    if: >-
+      (github.event_name == 'push' || github.ref == 'refs/heads/main')
+      && vars.STASI_SIGNED_RELEASES == 'true'
     environment: release
     runs-on: macos-26
     timeout-minutes: 60
