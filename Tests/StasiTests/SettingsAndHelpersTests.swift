@@ -387,3 +387,20 @@ final class AudioLevelTests: XCTestCase {
         XCTAssertLessThanOrEqual(level, 1.0)
     }
 }
+
+// MARK: - Permissions: tccutil-Argumente
+
+final class PermissionsResetArgumentsTests: XCTestCase {
+    func testArgumenteFuerEigeneBundleID() {
+        XCTAssertEqual(
+            Permissions.tccutilResetArguments(service: "Accessibility", bundleID: "app.stasi.macos"),
+            ["reset", "Accessibility", "app.stasi.macos"]
+        )
+    }
+
+    func testOhneBundleIDKeinReset() {
+        XCTAssertNil(Permissions.tccutilResetArguments(service: "Accessibility", bundleID: nil))
+        XCTAssertNil(Permissions.tccutilResetArguments(service: "Accessibility", bundleID: ""))
+    }
+}
+

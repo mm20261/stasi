@@ -6,6 +6,14 @@ und das Projekt verwendet [Semantic Versioning](https://semver.org/lang/de/).
 
 ## [Unreleased]
 
+## [0.10.2] - 2026-09-03
+
+### Behoben
+
+- Nach einem Update zeigte der Bedienungshilfen-Schalter „an“, der Hotkey blieb aber
+  inaktiv (Eintrag gehörte zur alten Signatur). **Erlauben** räumt den veralteten
+  Eintrag jetzt selbst weg und zeigt den frischen macOS-Dialog.
+
 ## [0.10.1] - 2026-09-03
 
 ### Behoben

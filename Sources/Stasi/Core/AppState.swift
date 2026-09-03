@@ -444,7 +444,12 @@ final class AppState {
     func requestMissingPermissions() {
         // Nur noch Bedienungshilfen nötig (Session-Tap + TextInjector).
         let axBefore = accessibilityGranted
-        if !accessibilityGranted { Permissions.promptAccessibility() }
+        if !accessibilityGranted {
+            // Veralteten Eintrag der vorigen Signatur entfernen, sonst bleibt der
+            // System-Dialog aus und der Schalter täuscht „erteilt“ vor.
+            Permissions.resetStaleAccessibilityEntry()
+            Permissions.promptAccessibility()
+        }
 
         Task { [weak self] in
             try? await Task.sleep(nanoseconds: 1_500_000_000)
