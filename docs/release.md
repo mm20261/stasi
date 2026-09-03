@@ -149,7 +149,7 @@ Nach Veröffentlichung des aktualisierten Taps die Installation mit dem empfohle
 Befehl prüfen:
 
 ```bash
-brew install --cask --no-quarantine mm20261/tap/stasi
+brew install --cask mm20261/tap/stasi
 ```
 
 Für bereits installierte Versionen lautet der Update-Befehl:

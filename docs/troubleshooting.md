@@ -20,10 +20,11 @@ Quarantäne-Attribut im Terminal entfernt werden:
 xattr -dr com.apple.quarantine /Applications/Stasi.app
 ```
 
-Bei einer Homebrew-Installation vermeidet dieser Befehl die Blockade direkt:
+Bei einer Homebrew-Installation entfernt der Cask die Quarantäne selbst. Falls die
+Blockade trotzdem erscheint:
 
 ```bash
-brew install --cask --no-quarantine mm20261/tap/stasi
+xattr -dr com.apple.quarantine /Applications/Stasi.app
 ```
 
 Die App wurde nicht von Apple geprüft. Wer die Ausnahme nicht setzen möchte, kann

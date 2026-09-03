@@ -27,11 +27,11 @@ Der korrigierte Text wird in die fokussierte App getippt.
 ### Homebrew (empfohlen)
 
 ```bash
-brew install --cask --no-quarantine mm20261/tap/stasi
+brew install --cask mm20261/tap/stasi
 ```
 
-`--no-quarantine` verhindert bei diesem nicht notarisierten Release die
-Gatekeeper-Blockade beim ersten Öffnen.
+Der Cask entfernt nach der Installation das Quarantäne-Attribut, damit die nicht
+notarisierte App direkt startet. Homebrew 6 kennt `--no-quarantine` nicht mehr.
 
 ### GitHub-Release als ZIP
 

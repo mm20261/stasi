@@ -61,8 +61,8 @@ und das Projekt verwendet [Semantic Versioning](https://semver.org/lang/de/).
 ### Hinweise
 
 - Dieser erste Release ist nur ad-hoc signiert, nicht mit einer Apple Developer ID
-  signiert und nicht notarisiert. Die Installation erfolgt empfohlen per Homebrew mit
-  `--no-quarantine` oder als ZIP über den GitHub-Release mit manueller
+  signiert und nicht notarisiert. Die Installation erfolgt empfohlen per Homebrew (der Cask
+  entfernt die Quarantäne) oder als ZIP über den GitHub-Release mit manueller
   Gatekeeper-Freigabe.
 - Der Release unterstützt ausschließlich Apple Silicon (`arm64`).
 
