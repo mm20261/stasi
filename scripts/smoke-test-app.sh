@@ -77,6 +77,11 @@ test "$(
     /usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' "$INFO_PLIST"
 )" = "26.0"
 
+# Ohne diesen Schlüssel schlägt die Update-Prüfung in der App immer fehl (v0.10.0).
+test "$(
+    /usr/libexec/PlistBuddy -c 'Print :STASI_RELEASE_API_URL' "$INFO_PLIST"
+)" = "https://api.github.com/repos/mm20261/stasi/releases/latest"
+
 test "$(
     /usr/libexec/PlistBuddy -c 'Print :CFBundleLocalizations:0' "$INFO_PLIST"
 )" = "de"

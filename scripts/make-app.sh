@@ -112,6 +112,9 @@ cat > "$CONTENTS/Info.plist" <<PLIST
     <string>Stasi transkribiert deine Sprache vollständig auf dem Gerät.</string>
     <key>NSHumanReadableCopyright</key>
     <string>© 2026</string>
+    <!-- Update-Prüfung (nur auf Klick, siehe UpdateChecker) -->
+    <key>STASI_RELEASE_API_URL</key>
+    <string>https://api.github.com/repos/mm20261/stasi/releases/latest</string>
 </dict>
 </plist>
 PLIST

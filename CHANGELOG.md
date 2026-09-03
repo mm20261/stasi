@@ -6,6 +6,14 @@ und das Projekt verwendet [Semantic Versioning](https://semver.org/lang/de/).
 
 ## [Unreleased]
 
+## [0.10.1] - 2026-09-03
+
+### Behoben
+
+- Die Update-Prüfung unter Einstellungen → Über schlug immer fehl, weil das Build-Skript
+  die Release-Adresse (`STASI_RELEASE_API_URL`) nicht in die App schrieb. Der Smoke-Test
+  prüft den Schlüssel jetzt.
+
 ## [0.10.0] - 2026-09-03
 
 ### Hinzugefügt
